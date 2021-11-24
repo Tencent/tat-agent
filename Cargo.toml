@@ -1,0 +1,46 @@
+[package]
+name = "tat_agent"
+version = "0.1.12"
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+tokio = { version = "0.2.22", features = ["full"]}
+futures = "0.3"
+futures01 = { version = "0.1", package = "futures"}
+tokio01 = { version = "0.1.22", package = "tokio"}
+reqwest = { version = "0.10", features = ["blocking", "json"] }
+serde_json = "1.0.57"
+serde = {version = "1.0.115", features = ["derive"]}
+url = "2.1.1"
+clap = "2.33.3"
+async-attributes = "1.0.0"
+tokio-test = "*"
+log = "0.4.11"
+log4rs = "0.13.0"
+websocket = "0.26.2"
+libc = "0.2.77"
+rand = "0.7.3"
+base64 = "0.13.0"
+chrono = "0.4.18"
+md5 = "0.7.0"
+bytes = "0.5.6"
+unzip = "0.1.0"
+async-std = "1.6.5"
+hyper = { version = "^0.12"}
+async-trait = "0.1.50"
+encoding = "0.2.33"
+cfg-if = "1.0"
+time = { version = "0.2", default-features = false }
+faux = "0.1.5"
+
+[target.'cfg(target_family="unix")'.dependencies]
+daemonize = "0.4.1"
+users = { version = "0.11.0"}
+openssl = { version = '0.10.35', features = ["vendored"] }
+procinfo = { version = "0.4.2" }
+
+[target.'cfg(windows)'.dependencies]
+codepage-strings = "1.0.1"
+winapi = { version = "0.3", features = ["winsvc","winbase","winnt","stringapiset","winnls","wow64apiset","synchapi","namedpipeapi"] }

@@ -1,0 +1,92 @@
+#!/bin/bash
+
+# chkconfig:  2345 88 66
+# description: TAT agent
+
+### BEGIN INIT INFO
+# Provides:             tat_agent
+# Required-Start:       $remote_fs $syslog
+# Required-Stop:        $remote_fs $syslog
+# Default-Start:        2 3 4 5
+# Default-Stop:         0 1 6
+# Short-Description:    TAT agent
+### END INIT INFO
+
+RET=0
+
+AGENT="tat_agent"
+AGENT_PATH="/usr/local/qcloud/tat_agent/tat_agent"
+PID_FILE="/var/run/tat_agent.pid"
+
+start() {
+    test -x ${AGENT_PATH} || exit 1
+
+    ${AGENT_PATH}
+    RET=$?
+    if [ ${RET} -eq 0 ]; then
+        echo "tat_agent start succ"
+        sleep 0.2
+        agent_status
+    fi
+    return ${RET}
+}
+
+stop() {
+    if [ -f ${PID_FILE} ]; then
+        PID=`cat ${PID_FILE}`
+        ps ${PID} | grep ${AGENT}
+        if [ $? -eq 0 ]; then
+            echo "tat_agent found, now kill it"
+            kill -9 ${PID}
+            RET=$?
+        else
+            echo "tat_agent not found, nothing to stop"
+            RET=2
+        fi
+    else
+        echo "pid file of tat_agent not exist"
+        RET=3
+    fi
+    return ${RET}
+}
+
+agent_status() {
+    if [ -f ${PID_FILE} ]; then
+        PID=`cat ${PID_FILE}`
+        ps ${PID} | grep ${AGENT}
+        if [ $? -eq 0 ]; then
+            echo "tat_agent running with pid:${PID}"
+            RET=0
+        else
+            echo "tat_agent not running"
+            RET=0
+        fi
+    else
+        echo "pid file of tat_agent not exist"
+        RET=4
+    fi
+    return ${RET}
+}
+
+case "$1" in
+start)
+    start
+    ;;
+stop)
+    stop
+    ;;
+status)
+    agent_status
+    RET=$?
+    ;;
+restart)
+    stop
+    sleep 0.2
+    start
+    ;;
+*)
+    echo $"Usage: $0 {start|stop|restart|status}"
+    RET=4
+esac
+
+exit ${RET}

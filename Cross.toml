@@ -1,0 +1,6 @@
+# TODO: remove the whole file when `cross` new version is released.
+#
+# i686-pc-windows-gnu has been supported by `cross`, but not released yet.
+# See https://github.com/rust-embedded/cross/pull/471 for detail.
+[target.i686-pc-windows-gnu]
+image = "rustembedded/cross:i686-pc-windows-gnu"

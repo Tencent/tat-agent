@@ -1,0 +1,16 @@
+[Unit]
+Description=tat_agent
+After=network-online.target
+
+[Service]
+Type=forking
+PIDFile=/var/run/tat_agent.pid
+WorkingDirectory=/usr/local/qcloud/tat_agent/
+ExecStart=/usr/local/qcloud/tat_agent/tat_agent
+ExecStartPost=/bin/sleep 0.2
+KillMode=process
+Restart=always
+RestartSec=1s
+
+[Install]
+WantedBy=multi-user.target
