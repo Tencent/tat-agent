@@ -12,6 +12,7 @@ Docker：该工具需要在Docker中进行编译
 make run
 ```
 在调试模式下由Docker直接运行。
+PS：调试模式下连接的后端为测试域名。
 ## 编译
 在Linux系统中执行：
 ```
