@@ -33,7 +33,7 @@ make stop
 ## 支持的操作系统
 可以在Linux和Windows中运行，包括但不限于
 - TencentOS Server
-- CentOs
+- CentOS
 - Ubuntu
 - Debian
 - SUSE
