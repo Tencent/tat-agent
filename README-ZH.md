@@ -1,3 +1,5 @@
+简体中文 | [English](./README.md)
+
 # 自动化助手 TAT
 
 TAT 自动化助手是由 Rust 编写，是一款可在 CVM、Lighthouse 和其他云服务器中部署的原生运维部署工具。

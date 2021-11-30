@@ -1,3 +1,5 @@
+[简体中文](./README-ZH.md) | English
+
 # TAT Agent
 TAT agent is an agent written in Rust, which run in CVM or Lighthouse instances.
 Its role is to run commands remotely without ssh login, invoked from TencentCloud Console/API.
