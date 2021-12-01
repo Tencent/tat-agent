@@ -1,5 +1,7 @@
 use std::env;
 use std::fmt::Debug;
+use std::fs::File;
+use std::io::Write;
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -15,7 +17,7 @@ use tokio::time::timeout;
 use users::get_user_by_name;
 
 use crate::common::asserts::GracefulUnwrap;
-use crate::common::consts::{DUP2_1_2, OWN_PROCESS_GROUP, TASK_STORE_PATH,PIPE_BUF_DEFAULT_SIZE};
+use crate::common::consts::{DUP2_1_2, OWN_PROCESS_GROUP, PIPE_BUF_DEFAULT_SIZE};
 use crate::executor::proc::{BaseCommand, MyCommand};
 use crate::start_failed_err_info;
 
@@ -29,6 +31,10 @@ impl ShellCommand {
         work_dir: &str,
         timeout: u64,
         bytes_max_report: u64,
+        log_file_path: &str,
+        cos_bucket: &str,
+        cos_prefix: &str,
+        task_id: &str,
     ) -> ShellCommand {
         ShellCommand {
             base: Arc::new(BaseCommand::new(
@@ -37,18 +43,12 @@ impl ShellCommand {
                 work_dir,
                 timeout,
                 bytes_max_report,
+                log_file_path,
+                cos_bucket,
+                cos_prefix,
+                task_id,
             )),
         }
-    }
-
-    fn cmd_path_check(&self) -> Result<(), String> {
-        if self.base.cmd_path.is_empty() {
-            let ret = format!("ShellCommand start fail because script file store failed.");
-            *self.base.err_info.lock().unwrap() =
-                start_failed_err_info!(ERR_SCRIPT_FILE_STORE_FAILED, TASK_STORE_PATH);
-            return Err(ret);
-        }
-        Ok(())
     }
 
     fn sudo_check(&self) -> Result<(), String> {
@@ -144,7 +144,7 @@ impl ShellCommand {
 impl MyCommand for ShellCommand {
     async fn run(&mut self) -> Result<(), String> {
         // pre check before spawn cmd
-        self.cmd_path_check()?;
+        self.store_path_check()?;
 
         self.sudo_check()?;
 
@@ -153,6 +153,8 @@ impl MyCommand for ShellCommand {
         self.work_dir_check()?;
 
         self.work_dir_permission_check()?;
+
+        let log_file = self.open_log_file()?;
 
         // start the process async
         let mut child = self.prepare_cmd().spawn().map_err(|e| {
@@ -168,7 +170,7 @@ impl MyCommand for ShellCommand {
         // async read output.
         tokio::spawn(async move {
             base.add_timeout_timer();
-            base.read_shl_output(&mut child).await;
+            base.read_shl_output(&mut child, log_file).await;
             base.del_timeout_timer();
             base.process_finish(&mut child).await;
         });
@@ -191,7 +193,7 @@ impl Debug for ShellCommand {
 }
 
 impl BaseCommand {
-    async fn read_shl_output(&self, child: &mut Child) {
+    async fn read_shl_output(&self, child: &mut Child, mut log_file: File) {
         let pid = child.id();
         const BUF_SIZE: usize = 1024;
         let mut buffer: [u8; BUF_SIZE] = [0; BUF_SIZE];
@@ -219,6 +221,10 @@ impl BaseCommand {
 
             let len = read_size.unwrap();
             if len > 0 {
+                if let Err(e) = log_file.write(&buffer) {
+                    error!("write output file fail: {:?}", e)
+                }
+
                 if process_finish {
                     byte_after_finish = byte_after_finish + len
                 }
@@ -245,6 +251,12 @@ impl BaseCommand {
                 break;
             }
         }
+
+        if let Err(e) = log_file.sync_all() {
+            error!("sync in-memory data to file fail: {:?}", e)
+        }
+
+        self.finish_logging().await;
     }
 
     pub fn kill_process_group(pid: u32) {
@@ -258,10 +270,9 @@ impl BaseCommand {
 }
 
 fn is_process_finish(pid: u32) -> bool {
-    let result = procinfo::pid::stat(pid as i32);
-    return match result {
-        Ok(stat) => {
-            if stat.state == procinfo::pid::State::Zombie {
+    return match procfs::process::Process::new(pid as i32) {
+        Ok(proc) => {
+            if proc.stat.state == 'Z' || proc.stat.state == 'z'{
                 true
             } else {
                 false
@@ -349,7 +360,7 @@ mod tests {
 
     #[test]
     fn test_fmt_cmd() {
-        let cmd = ShellCommand::new("./a.sh", "root", "./", 60, 10240);
+        let cmd = ShellCommand::new("./a.sh", "root", "./", 60, 10240, "", "", "", "");
         println!("fmt cmd:{:?}", cmd);
     }
 

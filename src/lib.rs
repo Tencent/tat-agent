@@ -6,3 +6,4 @@ pub mod ws;
 pub mod executor;
 pub mod uname;
 pub mod daemonizer;
+pub mod cos;

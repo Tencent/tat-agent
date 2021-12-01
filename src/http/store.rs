@@ -1,4 +1,4 @@
-use log::{error, info};
+use log::info;
 use std::fs::{create_dir_all, remove_file, File};
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
@@ -24,6 +24,7 @@ cfg_if::cfg_if! {
 pub struct TaskFileStore {
     store_path: PathBuf,
     prefix: String,
+    log_path: PathBuf,
 }
 
 impl TaskFileStore {
@@ -31,12 +32,17 @@ impl TaskFileStore {
         let t = TaskFileStore {
             store_path: Path::new(consts::TASK_STORE_PATH).to_path_buf(),
             prefix: String::from(consts::TASK_STORE_PREFIX),
+            log_path: Path::new(consts::TASK_LOG_PATH).to_path_buf(),
         };
         t
     }
 
     pub fn get_store_path(&self) -> PathBuf {
         self.store_path.clone()
+    }
+
+    pub fn get_log_path(&self) -> PathBuf {
+        self.log_path.clone()
     }
 
     fn get_suffix(&self, command_type: &String) -> &str {
@@ -48,7 +54,7 @@ impl TaskFileStore {
         };
     }
 
-    fn get_task_file_path(&self, t: &InvocationNormalTask) -> PathBuf {
+    fn gen_task_file_path(&self, t: &InvocationNormalTask) -> PathBuf {
         // use YYYYmm as task directory name
         // use random string as postfix
         let now: DateTime<Local> = Local::now();
@@ -65,6 +71,11 @@ impl TaskFileStore {
             .join(format!("{}", now.format("%Y%m")))
             .join(file_name);
         file_path
+    }
+
+    pub fn get_task_log_path(&self, t: &InvocationNormalTask) -> PathBuf {
+        self.get_log_path()
+            .join(format!("{}.log", t.invocation_task_id))
     }
 
     fn create_file(
@@ -144,37 +155,27 @@ impl TaskFileStore {
         Ok(())
     }
 
-    pub fn store(&self, t: &InvocationNormalTask) -> Option<String> {
-        let path: &str = &self.get_task_file_path(t).display().to_string();
-        info!("save task {} to {}", &t.invocation_task_id, path);
+    pub fn store(&self, t: &InvocationNormalTask) -> Result<(String, String), String> {
+        let task_file_path = self.gen_task_file_path(t).display().to_string();
+        info!("save task {} to {}", &t.invocation_task_id, task_file_path);
 
-        let mut file = match self.create_file(path, true, true) {
-            Ok(file) => file,
-            Err(e) => {
-                error!("cannot create file {:?} error {:?}", path, e);
-                return None;
-            }
-        };
+        let task_log_path = self.get_task_log_path(t).display().to_string();
+        info!(
+            "save task {} output to {}",
+            &t.invocation_task_id, task_log_path
+        );
 
-        match t.decode_command() {
-            Ok(s) => {
-                let task_str = &s;
-                match file.write_all(task_str.as_bytes()) {
-                    Err(why) => {
-                        error!("couldn't write {}", why);
-                        None
-                    }
-                    Ok(_) => Some(path.to_string()),
-                }
-            }
-            Err(e) => {
-                info!(
-                    "task {} command decode failed {:?}",
-                    &t.invocation_task_id, e
-                );
-                None
-            }
+        // store task file
+        let mut file = self.create_file(&task_file_path, true, true)?;
+        let s = t.decode_command()?;
+        let res = file.write_all(s.as_bytes());
+        if res.is_err() {
+            return Err("fail to store command in task file".to_string());
         }
+
+        // create task log file
+        let _ = self.create_file(&task_log_path, true, false)?;
+        Ok((task_file_path, task_log_path))
     }
 
     #[cfg(test)]
@@ -206,6 +207,8 @@ mod tests {
             command: format!("bHMgLWw="),
             username: format!("root"),
             working_directory: workdir,
+            cos_bucket_url: "".to_string(),
+            cos_bucket_prefix: "".to_string(),
         };
 
         let store = TaskFileStore::new();
@@ -218,7 +221,7 @@ mod tests {
         );
         assert_eq!(
             store
-                .get_task_file_path(&task)
+                .gen_task_file_path(&task)
                 .as_path()
                 .parent()
                 .unwrap()
@@ -227,14 +230,15 @@ mod tests {
             desired_path
         );
 
-        let path = store.store(&task).unwrap();
-        let contents = read_to_string(&path).unwrap();
+        let (task_file, log_path) = store.store(&task).unwrap();
+        let contents = read_to_string(&task_file).unwrap();
         assert_eq!(contents, "ls -l");
-        store.remove(&path);
-        let paths = read_dir(Path::new(&path).parent().unwrap()).unwrap();
+        store.remove(&task_file);
+        store.remove(&log_path);
+        let paths = read_dir(Path::new(&task_file).parent().unwrap()).unwrap();
         for f in paths {
             remove_file(f.unwrap().path()).unwrap();
         }
-        remove_dir(Path::new(&path).parent().unwrap()).unwrap();
+        remove_dir(Path::new(&task_file).parent().unwrap()).unwrap();
     }
 }

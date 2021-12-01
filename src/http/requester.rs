@@ -3,13 +3,15 @@ use std::time::Duration;
 
 use async_std::task;
 use log::{debug, error, info};
-use reqwest::{Client, ClientBuilder, header, Response};
+use reqwest::{header, Client, ClientBuilder, Response};
 use serde::Serialize;
 use serde_json::to_string;
 use url::Url;
 
 use crate::common::asserts::GracefulUnwrap;
-use crate::common::consts::{HTTP_REQUEST_RETRY_INTERVAL, HTTP_REQUEST_TIME_OUT, VIP_HEADER, VPCID_HEADER};
+use crate::common::consts::{
+    HTTP_REQUEST_RETRY_INTERVAL, HTTP_REQUEST_TIME_OUT, VIP_HEADER, VPCID_HEADER,
+};
 use crate::common::envs;
 use crate::types::{AgentError, AgentErrorCode, HttpMethod};
 
@@ -32,8 +34,14 @@ impl Requester for HttpRequester {
                 // use for e2e test.
                 let mut headers = header::HeaderMap::new();
                 if envs::enable_test() {
-                    headers.insert(VPCID_HEADER, header::HeaderValue::from_str(&*envs::test_vpcid()).unwrap());
-                    headers.insert(VIP_HEADER, header::HeaderValue::from_str(&*envs::test_vip()).unwrap());
+                    headers.insert(
+                        VPCID_HEADER,
+                        header::HeaderValue::from_str(&*envs::test_vpcid()).unwrap(),
+                    );
+                    headers.insert(
+                        VIP_HEADER,
+                        header::HeaderValue::from_str(&*envs::test_vip()).unwrap(),
+                    );
                 }
 
                 let cli = cli_builder

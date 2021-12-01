@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.13] - 2021-11-18
+
+### Changed
+
+- Support upload task output to COS.
+
 ## [0.1.12] - 2021-11-16
 
 ### Changed

@@ -183,8 +183,8 @@ Copyright (c) 2013, Kang Seonghoon
 28. cfg-if
 Copyright (c) 2014 Alex Crichton
 
-29. procinfo
-Copyright (c) 2015 The Rust Project Developers
+29. procfs
+Copyright (c) 2015 The procfs Developers
 
 30. codepage-strings
 Copyright (c) 2021 Bart Massey
@@ -194,6 +194,20 @@ Copyright (c) 2015-2018 The winapi-rs Developers
 
 32. faux
 Copyright (c) 2020 Andres Medina
+
+33. rust-crypto
+Copyright (c) 2006-2009 Graydon Hoare
+Copyright (c) 2009-2013 Mozilla Foundation
+
+34. urlencoding
+Copyright (c) 2016 Bertram Truong
+
+35. hex
+Copyright (c) 2013-2014 The Rust Project Developers
+Copyright (c) 2015-2020 The rust-hex Developers
+
+36. derive_more
+Copyright (c) 2016 Jelte Fennema
 
 
 Terms of the MIT License:
