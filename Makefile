@@ -31,7 +31,7 @@ $(info "cross not found, install it now.")
 $(shell cargo install cross)
 endif
 
-# build a pure static binary
+# build a pure static binary in debug mode
 static:
 ifeq ($(rust_target), )
 $(error `$(arch)` not exists or not supported yet.)
@@ -59,13 +59,14 @@ endif
 	ln -f target/i686-unknown-linux-musl/release/tat_agent tat_agent32
 	install/release.sh
 
-# stop the daemon by pid
+# stop the daemon via systemctl, or kill directly by pid
 stop:
-	kill -9 `cat /var/run/tat_agent.pid`
+	systemctl stop tat_agent || kill -9 `cat /var/run/tat_agent.pid`
 
-# run a binary for debugging
+# build via make release and then install it
 run:
-	cargo run
+	make release
+	install/install.sh
 
 # build a pure static binary for debugging
 build:

@@ -12,7 +12,8 @@ if not exist "C:\Program Files\7-Zip\7z.exe" (
 set COMPRESS_PROC="C:\Program Files\7-Zip\7z.exe"
 
 :: generate self update file for release
-SET FILE="tat_agent_windows_update_%VERSION%.zip"
+:: .zip file is used for self-update but can also be used to install agent
+SET FILE="tat_agent_windows_install_%VERSION%.zip"
 %COMPRESS_PROC% a %FILE% %SIGNED_AGENT% install.bat uninstall.bat self_update.bat test.bat
 
 :: generate install file for release

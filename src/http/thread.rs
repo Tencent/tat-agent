@@ -214,6 +214,9 @@ impl HttpWorker {
         let finish_time = cmd.finish_time();
         let output_url = cmd.output_url();
         let output_err_info = cmd.output_err_info();
+        //remove lock, important
+        std::mem::drop(cmd);
+
         self.adapter
             .report_task_finish(
                 &task_id,
@@ -249,6 +252,9 @@ impl HttpWorker {
         let tasks = self.running_tasks.lock().await;
         let task = tasks.get(cancel_task_id.as_str());
         if let Some(cmd_arc) = task {
+            let cmd_arc = cmd_arc.clone();
+            //drop lock
+            std::mem::drop(tasks);
             let cmd = cmd_arc.lock().await;
             cmd.cancel()
                 .map(|_| {

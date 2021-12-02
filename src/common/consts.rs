@@ -78,25 +78,25 @@ pub const AGENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 #[macro_export]
 macro_rules! start_failed_err_info {
     (ERR_WORKING_DIRECTORY_NOT_EXISTS, $working_directory:expr) => {
-        format!("DirectoryNotExists: working_directory `{}` not exists", $working_directory);
+        format!("DirectoryNotExists: working_directory `{}` not exists", $working_directory)
     };
     (ERR_USER_NOT_EXISTS, $user:expr) => {
-        format!("UserNotExists: user `{}` not exists", $user);
+        format!("UserNotExists: user `{}` not exists", $user)
     };
     (ERR_USER_NO_PERMISSION_OF_WORKING_DIRECTORY, $user:expr, $working_directory:expr) => {
         format!("DirectoryPermissionDeny: user `{}` has no permission of working_directory `{}`",
-            $user, $working_directory);
+            $user, $working_directory)
     };
     (ERR_SUDO_NOT_EXISTS) => {
-        format!("SudoNotExists: command sudo not exists");
+        format!("SudoNotExists: command sudo not exists")
     };
     (ERR_SCRIPT_FILE_STORE_FAILED, $store_path:expr) => {
         format!("ScriptStoreFailed: script file store failed at `{}`, please check disk space or permission",
-            $store_path);
+            $store_path)
     };
     (ERR_LOG_FILE_STORE_FAILED, $store_path:expr) => {
         format!("LogStoreFailed: log file store failed at `{}`, please check disk space or permission",
-            $store_path);
+            $store_path)
     };
 }
 
