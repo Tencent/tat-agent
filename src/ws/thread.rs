@@ -1,8 +1,8 @@
-use std::{thread, time};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::Sender;
+use std::sync::Arc;
 use std::time::Duration;
+use std::{thread, time};
 
 use futures01::future::Future;
 use futures01::sink::{Sink, Wait};
@@ -15,23 +15,22 @@ use log::info;
 use serde_json;
 use tokio01 as tokio;
 use tokio01::prelude::FutureExt;
-use websocket::{ClientBuilder, CloseData, OwnedMessage};
 use websocket::header::Headers;
 use websocket::result::WebSocketError;
-
+use websocket::{ClientBuilder, CloseData, OwnedMessage};
 
 use crate::common::asserts::GracefulUnwrap;
 use crate::common::consts::{
-    AGENT_VERSION, MAX_PING_FROM_LAST_PONG, WS_ACTIVE_CLOSE, WS_ACTIVE_CLOSE_CODE,
-    WS_CONNECT_TIMEOUT, WS_KERNEL_NAME_HEADER, WS_LAST_CLOSE_INTERVAL, WS_MSG_TYPE_ACK,
-    WS_MSG_TYPE_KICK, WS_PASSIVE_CLOSE, WS_PASSIVE_CLOSE_CODE, WS_RECONNECT_INTERVAL, WS_URL,
-    WS_VERSION_HEADER,VPCID_HEADER,VIP_HEADER
+    AGENT_VERSION, MAX_PING_FROM_LAST_PONG, VIP_HEADER, VPCID_HEADER, WS_ACTIVE_CLOSE,
+    WS_ACTIVE_CLOSE_CODE, WS_CONNECT_TIMEOUT, WS_KERNEL_NAME_HEADER, WS_LAST_CLOSE_INTERVAL,
+    WS_MSG_TYPE_ACK, WS_MSG_TYPE_KICK, WS_PASSIVE_CLOSE, WS_PASSIVE_CLOSE_CODE,
+    WS_RECONNECT_INTERVAL, WS_URL, WS_VERSION_HEADER,
 };
 use crate::common::envs;
 use crate::types::inner_msg::KickMsg;
 use crate::types::ws_msg::WsMsg;
-use crate::uname::Uname;
 use crate::uname::common::UnameExt;
+use crate::uname::Uname;
 
 pub fn run(
     kick_sender: Sender<KickMsg>,
@@ -61,8 +60,6 @@ pub fn run(
             ping_channel_sender
                 .send(ping_sender)
                 .unwrap_or_exit("ping channel send fail");
-
-            thread::sleep(time::Duration::from_secs(WS_RECONNECT_INTERVAL));
 
             let sender = kick_sender.clone();
 
@@ -112,6 +109,8 @@ pub fn run(
 
             info!("establishing new ws connection");
             runtime.block_on(runner).or_log("ws runtime run failed");
+
+            thread::sleep(time::Duration::from_secs(WS_RECONNECT_INTERVAL));
         }
     });
 
@@ -127,10 +126,7 @@ fn gen_ver_header() -> Headers {
     }
 
     if let Ok(uname) = Uname::new() {
-        headers.set_raw(
-            WS_KERNEL_NAME_HEADER,
-            vec![uname.sys_name().into_bytes()],
-        );
+        headers.set_raw(WS_KERNEL_NAME_HEADER, vec![uname.sys_name().into_bytes()]);
     }
 
     debug!("ws header:{:?}", headers);

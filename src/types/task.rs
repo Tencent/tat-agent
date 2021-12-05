@@ -4,7 +4,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::uname::common::UnameExt;
 use crate::uname::Uname;
-
+#[cfg(windows)]
+use winapi::um::winnls::GetOEMCP;
+#[cfg(windows)]
+use codepage_strings::Coding;
 //==============================================================================
 // Declare standard request and response format for C/S communication
 // general parameters in reqeust
@@ -159,12 +162,16 @@ pub struct DescribeTasksResponse {
 pub type DescribeTasksRequest = Empty;
 
 impl InvocationNormalTask {
-    pub fn decode_command(&self) -> Result<String, String> {
+    pub fn decode_command(&self) -> Result<Vec<u8>, String> {
         match base64::decode(&self.command) {
-            Ok(command) => match std::str::from_utf8(&command) {
-                Ok(s) => Ok(String::from(s)),
-                Err(e) => Err(format!("parse error: {:?}", e)),
-            },
+            Ok(command) => {
+                #[cfg(windows)]
+                let command = Coding::new(unsafe { GetOEMCP() } as u16)
+                    .map_err(|e| e.to_string())?
+                    .encode(String::from_utf8_lossy(&command))
+                    .map_err(|e|e.to_string())?;
+                Ok(command)
+            }
             Err(e) => Err(format!("decode error: {:?}", e)),
         }
     }
@@ -402,7 +409,7 @@ mod tests {
             cos_bucket_prefix: format!(""),
         };
         assert_eq!(
-            tasks1.decode_command().unwrap(),
+            String::from_utf8_lossy(&tasks1.decode_command().unwrap()),
             String::from("ls -l;\necho \"Hello World\"")
         );
     }

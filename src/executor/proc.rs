@@ -678,91 +678,81 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_run_then_sleep() {
-        let mut rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            init_log();
-            // it doesn't matter even if ./a.sh not exist
-            let log_path = format!("./{}.log", gen_rand_str());
-            File::create(log_path.as_str()).unwrap_or_exit("create log path fail.");
-            let ret = new(
-                CMD_PATH,
-                &username(),
-                CMD_TYPE,
-                "./",
-                1024,
-                1024,
-                log_path.as_str(),
-                "",
-                "",
-                "",
-            );
-            let mut cmd = ret.unwrap();
-            let ret = cmd.run().await;
-            assert!(ret.is_ok());
-            info!("cmd running, pid:{}", cmd.pid());
-            tokio::time::delay_for(Duration::from_secs(4)).await;
-            // now it's NOT a defunct process, cmd will be auto-waited
-            assert!(!is_process_exist(cmd.pid()));
-            //thread::sleep(Duration::new(10, 0));
-        });
+    #[tokio::test]
+    async fn test_run_then_sleep() {
+        init_log();
+        // it doesn't matter even if ./a.sh not exist
+        let log_path = format!("./{}.log", gen_rand_str());
+        File::create(log_path.as_str()).unwrap_or_exit("create log path fail.");
+        let ret = new(
+            CMD_PATH,
+            &username(),
+            CMD_TYPE,
+            "./",
+            1024,
+            1024,
+            log_path.as_str(),
+            "",
+            "",
+            "",
+        );
+        let mut cmd = ret.unwrap();
+        let ret = cmd.run().await;
+        assert!(ret.is_ok());
+        info!("cmd running, pid:{}", cmd.pid());
+        tokio::time::delay_for(Duration::from_secs(4)).await;
+        // now it's NOT a defunct process, cmd will be auto-waited
+        assert!(!is_process_exist(cmd.pid()).await);
+        //thread::sleep(Duration::new(10, 0));
     }
 
-    #[test]
-    fn test_run_start_fail_working_directory() {
-        let mut rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            init_log();
-            let ret = new(
-                CMD_PATH,
-                &username(),
-                CMD_TYPE,
-                "./dir_not_exist",
-                1024,
-                1024,
-                "./fake_path",
-                "",
-                "",
-                "",
-            );
-            let mut cmd = ret.unwrap();
-            let ret = cmd.run().await;
-            info!("cmd run ret:[{}]", ret.unwrap_err());
-            assert_eq!(cmd.pid(), 0);
-            assert_eq!(cmd.finish_result(), FINISH_RESULT_START_FAILED);
-            assert_eq!(cmd.exit_code(), 0);
-            assert!(cmd.err_info().starts_with("DirectoryNotExists"));
-        });
+    #[tokio::test]
+    async fn test_run_start_fail_working_directory() {
+        init_log();
+        let ret = new(
+            CMD_PATH,
+            &username(),
+            CMD_TYPE,
+            "./dir_not_exist",
+            1024,
+            1024,
+            "./fake_path",
+            "",
+            "",
+            "",
+        );
+        let mut cmd = ret.unwrap();
+        let ret = cmd.run().await;
+        info!("cmd run ret:[{}]", ret.unwrap_err());
+        assert_eq!(cmd.pid(), 0);
+        assert_eq!(cmd.finish_result(), FINISH_RESULT_START_FAILED);
+        assert_eq!(cmd.exit_code(), 0);
+        assert!(cmd.err_info().starts_with("DirectoryNotExists"));
     }
 
     #[cfg(unix)]
-    #[test]
-    fn test_run_start_fail_user_not_exists() {
-        let mut rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            init_log();
-
-            let ret = new(
-                CMD_PATH,
-                "hacker-neo",
-                CMD_TYPE,
-                "./",
-                1024,
-                1024,
-                "./fake_path",
-                "",
-                "",
-                "",
-            );
-            let mut cmd = ret.unwrap();
-            let ret = cmd.run().await;
-            info!("cmd run ret:[{}]", ret.unwrap_err());
-            assert_eq!(cmd.pid(), 0);
-            assert_eq!(cmd.finish_result(), FINISH_RESULT_START_FAILED);
-            assert_eq!(cmd.exit_code(), 0);
-            assert!(cmd.err_info().starts_with("UserNotExists"));
-        });
+    #[tokio::test]
+    async fn test_run_start_fail_user_not_exists() {
+        init_log();
+        let ret = new(
+            CMD_PATH,
+            "hacker-neo",
+            CMD_TYPE,
+            "./",
+            1024,
+            1024,
+            "./fake_path",
+            "",
+            "",
+            "",
+        );
+        let mut cmd = ret.unwrap();
+        let ret = cmd.run().await;
+        info!("cmd run ret:[{}]", ret.unwrap_err());
+        assert_eq!(cmd.pid(), 0);
+        assert_eq!(cmd.finish_result(), FINISH_RESULT_START_FAILED);
+        assert_eq!(cmd.exit_code(), 0);
+        assert!(cmd.err_info().starts_with("UserNotExists"));
     }
 
     fn gen_rand_str() -> String {
@@ -787,9 +777,9 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn is_process_exist(pid: u32) -> bool {
+    async fn is_process_exist(pid: u32) -> bool {
         // maybe need a time to clear the dir
-        thread::sleep(Duration::from_millis(2000));
+        tokio::time::delay_for(Duration::from_millis(2000)).await;
         let path = format!("/proc/{}", pid);
         let ret = read_dir(path);
         let exist = ret.is_ok();
@@ -798,7 +788,7 @@ mod tests {
     }
 
     #[cfg(windows)]
-    fn is_process_exist(pid: u32) -> bool {
+    async fn is_process_exist(pid: u32) -> bool {
         let pid_str = format!("PID eq {}", pid);
         let output = std::process::Command::new("TASKLIST")
             .args(&["/FI", pid_str.as_str()])
@@ -808,400 +798,365 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[test]
-    fn test_pid_exist() {
-        let ret = is_process_exist(1);
+    #[tokio::test]
+    async fn test_pid_exist() {
+        let ret = is_process_exist(1).await;
         assert!(ret);
     }
 
     #[cfg(unix)]
-    #[test]
-    fn test_pid_not_exist() {
-        let ret = is_process_exist(0);
+    #[tokio::test]
+    async fn test_pid_not_exist() {
+        let ret = is_process_exist(0).await;
         assert!(!ret);
     }
 
-    #[test]
-    fn test_cancel() {
-        let mut rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            init_log();
-
-            cfg_if::cfg_if! {
-                if #[cfg(unix)] {
-                   let filename = format!("./.{}.sh", gen_rand_str());
-                   create_file("sleep 15", filename.as_str());
-                } else if #[cfg(windows)] {
-                   let filename = format!("./{}.ps1", gen_rand_str());
-                   create_file("Start-Sleep -s 1500", filename.as_str());
-                }
+    #[tokio::test]
+    async fn test_cancel() {
+        init_log();
+        cfg_if::cfg_if! {
+            if #[cfg(unix)] {
+                let filename = format!("./.{}.sh", gen_rand_str());
+                create_file("sleep 15", filename.as_str());
+            } else if #[cfg(windows)] {
+                let filename = format!("./{}.ps1", gen_rand_str());
+                create_file("Start-Sleep -s 1500", filename.as_str());
             }
+        }
+        let log_path = format!("./{}.log", gen_rand_str());
+        File::create(log_path.as_str()).unwrap_or_exit("create log path fail.");
+        let ret = new(
+            filename.as_str(),
+            &username(),
+            CMD_TYPE,
+            "./",
+            1024,
+            1024,
+            log_path.as_str(),
+            "",
+            "",
+            "",
+        );
+        let mut cmd = ret.unwrap();
+        let ret = cmd.run().await;
+        assert!(ret.is_ok());
+        info!("{} running, pid:{}", filename, cmd.pid());
+        // now it's a still running
+        tokio::time::delay_for(Duration::new(10, 0)).await;
+        assert_eq!(cmd.is_started(), true);
+        assert!(is_process_exist(cmd.pid()).await);
 
-            let log_path = format!("./{}.log", gen_rand_str());
-            File::create(log_path.as_str()).unwrap_or_exit("create log path fail.");
-            let ret = new(
-                filename.as_str(),
-                &username(),
-                CMD_TYPE,
-                "./",
-                1024,
-                1024,
-                log_path.as_str(),
-                "",
-                "",
-                "",
-            );
-            let mut cmd = ret.unwrap();
-            let ret = cmd.run().await;
-            assert!(ret.is_ok());
-            info!("{} running, pid:{}", filename, cmd.pid());
-            // now it's a still running
-            thread::sleep(Duration::new(10, 0));
-            assert_eq!(cmd.is_started(), true);
-            assert!(is_process_exist(cmd.pid()));
-
-            let ret = cmd.cancel();
-            assert!(ret.is_ok());
-            thread::sleep(Duration::new(1, 0));
-            assert!(!is_process_exist(cmd.pid()));
-            // cmd.cancel() called twice is OK and safe
-            let ret = cmd.cancel();
-            assert!(ret.is_ok());
-            // Now it's killed & waited, check it's NOT a defunct.
-            // Even after killed, call cmd.pid() is OK
-            info!("{} killed, pid:{}", filename, cmd.pid());
-            info!("cmd:{:?}", cmd);
-            thread::sleep(Duration::new(5, 0));
-
-            fs::remove_file(filename.as_str()).unwrap();
-        });
+        let ret = cmd.cancel();
+        assert!(ret.is_ok());
+        tokio::time::delay_for(Duration::new(1, 0)).await;
+        assert!(!is_process_exist(cmd.pid()).await);
+        // cmd.cancel() called twice is OK and safe
+        let ret = cmd.cancel();
+        assert!(ret.is_ok());
+        // Now it's killed & waited, check it's NOT a defunct.
+        // Even after killed, call cmd.pid() is OK
+        info!("{} killed, pid:{}", filename, cmd.pid());
+        info!("cmd:{:?}", cmd);
+        tokio::time::delay_for(Duration::new(5, 0)).await;
+        fs::remove_file(filename.as_str()).unwrap();
     }
 
-    #[test]
-    fn test_output() {
-        let mut rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            init_log();
-
-            cfg_if::cfg_if! {
-                if #[cfg(unix)] {
-                    let filename = format!("./.{}.sh", gen_rand_str());
-                    create_file("yes | head -10 && sleep 3 && yes | head -5", filename.as_str());
-                } else if #[cfg(windows)] {
-                    let filename = format!("./{}.ps1", gen_rand_str());
-                    create_file(
-                        "foreach ($i in 1..10) { Write-Host '00' -NoNewLine };\
-                        Start-Sleep -s 3; \
-                        foreach ($i in 1..5) { Write-Host '11' -NoNewLine };",
-                        filename.as_str(),
-                    );
-                }
+    #[tokio::test]
+    async fn test_output() {
+        init_log();
+        cfg_if::cfg_if! {
+            if #[cfg(unix)] {
+                let filename = format!("./.{}.sh", gen_rand_str());
+                create_file("yes | head -10 && sleep 3 && yes | head -5", filename.as_str());
+            } else if #[cfg(windows)] {
+                let filename = format!("./{}.ps1", gen_rand_str());
+                create_file(
+                    "foreach ($i in 1..10) { Write-Host '00' -NoNewLine };\
+                    Start-Sleep -s 3; \
+                    foreach ($i in 1..5) { Write-Host '11' -NoNewLine };",
+                    filename.as_str(),
+                );
             }
+        }
+        let log_path = format!("./{}.log", gen_rand_str());
+        File::create(log_path.as_str()).unwrap_or_exit("create log path fail.");
+        let ret = new(
+            filename.as_str(),
+            &username(),
+            CMD_TYPE,
+            "./",
+            1024,
+            18,
+            log_path.as_str(),
+            "",
+            "",
+            "",
+        );
+        let mut cmd = ret.unwrap();
+        let ret = cmd.run().await;
+        assert!(ret.is_ok());
+        info!("{} running, pid:{}", filename, cmd.pid());
+        let mut cur_dropped = 0 as u64;
+        // usage of read output
+        loop {
+            tokio::time::delay_for(Duration::from_secs(1)).await;
+            let len = cmd.cur_output_len();
+            // is_finished() MUST be called after cur_output_len()
+            let finished = cmd.is_finished();
+            if 0 != len && 0 == cur_dropped {
+                let (out, idx, dropped) = cmd.next_output();
+                info!(
+                    "ready to report output:{:?}, output_debug:{}, idx:{}, dropped:{}",
+                    out,
+                    String::from_utf8_lossy(&out[..]),
+                    idx,
+                    dropped
+                );
+                assert_eq!(idx, 0);
+                assert_eq!(dropped, 2);
 
-            let log_path = format!("./{}.log", gen_rand_str());
-            File::create(log_path.as_str()).unwrap_or_exit("create log path fail.");
-            let ret = new(
-                filename.as_str(),
-                &username(),
-                CMD_TYPE,
-                "./",
-                1024,
-                18,
-                log_path.as_str(),
-                "",
-                "",
-                "",
-            );
-            let mut cmd = ret.unwrap();
-            let ret = cmd.run().await;
-            assert!(ret.is_ok());
-            info!("{} running, pid:{}", filename, cmd.pid());
-            let mut cur_dropped = 0 as u64;
-
-            // usage of read output
-            loop {
-                tokio::time::delay_for(Duration::from_secs(1)).await;
-                let len = cmd.cur_output_len();
-                // is_finished() MUST be called after cur_output_len()
-                let finished = cmd.is_finished();
-                if 0 != len && 0 == cur_dropped {
-                    let (out, idx, dropped) = cmd.next_output();
-                    info!(
-                        "ready to report output:{:?}, output_debug:{}, idx:{}, dropped:{}",
-                        out,
-                        String::from_utf8_lossy(&out[..]),
-                        idx,
-                        dropped
-                    );
-                    assert_eq!(idx, 0);
-                    assert_eq!(dropped, 2);
-
-                    // Do output report task here
-                    // do_report(out, idx, dropped);
-                    if dropped > 0 {
-                        // max report exceeds, get dropped and idx during sleep
-                        let (out, idx, dropped_new) = cmd.next_output();
-                        info!("during sleep: idx: {}, drop {}, ", idx, dropped);
-                        assert_eq!(idx, 1);
-                        assert_eq!(dropped_new, dropped);
-                        assert_eq!(0, out.len());
-                        info!("dropped, not report output any more");
-
-                        cur_dropped = dropped_new;
-                    }
-                }
-
-                if finished {
-                    let (out, idx, dropped) = cmd.next_output();
-                    info!("after sleep: idx: {}, drop {}", idx, dropped);
-                    assert_eq!(idx, 2);
-                    assert_eq!(dropped, 12);
+                // Do output report task here
+                // do_report(out, idx, dropped);
+                if dropped > 0 {
+                    // max report exceeds, get dropped and idx during sleep
+                    let (out, idx, dropped_new) = cmd.next_output();
+                    info!("during sleep: idx: {}, drop {}, ", idx, dropped);
+                    assert_eq!(idx, 1);
+                    assert_eq!(dropped_new, dropped);
                     assert_eq!(0, out.len());
-                    // do_report(out, idx, dropped);
-                    info!("finished, report final dropped bytes of output.");
-                    break;
+                    info!("dropped, not report output any more");
+
+                    cur_dropped = dropped_new;
                 }
             }
-            // will see the output bytes in cmd.output
-            info!("cmd:{:?}", cmd);
-            thread::sleep(Duration::new(1, 0));
-            assert!(!is_process_exist(cmd.pid()));
 
-            fs::remove_file(filename.as_str()).unwrap();
-        });
+            if finished {
+                let (out, idx, dropped) = cmd.next_output();
+                info!("after sleep: idx: {}, drop {}", idx, dropped);
+                assert_eq!(idx, 2);
+                assert_eq!(dropped, 12);
+                assert_eq!(0, out.len());
+                // do_report(out, idx, dropped);
+                info!("finished, report final dropped bytes of output.");
+                break;
+            }
+        }
+        // will see the output bytes in cmd.output
+        info!("cmd:{:?}", cmd);
+        tokio::time::delay_for(Duration::new(1, 0)).await;
+        assert!(!is_process_exist(cmd.pid()).await);
+
+        fs::remove_file(filename.as_str()).unwrap();
     }
 
-    #[test]
-    fn test_base64() {
-        let mut rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            init_log();
-
-            cfg_if::cfg_if! {
-                if #[cfg(unix)] {
-                    let filename = format!("./.{}.sh", gen_rand_str());
-                    create_file("echo -n 'hello world'", filename.as_str());
-                } else if #[cfg(windows)] {
-                    let filename = format!("./{}.ps1", gen_rand_str());
-                    create_file(
-                        "Write-Host 'hello world' -NoNewLine",
-                        filename.as_str(),
-                    );
-                }
+    #[tokio::test]
+    async fn test_base64() {
+        init_log();
+        cfg_if::cfg_if! {
+            if #[cfg(unix)] {
+                let filename = format!("./.{}.sh", gen_rand_str());
+                create_file("echo -n 'hello world'", filename.as_str());
+            } else if #[cfg(windows)] {
+                let filename = format!("./{}.ps1", gen_rand_str());
+                create_file(
+                    "Write-Host 'hello world' -NoNewLine",
+                    filename.as_str(),
+                );
             }
-            let log_path = format!("./{}.log", gen_rand_str());
-            File::create(log_path.as_str()).unwrap_or_exit("create log path fail.");
-            let ret = new(
-                filename.as_str(),
-                &username(),
-                CMD_TYPE,
-                "./",
-                10,
-                1024,
-                log_path.as_str(),
-                "",
-                "",
-                "",
-            );
-            let mut cmd = ret.unwrap();
-            let ret = cmd.run().await;
-            assert!(ret.is_ok());
-            info!("{} running, pid:{}", filename, cmd.pid());
+        }
+        let log_path = format!("./{}.log", gen_rand_str());
+        File::create(log_path.as_str()).unwrap_or_exit("create log path fail.");
+        let ret = new(
+            filename.as_str(),
+            &username(),
+            CMD_TYPE,
+            "./",
+            10,
+            1024,
+            log_path.as_str(),
+            "",
+            "",
+            "",
+        );
+        let mut cmd = ret.unwrap();
+        let ret = cmd.run().await;
+        assert!(ret.is_ok());
+        info!("{} running, pid:{}", filename, cmd.pid());
 
-            while !cmd.is_finished() {
-                thread::sleep(Duration::new(1, 0));
-            }
+        while !cmd.is_finished() {
+            tokio::time::delay_for(Duration::new(1, 0)).await;
+        }
 
-            let (out, idx, dropped) = cmd.next_output();
-            let out = base64::encode(out);
+        let (out, idx, dropped) = cmd.next_output();
+        let out = base64::encode(out);
 
-            assert_eq!(dropped, 0);
-            assert_eq!(0, idx);
-            assert_eq!(out, "aGVsbG8gd29ybGQ=");
-            info!("out:{}", out);
-            info!("cmd:{:?}", cmd);
-            thread::sleep(Duration::new(1, 0));
-            assert!(!is_process_exist(cmd.pid()));
-
-            fs::remove_file(filename.as_str()).unwrap();
-        });
+        assert_eq!(dropped, 0);
+        assert_eq!(0, idx);
+        assert_eq!(out, "aGVsbG8gd29ybGQ=");
+        info!("out:{}", out);
+        info!("cmd:{:?}", cmd);
+        tokio::time::delay_for(Duration::new(1, 0)).await;
+        assert!(!is_process_exist(cmd.pid()).await);
+        fs::remove_file(filename.as_str()).unwrap();
     }
 
-    #[test]
-    // NOTICE: This testcase has use singleton of timer,
-    // All testcase share the same one timer, so:
-    // This testcase can NOT run together with test_timer_in_one_case
-    fn test_shell_cmd_timeout() {
-        let mut rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            init_log();
+    #[tokio::test]
+    async fn test_shell_cmd_timeout() {
+        init_log();
+        cfg_if::cfg_if! {
+            if #[cfg(unix)] {
+                let filename = format!("./.{}.sh", gen_rand_str());
+                create_file("pwd && sleep 10240", filename.as_str());
+            } else if #[cfg(windows)] {
+                let filename = format!("./{}.ps1", gen_rand_str());
+                create_file(
+                    "Start-Sleep -s 10240",
+                    filename.as_str(),
+                );
+            }
+        }
 
-            cfg_if::cfg_if! {
-                if #[cfg(unix)] {
-                    let filename = format!("./.{}.sh", gen_rand_str());
-                    create_file("pwd && sleep 10240", filename.as_str());
-                } else if #[cfg(windows)] {
-                    let filename = format!("./{}.ps1", gen_rand_str());
-                    create_file(
-                        "Start-Sleep -s 10240",
-                        filename.as_str(),
-                    );
+        let start_time = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        info!("script {} start_time:{}",filename, start_time);
+        let log_path = format!("./{}.log", gen_rand_str());
+        File::create(log_path.as_str()).unwrap_or_exit("create log path fail.");
+        let ret = new(
+            filename.as_str(),
+            &username(),
+            CMD_TYPE,
+            "./",
+            2,
+            1024,
+            log_path.as_str(),
+            "",
+            "",
+            "",
+        );
+        let mut cmd = ret.unwrap();
+        let ret = cmd.run().await;
+        assert!(ret.is_ok());
+        let instant = Instant::now();
+        info!("{} running, pid:{}", filename, cmd.pid());
+        let mut cnt = 0;
+        loop {
+            {
+                let timer = Timer::get_instance();
+                let mut timer = timer.lock().unwrap_or_exit("");
+                info!("timer:{:?}", timer);
+                let tasks = timer.tasks_to_schedule();
+                cnt += tasks.len();
+                for task in tasks {
+                    task.run_task();
                 }
             }
-
-            let start_time = SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
-            info!("start_time:{}", start_time);
-            let log_path = format!("./{}.log", gen_rand_str());
-            File::create(log_path.as_str()).unwrap_or_exit("create log path fail.");
-            let ret = new(
-                filename.as_str(),
-                &username(),
-                CMD_TYPE,
-                "./",
-                2,
-                1024,
-                log_path.as_str(),
-                "",
-                "",
-                "",
-            );
-            let mut cmd = ret.unwrap();
-            let ret = cmd.run().await;
-            assert!(ret.is_ok());
-            assert!(is_process_exist(cmd.pid()));
-            let instant = Instant::now();
-            info!("{} running, pid:{}", filename, cmd.pid());
-            thread::sleep(Duration::new(1, 0));
-
-            let mut cnt = 0;
-            loop {
-                {
-                    let timer = Timer::get_instance();
-                    let mut timer = timer.lock().unwrap_or_exit("");
-                    info!("timer:{:?}", timer);
-                    let tasks = timer.tasks_to_schedule();
-                    cnt += tasks.len();
-                    for task in tasks {
-                        task.run_task();
-                    }
-                }
-                info!("total {} tasks run", cnt);
-                thread::sleep(Duration::new(0, 500_000_000));
-                let finished = cmd.is_finished();
-                if finished {
-                    break;
-                }
+            info!("total {} tasks run", cnt);
+            tokio::time::delay_for(Duration::new(0, 500_000_000)).await;
+            let finished = cmd.is_finished();
+            if finished {
+                break;
             }
-            info!("cmd:{:?}", cmd);
-            info!("finish result:{}", cmd.finish_result());
-            assert!(cmd.is_timeout());
-            assert!(instant.elapsed() <= Duration::from_secs(5));
-            assert!(0 < cmd.finish_time());
-            assert!(cmd.finish_time() < start_time + 5);
-            assert!(!is_process_exist(cmd.pid()));
-            fs::remove_file(filename.as_str()).unwrap();
-        });
+        }
+        info!("cmd:{:?}", cmd);
+        info!("finish result:{}", cmd.finish_result());
+        assert!(cmd.is_timeout());
+        assert!(instant.elapsed() <= Duration::from_secs(5));
+        assert!(0 < cmd.finish_time());
+        assert!(cmd.finish_time() < start_time + 5);
+        assert!(!is_process_exist(cmd.pid()).await);
+        fs::remove_file(filename.as_str()).unwrap();
     }
 
-    #[test]
+    #[tokio::test]
     #[cfg(unix)]
-    fn test_daemon() {
-        let mut rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            init_log();
-            let filename = format!("./.{}.sh", gen_rand_str());
-            create_file("echo 'hello world'\nsleep 10 &\ndate", filename.as_str());
-
-            let log_path = format!("./{}.log", gen_rand_str());
-            File::create(log_path.as_str()).unwrap_or_exit("create log path fail.");
-            let ret = new(
-                filename.as_str(),
-                &username(),
-                CMD_TYPE,
-                "./",
-                6,
-                1024,
-                log_path.as_str(),
-                "",
-                "",
-                "",
-            );
-            let mut cmd = ret.unwrap();
-            let ret = cmd.run().await;
-            assert!(ret.is_ok());
-
-            loop {
-                {
-                    let timer = Timer::get_instance();
-                    let mut timer = timer.lock().unwrap_or_exit("");
-                    info!("timer:{:?}", timer);
-                    let tasks = timer.tasks_to_schedule();
-                    for task in tasks {
-                        task.run_task();
-                    }
-                }
-                thread::sleep(Duration::from_secs(1));
-                let finished = cmd.is_finished();
-                if finished {
-                    break;
+    async fn test_daemon() {
+        init_log();
+        let filename = format!("./.{}.sh", gen_rand_str());
+        create_file("echo 'hello world'\nsleep 10 &\ndate", filename.as_str());
+        let log_path = format!("./{}.log", gen_rand_str());
+        File::create(log_path.as_str()).unwrap_or_exit("create log path fail.");
+        let ret = new(
+            filename.as_str(),
+            &username(),
+            CMD_TYPE,
+            "./",
+            6,
+            1024,
+            log_path.as_str(),
+            "",
+            "",
+            "",
+        );
+        let mut cmd = ret.unwrap();
+        let ret = cmd.run().await;
+        assert!(ret.is_ok());
+        loop {
+            {
+                let timer = Timer::get_instance();
+                let mut timer = timer.lock().unwrap_or_exit("");
+                info!("timer:{:?}", timer);
+                let tasks = timer.tasks_to_schedule();
+                for task in tasks {
+                    task.run_task();
                 }
             }
-            assert_eq!(cmd.is_timeout(), false);
-            fs::remove_file(filename.as_str()).unwrap();
-        });
+            tokio::time::delay_for(Duration::from_millis(100)).await;
+            let finished = cmd.is_finished();
+            if finished {
+                break;
+            }
+        }
+        assert_eq!(cmd.is_timeout(), false);
+        fs::remove_file(filename.as_str()).unwrap();
     }
 
-    #[test]
+    #[tokio::test]
     #[cfg(unix)]
-    fn test_daemon_output() {
-        let mut rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            init_log();
-            let filename = format!("./.{}.sh", gen_rand_str());
-            create_file(
-                "yes | head -1024 \nsleep 1200 &\n yes | head -1025",
-                filename.as_str(),
-            );
+    async fn test_daemon_output() {
+        init_log();
+        let filename = format!("./.{}.sh", gen_rand_str());
+        create_file(
+            "yes | head -1024 \nsleep 1200 &\n yes | head -1025",
+            filename.as_str(),
+        );
 
-            let log_path = format!("./{}.log", gen_rand_str());
-            File::create(log_path.as_str()).unwrap_or_exit("create log path fail.");
-            let ret = new(
-                filename.as_str(),
-                &username(),
-                CMD_TYPE,
-                "./",
-                1200,
-                10240,
-                log_path.as_str(),
-                "",
-                "",
-                "",
-            );
-            let mut cmd = ret.unwrap();
-            let ret = cmd.run().await;
-            assert!(ret.is_ok());
+        let log_path = format!("./{}.log", gen_rand_str());
+        File::create(log_path.as_str()).unwrap_or_exit("create log path fail.");
+        let ret = new(
+            filename.as_str(),
+            &username(),
+            CMD_TYPE,
+            "./",
+            1200,
+            10240,
+            log_path.as_str(),
+            "",
+            "",
+            "",
+        );
+        let mut cmd = ret.unwrap();
+        let ret = cmd.run().await;
+        assert!(ret.is_ok());
 
-            loop {
-                {
-                    let timer = Timer::get_instance();
-                    let mut timer = timer.lock().unwrap_or_exit("");
-                    //info!("timer:{:?}", timer);
-                    let tasks = timer.tasks_to_schedule();
-                    for task in tasks {
-                        task.run_task();
-                    }
-                }
-                thread::sleep(Duration::from_secs(1));
-                let finished = cmd.is_finished();
-                if finished {
-                    break;
+        loop {
+            {
+                let timer = Timer::get_instance();
+                let mut timer = timer.lock().unwrap_or_exit("");
+                //info!("timer:{:?}", timer);
+                let tasks = timer.tasks_to_schedule();
+                for task in tasks {
+                    task.run_task();
                 }
             }
-            assert_eq!(cmd.is_timeout(), false);
-            fs::remove_file(filename.as_str()).unwrap();
-        });
+            tokio::time::delay_for(Duration::from_secs(1)).await;
+            let finished = cmd.is_finished();
+            if finished {
+                break;
+            }
+        }
+        assert_eq!(cmd.is_timeout(), false);
+        fs::remove_file(filename.as_str()).unwrap();
     }
 }

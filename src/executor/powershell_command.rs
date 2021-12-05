@@ -64,13 +64,6 @@ impl PowerShellCommand {
         }
     }
 
-    async fn set_ps1_policy(&self) {
-        let mut cmd = Command::new("PowerShell.exe");
-        cmd.args(&["set-ExecutionPolicy", "RemoteSigned"]);
-        let child = cmd.spawn().unwrap();
-        child.await.map_err(|_| error!("set_ps1_policy fail")).ok();
-    }
-
     fn work_dir_check(&self) -> Result<(), String> {
         if !wow64_disable_exc(|| Path::new(self.base.work_dir.as_str()).exists()) {
             let ret = format!(
@@ -115,6 +108,7 @@ impl MyCommand for PowerShellCommand {
     3. support set process group.
      */
     async fn run(&mut self) -> Result<(), String> {
+        info!("=>PowerShellCommand::run()");
         // store path check
         self.store_path_check()?;
 
@@ -122,9 +116,6 @@ impl MyCommand for PowerShellCommand {
         self.work_dir_check()?;
 
         let log_file = self.open_log_file()?;
-
-        // set policy
-        self.set_ps1_policy().await;
 
         // create pipe
         let (our_pipe, their_pipe) = anon_pipe(true)?;
@@ -141,6 +132,7 @@ impl MyCommand for PowerShellCommand {
 
         *self.base.pid.lock().unwrap() = Some(child.id());
         let base = self.base.clone();
+        info!("=>PowerShellCommand::tokio::spawn");
         // async read output.
         tokio::spawn(async move {
             base.add_timeout_timer();

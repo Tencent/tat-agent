@@ -1,6 +1,14 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [0.1.15] - 2021-12-05
+
+### Changed
+
+- Support agent smooth upgrade.
+- Remove sudo dependency.
+- Fix powershell script gbk error.
+
 ## [0.1.14] - 2021-12-02
 
 ### Changed

@@ -1,34 +1,32 @@
 use std::fs::{create_dir_all, File};
 use std::io;
 use std::io::Write;
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
-#[cfg(unix)]
-use std::fs::{set_permissions,Permissions};
-
-#[cfg(windows)]
-use crate::daemonizer::wow64_disable_exc;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use bytes::Bytes;
-use log::debug;
-use log::error;
-use log::info;
-use log::warn;
-use tokio::runtime::Builder;
-use tokio::runtime::Runtime;
+use log::{debug, error, info, warn};
+use tokio::runtime::{Builder, Runtime};
 use unzip::{Unzipper, UnzipperStats};
 
 use crate::common::consts::{
-    AGENT_FILENAME, INVOKE_API, SELF_UPDATE_FILENAME,
-    SELF_UPDATE_PATH, SELF_UPDATE_SCRIPT, UPDATE_DOWNLOAD_TIMEOUT, UPDATE_FILE_UNZIP_DIR,
+    AGENT_FILENAME, INVOKE_API, SELF_UPDATE_FILENAME, SELF_UPDATE_PATH, SELF_UPDATE_SCRIPT,
+    UPDATE_DOWNLOAD_TIMEOUT, UPDATE_FILE_UNZIP_DIR,
 };
-#[cfg(unix)]
-use crate::common::consts::{FILE_EXECUTE_PERMISSION_MODE};
 use crate::http::{HttpRequester, InvokeAPIAdapter, Requester};
 use crate::types::{AgentError, CheckUpdateResponse, HttpMethod};
+
+cfg_if::cfg_if! {
+    if #[cfg(unix)] {
+        use std::os::unix::fs::PermissionsExt;
+        use std::fs::{set_permissions,Permissions};
+
+        use crate::common::consts::{INSTALL_SCRIPT, FILE_EXECUTE_PERMISSION_MODE};
+    } else if #[cfg(windows)] {
+        use crate::daemonizer::wow64_disable_exc;
+    }
+}
 
 pub fn try_update(self_updating: Arc<AtomicBool>, need_restart: Arc<AtomicBool>) {
     let rt_res = Builder::new().basic_scheduler().enable_all().build();
@@ -307,8 +305,8 @@ fn run_self_update_script(
     #[cfg(unix)]
     let cmd = Command::new("sh").arg("-c").arg(script).output();
     #[cfg(windows)]
-    let cmd = wow64_disable_exc(move ||{
-        Command::new(script.clone()).output()});
+    let cmd = wow64_disable_exc(move || Command::new(script.clone()).output());
+
     if let Err(e) = cmd {
         return Err(format!("self update run ret: {:?}", e));
     }
@@ -317,6 +315,48 @@ fn run_self_update_script(
     let stderr = String::from_utf8_lossy(out.stderr.as_slice());
     debug!("stdout of self update script:[{}]", stdout);
     debug!("stderr of self update script:[{}]", stderr);
+
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(format!("ret code:{:?}", out.status.code()))
+    }
+}
+
+pub fn try_restart_agent() -> Result<(), String> {
+    cfg_if::cfg_if! {
+        if #[cfg(unix)] {
+            let script = format!("{}/{}/{}",
+                             SELF_UPDATE_PATH.to_string(),
+                             UPDATE_FILE_UNZIP_DIR.to_string(),
+                             INSTALL_SCRIPT.to_string(),
+            );
+            if let Err(e) = set_execute_permission(script.clone()) {
+                return Err(format!("set execute permission fail: {:?}", e))
+            }
+            let cmd = Command::new("sh")
+            .args(&[
+                "-c",
+                &script,
+                "restart"
+            ])
+            .output();
+        } else if #[cfg(windows)] {
+           let cmd = wow64_disable_exc(move ||{
+            Command::new("cmd.exe")
+                .args(&["/C","sc stop tatsvc & sc start tatsvc"])
+                .output()});
+        }
+    }
+
+    if let Err(e) = cmd {
+        return Err(format!("run cmd fail: {:?}", e));
+    }
+    let out = cmd.unwrap();
+    let stdout = String::from_utf8_lossy(out.stdout.as_slice());
+    let stderr = String::from_utf8_lossy(out.stderr.as_slice());
+    debug!("stdout of try restart agent:[{}]", stdout);
+    debug!("stderr of try restart agent:[{}]", stderr);
 
     if out.status.success() {
         Ok(())

@@ -168,7 +168,7 @@ impl TaskFileStore {
         // store task file
         let mut file = self.create_file(&task_file_path, true, true)?;
         let s = t.decode_command()?;
-        let res = file.write_all(s.as_bytes());
+        let res = file.write_all(&s);
         if res.is_err() {
             return Err("fail to store command in task file".to_string());
         }
