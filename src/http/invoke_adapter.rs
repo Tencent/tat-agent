@@ -3,7 +3,6 @@ use log::{error, info};
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::from_str;
 
-
 use crate::common::consts::{HTTP_REQUEST_NO_RETRIES, HTTP_REQUEST_RETRIES};
 use crate::http::{HttpRequester, Requester};
 use crate::types::{
@@ -34,9 +33,8 @@ impl InvokeAPIAdapter {
     pub async fn report_task_start(
         &self,
         invocation_task_id: &str,
-        start_timestamp: u64
+        start_timestamp: u64,
     ) -> Result<ReportTaskStartResponse, AgentError<String>> {
-
         let req = ReportTaskStartRequest {
             invocation_task_id: invocation_task_id.to_string(),
             time_stamp: start_timestamp,
@@ -53,6 +51,8 @@ impl InvokeAPIAdapter {
         exit_code: i32,
         final_log_index: u32,
         finish_timestamp: u64,
+        output_url: &str,
+        output_err_info: &str,
     ) -> Result<ReportTaskFinishResponse, AgentError<String>> {
         let req = ReportTaskFinishRequest {
             invocation_task_id: invocation_task_id.to_string(),
@@ -61,6 +61,8 @@ impl InvokeAPIAdapter {
             error_info: err_info.to_string(),
             exit_code,
             final_log_index,
+            output_url: output_url.to_string(),
+            output_error_info: output_err_info.to_string(),
         };
         self.send("ReportTaskFinish", req, HTTP_REQUEST_RETRIES)
             .await

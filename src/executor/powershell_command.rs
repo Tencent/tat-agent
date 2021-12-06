@@ -10,8 +10,8 @@ use rand::{thread_rng, Rng};
 use std::ffi::OsStr;
 use std::fmt;
 use std::fmt::{Debug, Formatter};
-use std::fs::File;
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
+use std::io::Write;
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 use std::process::Stdio;
@@ -43,6 +43,10 @@ impl PowerShellCommand {
         work_dir: &str,
         timeout: u64,
         bytes_max_report: u64,
+        log_file_path: &str,
+        cos_bucket: &str,
+        cos_prefix: &str,
+        task_id: &str,
     ) -> PowerShellCommand {
         let cmd_path = String::from(cmd_path).replace(" ", "` ");
         PowerShellCommand {
@@ -52,6 +56,10 @@ impl PowerShellCommand {
                 work_dir,
                 timeout,
                 bytes_max_report,
+                log_file_path,
+                cos_bucket,
+                cos_prefix,
+                task_id,
             )),
         }
     }
@@ -107,15 +115,21 @@ impl MyCommand for PowerShellCommand {
     3. support set process group.
      */
     async fn run(&mut self) -> Result<(), String> {
-        //work dir check
+        // store path check
+        self.store_path_check()?;
+
+        // work dir check
         self.work_dir_check()?;
-        //set policy
+
+        let log_file = self.open_log_file()?;
+
+        // set policy
         self.set_ps1_policy().await;
 
-        //create pipe
+        // create pipe
         let (our_pipe, their_pipe) = anon_pipe(true)?;
 
-        //start child
+        // start child
         let mut cmd = self.prepare_cmd(their_pipe)?;
         let mut child = cmd.spawn().map_err(|e| {
             *self.base.err_info.lock().unwrap() = e.to_string();
@@ -130,7 +144,7 @@ impl MyCommand for PowerShellCommand {
         // async read output.
         tokio::spawn(async move {
             base.add_timeout_timer();
-            base.read_ps1_output(our_pipe).await;
+            base.read_ps1_output(our_pipe, log_file).await;
             base.del_timeout_timer();
             base.process_finish(&mut child).await;
         });
@@ -146,7 +160,7 @@ impl MyCommand for PowerShellCommand {
 }
 
 impl BaseCommand {
-    async fn read_ps1_output(&self, file: File) {
+    async fn read_ps1_output(&self, file: File, mut log_file: File) {
         let pid = self.pid.lock().unwrap().unwrap();
         const BUF_SIZE: usize = 1024;
         let mut buffer: [u8; BUF_SIZE] = [0; BUF_SIZE];
@@ -166,6 +180,9 @@ impl BaseCommand {
                     .decode(&buffer[..len])
                     .unwrap();
                 debug!("output:[{}], pid:{}, len:{}", decoded_string, pid, len);
+                if let Err(e) = log_file.write(decoded_string.as_bytes()) {
+                    error!("write output file fail: {:?}", e)
+                }
                 unsafe {
                     self.append_output(String::from(decoded_string).as_mut_vec());
                 }
@@ -174,6 +191,12 @@ impl BaseCommand {
                 break;
             }
         }
+
+        if let Err(e) = log_file.sync_all() {
+            error!("sync in-memory data to file fail: {:?}", e)
+        }
+
+        self.finish_logging().await;
     }
 
     pub fn kill_process_group(pid: u32) {

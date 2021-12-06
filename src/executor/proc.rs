@@ -10,12 +10,18 @@ cfg_if::cfg_if! {
 use crate::common::asserts::GracefulUnwrap;
 use crate::common::consts::{
     FINISH_RESULT_FAILED, FINISH_RESULT_START_FAILED, FINISH_RESULT_SUCCESS,
-    FINISH_RESULT_TERMINATED, FINISH_RESULT_TIMEOUT, OUTPUT_BYTE_LIMIT_EACH_REPORT,
+    FINISH_RESULT_TERMINATED, FINISH_RESULT_TIMEOUT, METADATA_API, OUTPUT_BYTE_LIMIT_EACH_REPORT,
+    TASK_LOG_PATH, TASK_STORE_PATH,
 };
+use crate::cos::ObjectAPI;
+use crate::cos::COS;
+use crate::http::MetadataAPIAdapter;
 use crate::ontime::timer::Timer;
+use crate::start_failed_err_info;
 use async_trait::async_trait;
-use log::{debug, info};
+use log::{debug, error, info};
 use std::fmt;
+use std::fs::{File, OpenOptions};
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -63,9 +69,27 @@ pub trait MyCommand {
     fn err_info(&self) -> String {
         self.get_base().err_info()
     }
+
     fn finish_time(&self) -> u64 {
         self.get_base().finish_time()
     }
+
+    fn output_url(&self) -> String {
+        self.get_base().output_url()
+    }
+
+    fn output_err_info(&self) -> String {
+        self.get_base().output_err_info()
+    }
+
+    fn open_log_file(&self) -> Result<File, String> {
+        self.get_base().open_log_file()
+    }
+
+    fn store_path_check(&self) -> Result<(), String> {
+        self.get_base().store_path_check()
+    }
+
     fn debug(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result;
     fn get_base(&self) -> Arc<BaseCommand>;
 }
@@ -77,6 +101,10 @@ pub fn new(
     work_dir: &str,
     timeout: u64,
     bytes_max_report: u64,
+    log_file_path: &str,
+    cos_bucket: &str,
+    cos_prefix: &str,
+    task_id: &str,
 ) -> Result<Box<dyn MyCommand + Send>, String> {
     match cmd_type {
         #[cfg(unix)]
@@ -86,6 +114,10 @@ pub fn new(
             work_dir,
             timeout,
             bytes_max_report,
+            log_file_path,
+            cos_bucket,
+            cos_prefix,
+            task_id,
         ))),
         #[cfg(windows)]
         CMD_TYPE_POWERSHELL => Ok(Box::new(PowerShellCommand::new(
@@ -94,6 +126,10 @@ pub fn new(
             work_dir,
             timeout,
             bytes_max_report,
+            log_file_path,
+            cos_bucket,
+            cos_prefix,
+            task_id,
         ))),
         _ => Err(format!("invalid cmd_type:{}", cmd_type)),
     }
@@ -125,6 +161,15 @@ pub struct BaseCommand {
     // current output report index
     pub output_idx: AtomicU32,
 
+    pub log_file_path: String,
+    // bucket url where store the complete output.
+    pub cos_bucket: String,
+    pub cos_prefix: String,
+    pub task_id: String,
+
+    pub output_url: Mutex<String>,
+    pub output_err_info: Mutex<String>,
+
     // it's None before start, will be Some after self.run()
     pub pid: Mutex<Option<u32>>,
     // if child has been killed by kill -9
@@ -146,6 +191,10 @@ impl BaseCommand {
         work_dir: &str,
         timeout: u64,
         bytes_max_report: u64,
+        log_file_path: &str,
+        cos_bucket: &str,
+        cos_prefix: &str,
+        task_id: &str,
     ) -> BaseCommand {
         let timestamp = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -163,6 +212,12 @@ impl BaseCommand {
             exit_code: Arc::new(Mutex::new(None)),
             output: Arc::new(Mutex::new(Default::default())),
             output_idx: AtomicU32::new(0),
+            log_file_path: log_file_path.to_string(),
+            cos_bucket: cos_bucket.to_string(),
+            cos_prefix: cos_prefix.to_string(),
+            task_id: task_id.to_string(),
+            output_url: Mutex::new("".to_string()),
+            output_err_info: Mutex::new("".to_string()),
             pid: Mutex::new(None),
             killed: Arc::new(AtomicBool::new(false)),
             is_timeout: Arc::new(AtomicBool::new(false)),
@@ -310,6 +365,16 @@ impl BaseCommand {
         self.finish_time.load(Ordering::SeqCst)
     }
 
+    pub fn output_url(&self) -> String {
+        let output_url = self.output_url.lock().unwrap();
+        return String::from(output_url.as_str());
+    }
+
+    pub fn output_err_info(&self) -> String {
+        let err_info = self.output_err_info.lock().unwrap();
+        return String::from(err_info.as_str());
+    }
+
     pub fn add_timeout_timer(&self) {
         let pid = self.pid.lock().unwrap().unwrap();
         let timeout = self.timeout;
@@ -396,6 +461,108 @@ impl BaseCommand {
         }
     }
 
+    fn store_path_check(&self) -> Result<(), String> {
+        if self.cmd_path.is_empty() {
+            let ret = format!("start fail because script file store failed.");
+            *self.err_info.lock().unwrap() =
+                start_failed_err_info!(ERR_SCRIPT_FILE_STORE_FAILED, TASK_STORE_PATH);
+            return Err(ret);
+        }
+        if self.log_file_path.is_empty() {
+            let ret = format!("start fail because log file store failed.");
+            *self.err_info.lock().unwrap() =
+                start_failed_err_info!(ERR_LOG_FILE_STORE_FAILED, TASK_LOG_PATH);
+            return Err(ret);
+        }
+        Ok(())
+    }
+
+    fn open_log_file(&self) -> Result<File, String> {
+        let res = OpenOptions::new()
+            .write(true)
+            .open(self.log_file_path.clone());
+        match res {
+            Ok(file) => Ok(file),
+            Err(e) => Err(format!(
+                "fail to open task log file {}: {:?}",
+                self.log_file_path, e
+            )),
+        }
+    }
+
+    pub async fn finish_logging(&self) {
+        let log_file_path = self.log_file_path.to_string();
+        if !self.cos_bucket.is_empty() {
+            let metadata = MetadataAPIAdapter::build(METADATA_API);
+            let rsp = metadata.tmp_credential().await;
+            match rsp {
+                Ok(credential) => {
+                    let cli = COS::new(
+                        credential.secret_id,
+                        credential.secret_key,
+                        credential.token,
+                        self.cos_bucket.to_string(),
+                    );
+                    let instance_id = metadata.instance_id().await;
+                    let object_name =
+                        self.object_name(&*self.cos_prefix, instance_id.as_str(), &*self.task_id);
+                    if let Err(e) = cli
+                        .put_object_from_file(log_file_path.clone(), object_name.clone(), None)
+                        .await
+                    {
+                        error!("pub object to cos fail: {:?}", e);
+                        *self.output_err_info.lock().unwrap() = format!("Upload output file to cos fail, please check if {} has permission to put file to COS:  output file: {}, bucket: {}, prefix: {}",
+                                instance_id.as_str(),
+                                self.log_file_path,
+                                self.cos_bucket,
+                                self.cos_prefix,
+                        );
+                    }
+
+                    *self.output_url.lock().unwrap() = self.set_output_url(instance_id.as_str());
+                }
+                Err(e) => *self.output_err_info.lock().unwrap() = e.to_string(),
+            }
+        }
+
+        // delete task output file.
+        if let Err(e) = std::fs::remove_file(log_file_path.clone()) {
+            error!("cleanup task output file fail: {}, {:?}", log_file_path, e)
+        }
+    }
+
+    pub fn set_output_url(&self, instance_id: &str) -> String {
+        let output_err_info = self.output_err_info.lock().unwrap_or_exit("lock fail");
+        if !output_err_info.is_empty() {
+            return "".to_string();
+        }
+
+        if self.cos_bucket.is_empty() {
+            return "".to_string();
+        }
+
+        let arr = vec![
+            self.cos_bucket.to_string(),
+            self.cos_prefix.to_string(),
+            instance_id.to_string(),
+            format!("{}.log", self.task_id.to_string()),
+        ];
+        let x: Vec<String> = arr.into_iter().filter(|x| !x.is_empty()).collect();
+        x.join("/")
+    }
+
+    fn object_name(&self, cos_bucket_prefix: &str, instance_id: &str, task_id: &str) -> String {
+        let mut object_name = format!("");
+        if !cos_bucket_prefix.is_empty() {
+            object_name.push_str(format!("/{}", cos_bucket_prefix).as_str())
+        }
+        if !instance_id.is_empty() {
+            object_name.push_str(format!("/{}", instance_id).as_str())
+        }
+        object_name.push_str(format!("/{}.log", task_id).as_str());
+        object_name
+    }
+
     pub fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let output_clone;
         {
@@ -421,6 +588,9 @@ impl BaseCommand {
             .field("killed", &self.killed)
             .field("is_timeout", &self.is_timeout)
             .field("finish_time", &self.finish_time)
+            .field("cos_bucket", &self.cos_bucket)
+            .field("cos_prefix", &self.cos_prefix)
+            .field("task_id", &self.task_id)
             .finish()
     }
 }
@@ -472,14 +642,36 @@ mod tests {
 
     #[test]
     fn test_valid_type_shell() {
-        let ret = new(CMD_PATH, &username(), CMD_TYPE, "./", 1024, 1024);
+        let ret = new(
+            CMD_PATH,
+            &username(),
+            CMD_TYPE,
+            "./",
+            1024,
+            1024,
+            "",
+            "",
+            "",
+            "",
+        );
         assert!(ret.is_ok());
     }
 
     #[test]
     fn test_invalid_type() {
         init_log();
-        let ret = new(CMD_PATH, &username(), "xxx", "./", 1024, 1024);
+        let ret = new(
+            CMD_PATH,
+            &username(),
+            "xxx",
+            "./",
+            1024,
+            1024,
+            "",
+            "",
+            "",
+            "",
+        );
         match ret {
             Ok(_) => panic!(),
             Err(e) => info!("OK, ret:{}", e),
@@ -492,7 +684,20 @@ mod tests {
         rt.block_on(async {
             init_log();
             // it doesn't matter even if ./a.sh not exist
-            let ret = new(CMD_PATH, &username(), CMD_TYPE, "./", 1024, 1024);
+            let log_path = format!("./{}.log", gen_rand_str());
+            File::create(log_path.as_str()).unwrap_or_exit("create log path fail.");
+            let ret = new(
+                CMD_PATH,
+                &username(),
+                CMD_TYPE,
+                "./",
+                1024,
+                1024,
+                log_path.as_str(),
+                "",
+                "",
+                "",
+            );
             let mut cmd = ret.unwrap();
             let ret = cmd.run().await;
             assert!(ret.is_ok());
@@ -516,6 +721,10 @@ mod tests {
                 "./dir_not_exist",
                 1024,
                 1024,
+                "./fake_path",
+                "",
+                "",
+                "",
             );
             let mut cmd = ret.unwrap();
             let ret = cmd.run().await;
@@ -534,7 +743,18 @@ mod tests {
         rt.block_on(async {
             init_log();
 
-            let ret = new(CMD_PATH, "hacker-neo", CMD_TYPE, "./", 1024, 1024);
+            let ret = new(
+                CMD_PATH,
+                "hacker-neo",
+                CMD_TYPE,
+                "./",
+                1024,
+                1024,
+                "./fake_path",
+                "",
+                "",
+                "",
+            );
             let mut cmd = ret.unwrap();
             let ret = cmd.run().await;
             info!("cmd run ret:[{}]", ret.unwrap_err());
@@ -617,7 +837,20 @@ mod tests {
                 }
             }
 
-            let ret = new(filename.as_str(), &username(), CMD_TYPE, "./", 1024, 1024);
+            let log_path = format!("./{}.log", gen_rand_str());
+            File::create(log_path.as_str()).unwrap_or_exit("create log path fail.");
+            let ret = new(
+                filename.as_str(),
+                &username(),
+                CMD_TYPE,
+                "./",
+                1024,
+                1024,
+                log_path.as_str(),
+                "",
+                "",
+                "",
+            );
             let mut cmd = ret.unwrap();
             let ret = cmd.run().await;
             assert!(ret.is_ok());
@@ -665,7 +898,20 @@ mod tests {
                 }
             }
 
-            let ret = new(filename.as_str(), &username(), CMD_TYPE, "./", 1024, 18);
+            let log_path = format!("./{}.log", gen_rand_str());
+            File::create(log_path.as_str()).unwrap_or_exit("create log path fail.");
+            let ret = new(
+                filename.as_str(),
+                &username(),
+                CMD_TYPE,
+                "./",
+                1024,
+                18,
+                log_path.as_str(),
+                "",
+                "",
+                "",
+            );
             let mut cmd = ret.unwrap();
             let ret = cmd.run().await;
             assert!(ret.is_ok());
@@ -743,7 +989,20 @@ mod tests {
                     );
                 }
             }
-            let ret = new(filename.as_str(), &username(), CMD_TYPE, "./", 10, 1024);
+            let log_path = format!("./{}.log", gen_rand_str());
+            File::create(log_path.as_str()).unwrap_or_exit("create log path fail.");
+            let ret = new(
+                filename.as_str(),
+                &username(),
+                CMD_TYPE,
+                "./",
+                10,
+                1024,
+                log_path.as_str(),
+                "",
+                "",
+                "",
+            );
             let mut cmd = ret.unwrap();
             let ret = cmd.run().await;
             assert!(ret.is_ok());
@@ -780,7 +1039,7 @@ mod tests {
             cfg_if::cfg_if! {
                 if #[cfg(unix)] {
                     let filename = format!("./.{}.sh", gen_rand_str());
-                    create_file("sleep 10240", filename.as_str());
+                    create_file("pwd && sleep 10240", filename.as_str());
                 } else if #[cfg(windows)] {
                     let filename = format!("./{}.ps1", gen_rand_str());
                     create_file(
@@ -795,8 +1054,20 @@ mod tests {
                 .unwrap()
                 .as_secs();
             info!("start_time:{}", start_time);
-
-            let ret = new(filename.as_str(), &username(), CMD_TYPE, "./", 2, 1024);
+            let log_path = format!("./{}.log", gen_rand_str());
+            File::create(log_path.as_str()).unwrap_or_exit("create log path fail.");
+            let ret = new(
+                filename.as_str(),
+                &username(),
+                CMD_TYPE,
+                "./",
+                2,
+                1024,
+                log_path.as_str(),
+                "",
+                "",
+                "",
+            );
             let mut cmd = ret.unwrap();
             let ret = cmd.run().await;
             assert!(ret.is_ok());
@@ -844,7 +1115,20 @@ mod tests {
             let filename = format!("./.{}.sh", gen_rand_str());
             create_file("echo 'hello world'\nsleep 10 &\ndate", filename.as_str());
 
-            let ret = new(filename.as_str(), &username(), CMD_TYPE, "./", 6, 1024);
+            let log_path = format!("./{}.log", gen_rand_str());
+            File::create(log_path.as_str()).unwrap_or_exit("create log path fail.");
+            let ret = new(
+                filename.as_str(),
+                &username(),
+                CMD_TYPE,
+                "./",
+                6,
+                1024,
+                log_path.as_str(),
+                "",
+                "",
+                "",
+            );
             let mut cmd = ret.unwrap();
             let ret = cmd.run().await;
             assert!(ret.is_ok());
@@ -882,7 +1166,20 @@ mod tests {
                 filename.as_str(),
             );
 
-            let ret = new(filename.as_str(), &username(), CMD_TYPE, "./", 1200, 10240);
+            let log_path = format!("./{}.log", gen_rand_str());
+            File::create(log_path.as_str()).unwrap_or_exit("create log path fail.");
+            let ret = new(
+                filename.as_str(),
+                &username(),
+                CMD_TYPE,
+                "./",
+                1200,
+                10240,
+                log_path.as_str(),
+                "",
+                "",
+                "",
+            );
             let mut cmd = ret.unwrap();
             let ret = cmd.run().await;
             assert!(ret.is_ok());

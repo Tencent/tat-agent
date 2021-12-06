@@ -86,13 +86,13 @@ impl HttpWorker {
                 info!("describe task success: {:?}", resp);
                 for task in resp.invocation_normal_task_set.iter() {
                     match self.task_store.store(&task) {
-                        Some(task_file) => {
+                        Ok((task_file, log_file)) => {
                             // if task is not in command cache, execute it
-                            self.task_execute(task, &task_file).await;
+                            self.task_execute(task, &task_file, &log_file).await;
                         }
-                        None => {
+                        Err(_) => {
                             // script file store failed, reuse this flow to report start failed
-                            self.task_execute(task, "").await;
+                            self.task_execute(task, "", "").await;
                         }
                     }
                 }
@@ -186,10 +186,15 @@ impl HttpWorker {
     // start Command to execute task
     // upload task log
     // report task finish
-    async fn task_execute(&self, task: &InvocationNormalTask, task_file: &str) {
+    async fn task_execute(
+        &self,
+        task: &InvocationNormalTask,
+        task_file: &str,
+        task_log_file: &str,
+    ) {
         info!("task execute begin: {:?}", task);
         let task_id = task.invocation_task_id.clone();
-        let result = self.create_proc(task_file, task).await;
+        let result = self.create_proc(task_file, task_log_file, task).await;
         if result.is_none() {
             return;
         }
@@ -202,11 +207,13 @@ impl HttpWorker {
         }
 
         let cmd = cmd_arc.lock().await;
-        //report finish
+        // report finish
         let finish_result = cmd.finish_result();
         let err_info = cmd.err_info();
         let exit_code = cmd.exit_code();
         let finish_time = cmd.finish_time();
+        let output_url = cmd.output_url();
+        let output_err_info = cmd.output_err_info();
         self.adapter
             .report_task_finish(
                 &task_id,
@@ -215,6 +222,8 @@ impl HttpWorker {
                 exit_code,
                 final_log_index,
                 finish_time,
+                &output_url,
+                &output_err_info,
             )
             .await
             .map(|_| info!("task_execute report_task_finish {} success", task_id))
@@ -257,7 +266,7 @@ impl HttpWorker {
             );
         }
 
-        //report terminated
+        // report terminated
         let finish_time = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or_exit("sys time may before 1970")
@@ -270,6 +279,8 @@ impl HttpWorker {
                 0,
                 0,
                 finish_time,
+                "",
+                "",
             )
             .await
             .map(|_| info!("task_cancel report_task_finish {} success", cancel_task_id))
@@ -307,6 +318,7 @@ impl HttpWorker {
     async fn create_proc(
         &self,
         task_file: &str,
+        task_log_file: &str,
         task: &InvocationNormalTask,
     ) -> Option<Arc<Mutex<Box<dyn MyCommand + Send>>>> {
         let task_id = task.invocation_task_id.clone();
@@ -329,6 +341,12 @@ impl HttpWorker {
             return None;
         }
 
+        // remove suffix '/' of cos_bucket_prefix if exists.
+        let cos_bucket_prefix = if let Some(prefix) = task.cos_bucket_prefix.strip_suffix("/") {
+            prefix
+        } else {
+            &task.cos_bucket_prefix
+        };
         let proc_result = proc::new(
             task_file,
             &task.username,
@@ -336,6 +354,10 @@ impl HttpWorker {
             &task.working_directory,
             task.time_out,
             DEFAULT_OUTPUT_BYTE,
+            task_log_file,
+            &task.cos_bucket_url,
+            cos_bucket_prefix,
+            &task_id,
         );
         if proc_result.is_err() {
             return None;
@@ -355,6 +377,7 @@ impl HttpWorker {
 
 #[cfg(test)]
 mod tests {
+    use crate::common::asserts::GracefulUnwrap;
     use crate::common::consts::FINISH_RESULT_TERMINATED;
     use crate::common::logger;
     use crate::executor::proc;
@@ -414,6 +437,8 @@ mod tests {
             command_type: cmd_type.to_string(),
             username: "root".to_string(),
             working_directory: "./".to_string(),
+            cos_bucket_url: "".to_string(),
+            cos_bucket_prefix: "".to_string(),
         }
     }
 
@@ -422,7 +447,7 @@ mod tests {
         let cmd_type = "SHELL";
         #[cfg(windows)]
         let cmd_type = "POWERSHELL";
-        let result = proc::new("", "", cmd_type.as_ref(), "", 10, 1024);
+        let result = proc::new("", "", cmd_type.as_ref(), "", 10, 1024, "", "", "", "");
         Arc::new(Mutex::new(result.unwrap()))
     }
 
@@ -436,7 +461,9 @@ mod tests {
             .insert("invt-1111".to_string(), fake_command());
 
         let task = build_invocation("invt-1111", "", 5, "POWERSHELL");
-        let result = http_worker.create_proc("/fake_path", &task).await;
+        let result = http_worker
+            .create_proc("/fake_path", "/fake_path", &task)
+            .await;
         assert_eq!(result.is_none(), true);
     }
 
@@ -456,7 +483,9 @@ mod tests {
         let task = build_invocation("invt-1111", "", 5, cmd_type.as_ref());
         faux::when!(http_worker.adapter.report_task_start)
             .then_return(Err(AgentError::new(AgentErrorCode::ResponseReadError, "")));
-        let result = http_worker.create_proc("/fake_path", &task).await;
+        let result = http_worker
+            .create_proc("/fake_path", "/fake_path", &task)
+            .await;
         assert_eq!(result.is_none(), true);
     }
 
@@ -481,7 +510,9 @@ mod tests {
         faux::when!(http_worker.adapter.report_task_start)
             .then_return(Ok(ReportTaskStartResponse {}));
 
-        let result = http_worker.create_proc(filename.as_str(), &task).await;
+        let result = http_worker
+            .create_proc(filename.as_str(), "/fake_path", &task)
+            .await;
         fs::remove_file(filename.as_str()).unwrap();
         assert_eq!(result.is_some(), true);
         assert_eq!(
@@ -504,7 +535,7 @@ mod tests {
         #[cfg(windows)]
         let cmd_type = "POWERSHELL";
         let task = build_invocation("invt-1133", "", 5, cmd_type);
-        let create_fut = http_worker.create_proc("", &task);
+        let create_fut = http_worker.create_proc("", "/fake_path", &task);
         let time_out = timeout(Duration::from_secs(1), create_fut).await;
         assert_eq!(time_out.is_err(), true);
     }
@@ -546,8 +577,10 @@ mod tests {
         faux::when!(http_worker.adapter.report_task_finish)
             .then_return(Ok(ReportTaskFinishResponse {}));
 
+        let log_path = format!("./{}.log", gen_rand_str());
+        File::create(log_path.as_str()).unwrap_or_exit("create log path fail.");
         let cmd = http_worker
-            .create_proc(filename.as_str(), &task)
+            .create_proc(filename.as_str(), log_path.as_str(), &task)
             .await
             .unwrap();
         assert_eq!(cmd.lock().await.is_started(), true);

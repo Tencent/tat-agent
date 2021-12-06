@@ -21,6 +21,7 @@ cfg_if::cfg_if! {
         pub const PID_FILE: &str = "/var/run/tat_agent.pid";
 
         pub const TASK_STORE_PATH: &str = "/tmp/tat_agent/commands/";
+        pub const TASK_LOG_PATH: &str = "/tmp/tat_agent/logs/";
         pub const SELF_UPDATE_PATH: &str = "/tmp/tat_agent/self_update/";
         pub const SELF_UPDATE_SCRIPT: &str = "self_update.sh";
         pub const AGENT_DEFAULT_WORK_DIRECTORY: &str = "/root";
@@ -33,6 +34,7 @@ cfg_if::cfg_if! {
         pub const PIPE_BUF_DEFAULT_SIZE: usize = 64 * 4096;
     } else if #[cfg(windows)] {
         pub const TASK_STORE_PATH: &str = "C:\\Program Files\\qcloud\\tat_agent\\tmp\\commands\\";
+        pub const TASK_LOG_PATH: &str = "C:\\Program Files\\qcloud\\tat_agent\\tmp\\logs\\";
         pub const SELF_UPDATE_PATH: &str = "C:\\Program Files\\qcloud\\tat_agent\\tmp\\self_update";
         pub const SELF_UPDATE_SCRIPT: &str = "self_update.bat";
     }
@@ -92,6 +94,10 @@ macro_rules! start_failed_err_info {
         format!("ScriptStoreFailed: script file store failed at `{}`, please check disk space or permission",
             $store_path);
     };
+    (ERR_LOG_FILE_STORE_FAILED, $store_path:expr) => {
+        format!("LogStoreFailed: log file store failed at `{}`, please check disk space or permission",
+            $store_path);
+    };
 }
 
 // service related
@@ -102,6 +108,12 @@ pub const INVOKE_API: &str = "http://proxy-invoke";
 
 #[allow(dead_code)]
 pub const MOCK_INVOKE_API: &str = "http://127.0.0.1:8080";
+
+// metadata
+#[cfg(not(debug_assertions))]
+pub const METADATA_API: &str = "http://metadata.tencentyun.com";
+#[cfg(debug_assertions)]
+pub const METADATA_API: &str = "http://mock-server:8000";
 
 // cmd related
 pub const CMD_TYPE_SHELL: &str = "SHELL";

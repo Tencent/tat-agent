@@ -1,9 +1,9 @@
-use serde::{Deserialize, Serialize};
 use crate::common::consts::AGENT_VERSION;
 use crate::types::AgentErrorCode;
+use serde::{Deserialize, Serialize};
 
-use crate::uname::Uname;
 use crate::uname::common::UnameExt;
+use crate::uname::Uname;
 
 //==============================================================================
 // Declare standard request and response format for C/S communication
@@ -133,6 +133,12 @@ pub struct InvocationNormalTask {
     pub username: String,
     #[serde(default)]
     pub working_directory: String,
+    #[serde(alias = "OutputCOSBucketUrl")]
+    #[serde(default)]
+    pub cos_bucket_url: String,
+    #[serde(alias = "OutputCOSKeyPrefix")]
+    #[serde(default)]
+    pub cos_bucket_prefix: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -193,6 +199,11 @@ pub struct ReportTaskFinishRequest {
     pub exit_code: i32,
     #[serde(default)]
     pub final_log_index: u32,
+    #[serde(default)]
+    pub output_url: String,
+    #[serde(rename = "OutputUploadCOSErrorInfo")]
+    #[serde(default)]
+    pub output_error_info: String,
 }
 
 pub type ReportTaskFinishResponse = Empty;
@@ -292,19 +303,21 @@ mod tests {
             bar: String,
             names: Vec<String>,
         }
-        let i = Inner{ count: 3};
-        let f = Foo{
+        let i = Inner { count: 3 };
+        let f = Foo {
             inner: i,
             bar: String::from("woo"),
             names: vec!["jack".to_string(), "john".to_string(), "ken".to_string()],
         };
         let res = serde_json::to_string(&f).unwrap();
-        assert_eq!(res, "{\"count\":3,\"bar\":\"woo\",\"names\":[\"jack\",\"john\",\"ken\"]}");
+        assert_eq!(
+            res,
+            "{\"count\":3,\"bar\":\"woo\",\"names\":[\"jack\",\"john\",\"ken\"]}"
+        );
     }
 
     #[test]
     fn deserialize_server_response_error() {
-
         let error_str = "
         {
             \"Response\": {
@@ -322,7 +335,10 @@ mod tests {
         }
         let raw_resp = serde_json::from_str::<ServerRawResponse<MyResp>>(&error_str).unwrap();
         let general_resp = &raw_resp.response;
-        assert_eq!(&general_resp.request_id, "e8fc76bf-ed90-4f38-a871-4f344d35d5ff");
+        assert_eq!(
+            &general_resp.request_id,
+            "e8fc76bf-ed90-4f38-a871-4f344d35d5ff"
+        );
         let error = &general_resp.error.as_ref().unwrap();
         assert_eq!(&error.code, "ExampleCode");
         assert_eq!(&error.message, "Some message");
@@ -331,7 +347,7 @@ mod tests {
     }
 
     #[test]
-    fn  deserialize_server_response_content() {
+    fn deserialize_server_response_content() {
         let resp_str = "
             {
                 \"Response\": {
@@ -363,7 +379,10 @@ mod tests {
         }
         let raw_resp = serde_json::from_str::<ServerRawResponse<MyResp>>(&resp_str).unwrap();
         let general_resp = &raw_resp.response;
-        assert_eq!(&general_resp.request_id, "aee1c4f7-c782-45b7-b81b-9cea73448a31");
+        assert_eq!(
+            &general_resp.request_id,
+            "aee1c4f7-c782-45b7-b81b-9cea73448a31"
+        );
         let content = general_resp.content.as_ref().unwrap();
         assert_eq!(content.user_set.len(), 2);
         assert_eq!(&content.user_set[0].name, "Foo");
@@ -378,7 +397,9 @@ mod tests {
             time_out: 0,
             command: String::from("bHMgLWw7CmVjaG8gIkhlbGxvIFdvcmxkIg=="),
             username: format!("root"),
-            working_directory: format!("")
+            working_directory: format!(""),
+            cos_bucket_url: format!(""),
+            cos_bucket_prefix: format!(""),
         };
         assert_eq!(
             tasks1.decode_command().unwrap(),
@@ -394,41 +415,38 @@ mod tests {
             time_out: 0,
             command: String::from("ls -l;\necho \"Hello World\""),
             username: format!("root"),
-            working_directory: format!("")
+            working_directory: format!(""),
+            cos_bucket_url: format!(""),
+            cos_bucket_prefix: format!(""),
         };
-        assert_eq!(
-            tasks1.decode_command().is_err(),
-            true
-        );
+        assert_eq!(tasks1.decode_command().is_err(), true);
     }
 
     #[cfg(target_family = "unix")]
     #[test]
     fn test_encode_log() {
-        use std::process::Command;
         use std::fs::remove_file;
-        use std::io::Read;
         use std::fs::File;
+        use std::io::Read;
+        use std::process::Command;
 
         use crate::types::UploadTaskLogRequest;
         let _cmd = Command::new("time")
-                    .arg("dd")
-                    .arg("if=/dev/urandom")
-                    .arg("of=random-file")
-                    .arg("bs=1").arg("count=1024")
-                    .output().expect("failed to generate random binary file");
+            .arg("dd")
+            .arg("if=/dev/urandom")
+            .arg("of=random-file")
+            .arg("bs=1")
+            .arg("count=1024")
+            .output()
+            .expect("failed to generate random binary file");
         // read binary file
         let mut f = File::open("./random-file").unwrap();
         let mut buffer = Vec::new();
         // read the whole file
-        f.read_to_end(&mut buffer).expect("failed to read random-file");
+        f.read_to_end(&mut buffer)
+            .expect("failed to read random-file");
         assert_eq!(remove_file("./random-file").is_ok(), true);
-        let _req = UploadTaskLogRequest::new(
-            "invk-123123",
-            0,
-            buffer,
-            0
-        );
+        let _req = UploadTaskLogRequest::new("invk-123123", 0, buffer, 0);
         // println!("{:?}", req);
     }
 }
