@@ -91,7 +91,7 @@ install() {
   elif has_sysvinit; then
       cp -f tat_agent_service /etc/init.d/
       chmod 755 /etc/init.d/tat_agent_service
-      # TODO: uncomment following code after 0.1.14 is released.
+      # TODO: uncomment following code after 0.1.15 is released.
       # if test "${need_restart}" = true; then
       /etc/init.d/tat_agent_service restart
       # fi
@@ -110,7 +110,7 @@ install() {
           fi
       fi
   else
-      # TODO: uncomment following code after 0.1.14 is released.
+      # TODO: uncomment following code after 0.1.15 is released.
       # if test "${need_restart}" = true; then
       echo "no proper daemon manager found, tat_agent can not auto start"
       PID=$(cat ${PID_FILE})

@@ -9,7 +9,7 @@ use std::time::Duration;
 use std::{env, fmt, io};
 
 use crate::common::consts::PIPE_BUF_DEFAULT_SIZE;
-use crate::executor::proc::{self, BaseCommand, MyCommand};
+use crate::executor::proc::{BaseCommand, MyCommand};
 use crate::start_failed_err_info;
 use async_trait::async_trait;
 use libc;
@@ -81,24 +81,40 @@ impl ShellCommand {
     }
 
     fn prepare_cmd(&self, user: User) -> Command {
-        let mut envs = HashMap::new();
+        // find shell
+        let mut shell_path = cmd_path("bash");
+        let (shell, login_init) = if shell_path.is_some() {
+            let login_init = ". ~/.bash_profile 2> /dev/null || . ~/.bashrc 2> /dev/null ; ";
+            ("bash", login_init)
+        } else {
+            shell_path = cmd_path("sh");
+            ("sh", "")
+        };
+
+        //build envs
+        let mut envs = HashMap::<String, String>::new();
+        let shell_path = shell_path.unwrap();
+        envs.insert("SHELL".to_string(), shell_path);
         match user.home_dir().to_str() {
             Some(dir) => {
-                envs.insert("HOME", dir);
+                envs.insert("HOME".to_string(), dir.to_string());
             }
             None => {}
         };
-        envs.insert("USER", self.base.username.as_str());
-        envs.insert("LOGNAME", self.base.username.as_str());
+        envs.insert("USER".to_string(), self.base.username.clone());
+        envs.insert("LOGNAME".to_string(), self.base.username.clone());
+        envs.insert("USERNAME".to_string(), self.base.username.clone());
 
-        let mut shell = "bash";
-        let mut login_init = ". ~/.bash_profile 2> /dev/null || . ~/.bashrc 2> /dev/null ; ";
-        if !cmd_exists(shell) {
-            shell = "sh";
-            login_init = "";
+        let etc_envs;
+        if let Ok(content) = std::fs::read_to_string("/etc/environment") {
+            etc_envs = load_envs(content);
+            for (key, value) in etc_envs.into_iter() {
+                envs.insert(key, value);
+            }
         };
-        let entrypoint = format!("{}{}", login_init, self.base.cmd_path());
 
+        //build comand
+        let entrypoint = format!("{}{}", login_init, self.base.cmd_path());
         let mut cmd = Command::new(shell);
         cmd.args(&["-c", entrypoint.as_str()])
             .uid(user.uid())
@@ -177,8 +193,8 @@ impl BaseCommand {
         let mut reader = BufReader::new(stdout.unwrap());
         let mut byte_after_finish = 0;
         let proc = match Process::new(pid as i32) {
-            Ok(proc)=> proc,
-            Err(_)=>  return ,
+            Ok(proc) => proc,
+            Err(_) => return,
         };
         loop {
             let process_finish = !proc.is_alive();
@@ -201,7 +217,7 @@ impl BaseCommand {
 
             let len = read_size.unwrap();
             if len > 0 {
-                if let Err(e) = log_file.write(&buffer) {
+                if let Err(e) = log_file.write(&buffer[..len]) {
                     error!("write output file fail: {:?}", e)
                 }
 
@@ -273,16 +289,43 @@ fn own_process_group() -> Result<(), io::Error> {
     }
 }
 
-fn cmd_exists(cmd: &str) -> bool {
+fn cmd_path(cmd: &str) -> Option<String> {
     if let Ok(path) = env::var("PATH") {
         for p in path.split(":") {
             let p_str = format!("{}/{}", p, cmd);
             if Path::new(&p_str).exists() {
-                return true;
+                return Some(p_str);
             }
         }
     }
-    false
+    None
+}
+
+fn load_envs(content: String) -> HashMap<String, String> {
+    let mut envs: HashMap<String, String> = HashMap::new();
+    let lines: Vec<&str> = content.split('\n').collect();
+    for mut line in lines {
+        line = line.trim_start();
+        if line.len() == 0 || line.starts_with("#") {
+            continue;
+        }
+        if line.starts_with("export ") {
+            line = &line[7..];
+        }
+        let env_part: Vec<&str> = line.splitn(2, '=').collect();
+        if env_part.len() == 2 {
+            let key = env_part[0].trim_start().to_string();
+            let mut value = env_part[1].to_string();
+            if value.starts_with('"') && value.ends_with('"')
+                || value.ends_with('\'') && value.starts_with('\'')
+            {
+                value.remove(0);
+                value.pop();
+            }
+            envs.insert(key, value);
+        }
+    }
+    envs
 }
 
 #[cfg(test)]
@@ -298,5 +341,15 @@ mod tests {
     #[test]
     fn test_working_directory_exists() {
         assert_eq!(working_directory_exists("/etc"), true);
+    }
+
+    #[test]
+    fn test_load_envs() {
+        let content = "# \n B=b\n D=d=d\n C= \"x\n";
+        let envs = load_envs(content.to_string());
+        assert!(envs.keys().len() == 3);
+        assert!(envs.get("B").unwrap() == "b");
+        assert!(envs.get("D").unwrap() == "d=d");
+        assert!(envs.get("C").unwrap() == " \"x");
     }
 }
