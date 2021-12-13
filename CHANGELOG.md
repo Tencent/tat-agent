@@ -1,6 +1,13 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [0.1.14] - 2021-12-02
+
+### Changed
+
+- Reduce lock holding time.
+- Fix macro warnings.
+- Optimize documents.
 
 ## [0.1.13] - 2021-11-18
 

@@ -1,0 +1,1 @@
+sc stop tatsvc
