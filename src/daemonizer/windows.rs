@@ -111,6 +111,14 @@ fn clean_update_files() {
     })
 }
 
+fn set_ps1_policy() {
+    let mut cmd = std::process::Command::new("PowerShell.exe");
+    cmd.args(&["set-ExecutionPolicy", "RemoteSigned"]);
+    let mut child = cmd.spawn().unwrap();
+    child.wait().map_err(|_| error!("set_ps1_policy fail")).ok();
+}
+
+
 fn set_work_dir() {
     let exe_path = env::current_exe().unwrap();
     let work_dir = exe_path.parent().unwrap();
@@ -150,7 +158,7 @@ where
 pub fn daemonize(entry: fn()) {
     clean_update_files();
     set_work_dir();
-
+    set_ps1_policy();
     if already_start() {
         std::process::exit(183);
     }

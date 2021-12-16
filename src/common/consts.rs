@@ -24,12 +24,8 @@ cfg_if::cfg_if! {
         pub const TASK_LOG_PATH: &str = "/tmp/tat_agent/logs/";
         pub const SELF_UPDATE_PATH: &str = "/tmp/tat_agent/self_update/";
         pub const SELF_UPDATE_SCRIPT: &str = "self_update.sh";
+        pub const INSTALL_SCRIPT: &str = "install.sh";
         pub const AGENT_DEFAULT_WORK_DIRECTORY: &str = "/root";
-
-        // pre_exec fn name for cmd
-        pub const OWN_PROCESS_GROUP: &str = "OWN_PROCESS_GROUP";
-        pub const DUP2_1_2: &str = "DUP2_1_2";
-
         pub const FILE_EXECUTE_PERMISSION_MODE: u32 = 0o755;
         pub const PIPE_BUF_DEFAULT_SIZE: usize = 64 * 4096;
     } else if #[cfg(windows)] {

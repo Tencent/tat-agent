@@ -78,6 +78,8 @@ pub fn tasks_response() -> Response<Body> {
         command: base64::encode("ls -l".as_bytes()),
         command_type: format!("SHELL"),
         working_directory: String::from("/root/"),
+        cos_bucket_url: "".to_string(),
+        cos_bucket_prefix: "".to_string(),
     };
     let resp = DescribeTasksResponse {
         invocation_normal_task_set: vec![tasks],

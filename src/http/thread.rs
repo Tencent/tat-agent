@@ -372,7 +372,7 @@ impl HttpWorker {
         proc_res
             .run()
             .await
-            .map_err(|_| error!("start process fail"))
+            .map_err(|e| error!("start process fail {}",e))
             .ok();
         let cmd_arc = Arc::new(Mutex::new(proc_res));
 
@@ -404,6 +404,8 @@ mod tests {
     use std::time::Duration;
     use tokio::sync::Mutex;
     use tokio::time::timeout;
+    #[cfg(unix)]
+    use users::get_current_username;
 
     fn gen_rand_str() -> String {
         thread_rng().sample_iter(&Alphanumeric).take(10).collect()
@@ -441,7 +443,10 @@ mod tests {
             time_out,
             command: cmd.to_string(),
             command_type: cmd_type.to_string(),
-            username: "root".to_string(),
+            #[cfg(unix)]
+            username: String::from(get_current_username().unwrap().to_str().unwrap()),
+            #[cfg(windows)]
+            username: "system".to_string(),
             working_directory: "./".to_string(),
             cos_bucket_url: "".to_string(),
             cos_bucket_prefix: "".to_string(),

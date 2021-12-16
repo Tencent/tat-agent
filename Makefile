@@ -9,7 +9,7 @@ AGENT_IMG=$(DOCKER_REGISTRY)/tat-develop/tat_agent
 
 # test all case
 lib-test:
-	cargo test --lib -- --nocapture --skip ontime --skip executor::proc::tests::test_shell_cmd_timeout
+	cargo test --lib -- --nocapture --skip ontime
 
 integration-test:
 	cargo test --test http_test

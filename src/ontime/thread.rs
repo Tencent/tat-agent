@@ -13,11 +13,8 @@ use futures01::sync::mpsc::UnboundedSender;
 use websocket::OwnedMessage;
 
 use crate::common::asserts::GracefulUnwrap;
-use crate::common::consts::{
-    ONTIME_CHECK_TASK_NUM, ONTIME_KICK_INTERVAL, ONTIME_KICK_SOURCE, ONTIME_PING_INTERVAL,
-    ONTIME_THREAD_INTERVAL, ONTIME_UPDATE_INTERVAL,
-};
-use crate::ontime::self_update::try_update;
+use crate::common::consts::{ONTIME_CHECK_TASK_NUM, ONTIME_KICK_INTERVAL, ONTIME_KICK_SOURCE, ONTIME_PING_INTERVAL, ONTIME_THREAD_INTERVAL, ONTIME_UPDATE_INTERVAL};
+use crate::ontime::self_update::{try_update, try_restart_agent};
 use crate::ontime::timer::Timer;
 use crate::types::inner_msg::KickMsg;
 
@@ -216,9 +213,15 @@ fn check_running_task_num(
         let task_num = running_task_num.load(Ordering::SeqCst);
         if task_num == 0 {
             info!(
-                "running tasks num: {}, need_restart is {}, exit prgram",
+                "running tasks num: {}, need_restart is {}, restart program.",
                 task_num, restart_flag
             );
+
+            if let Err(e) = try_restart_agent(){
+                warn!("try restart agent fail: {:?}", e)
+            }
+
+            // should not comes here, because agent should has been killed when called `try_restart_agent`.
             std::process::exit(2);
         }
         debug!(
