@@ -599,7 +599,7 @@ mod tests {
     use std::fs::File;
     use std::io::Write;
     use std::time::{Duration, Instant, SystemTime};
-    use std::{fs, thread};
+    use std::fs;
 
     use log::info;
     use rand::distributions::Alphanumeric;

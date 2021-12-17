@@ -1,6 +1,13 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+
+## [0.1.16] - 2021-12-09
+
+### Changed
+
+- Fix bug of write output to tmp file.
+
 ## [0.1.15] - 2021-12-05
 
 ### Changed
