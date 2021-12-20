@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.17] - 2021-12-10
+
+### Changed
+
+- Only create log file before process being really running.
+- Fix bug of sysvinit upgrade.
+- Use x86_64 as default Windows target.
+
 ## [0.1.16] - 2021-12-09
 
 ### Changed

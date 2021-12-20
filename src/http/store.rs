@@ -173,8 +173,6 @@ impl TaskFileStore {
             return Err("fail to store command in task file".to_string());
         }
 
-        // create task log file
-        let _ = self.create_file(&task_log_path, true, false)?;
         Ok((task_file_path, task_log_path))
     }
 
@@ -230,11 +228,10 @@ mod tests {
             desired_path
         );
 
-        let (task_file, log_path) = store.store(&task).unwrap();
+        let (task_file, _) = store.store(&task).unwrap();
         let contents = read_to_string(&task_file).unwrap();
         assert_eq!(contents, "ls -l");
         store.remove(&task_file);
-        store.remove(&log_path);
         let paths = read_dir(Path::new(&task_file).parent().unwrap()).unwrap();
         for f in paths {
             remove_file(f.unwrap().path()).unwrap();

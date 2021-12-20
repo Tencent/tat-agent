@@ -91,10 +91,9 @@ install() {
   elif has_sysvinit; then
       cp -f tat_agent_service /etc/init.d/
       chmod 755 /etc/init.d/tat_agent_service
-      # TODO: uncomment following code after 0.1.15 is released.
-      # if test "${need_restart}" = true; then
-      /etc/init.d/tat_agent_service restart
-      # fi
+      if test "${need_restart}" = true; then
+          /etc/init.d/tat_agent_service restart
+      fi
       which chkconfig > /dev/null 2>&1
       if [ $? -eq 0 ]; then
           echo "use chkconfig to manage service"
@@ -110,17 +109,16 @@ install() {
           fi
       fi
   else
-      # TODO: uncomment following code after 0.1.15 is released.
-      # if test "${need_restart}" = true; then
-      echo "no proper daemon manager found, tat_agent can not auto start"
-      PID=$(cat ${PID_FILE})
-      kill ${PID} > /dev/null 2>&1
-      sleep 0.1 || sleep 1
-      rm -f ${PID_FILE}
-      cd ${SERVICE_DIR}
-      ./${TAT_AGENT}
-      echo "tat_agent started"
-      # fi
+      if test "${need_restart}" = true; then
+          echo "no proper daemon manager found, tat_agent can not auto start"
+          PID=$(cat ${PID_FILE})
+          kill ${PID} > /dev/null 2>&1
+          sleep 0.1 || sleep 1
+          rm -f ${PID_FILE}
+          cd ${SERVICE_DIR}
+          ./${TAT_AGENT}
+          echo "tat_agent started"
+      fi
   fi
 }
 

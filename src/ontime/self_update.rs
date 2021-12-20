@@ -272,7 +272,7 @@ fn try_run_agent(
     unzip_dir: String,
     agent_filename: String,
 ) -> Result<String, String> {
-    let agent = format!("{}/{}/{}", path, unzip_dir, agent_filename);
+    let agent = format!("{}{}/{}", path, unzip_dir, agent_filename);
     let cmd = Command::new(agent).arg("--version").output();
     if let Err(e) = cmd {
         return Err(format!("agent run ret: {:?}", e));
@@ -301,7 +301,7 @@ fn run_self_update_script(
     unzip_dir: String,
     script_filename: String,
 ) -> Result<(), String> {
-    let script = format!("{}/{}/{}", path, unzip_dir, script_filename);
+    let script = format!("{}{}/{}", path, unzip_dir, script_filename);
     #[cfg(unix)]
     let cmd = Command::new("sh").arg("-c").arg(script).output();
     #[cfg(windows)]
@@ -326,7 +326,7 @@ fn run_self_update_script(
 pub fn try_restart_agent() -> Result<(), String> {
     cfg_if::cfg_if! {
         if #[cfg(unix)] {
-            let script = format!("{}/{}/{}",
+            let script = format!("{}{}/{}",
                              SELF_UPDATE_PATH.to_string(),
                              UPDATE_FILE_UNZIP_DIR.to_string(),
                              INSTALL_SCRIPT.to_string(),

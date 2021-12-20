@@ -9,7 +9,7 @@ impl Uname {
             release: String::from("unknown"),
             version: String::from("unknown"),
             // TODO: need optimized with real arch.
-            machine: String::from("i686"),
+            machine: String::from("x86_64"),
         };
         return Ok(uname);
     }
