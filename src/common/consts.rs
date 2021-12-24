@@ -31,7 +31,7 @@ cfg_if::cfg_if! {
     } else if #[cfg(windows)] {
         pub const TASK_STORE_PATH: &str = "C:\\Program Files\\qcloud\\tat_agent\\tmp\\commands\\";
         pub const TASK_LOG_PATH: &str = "C:\\Program Files\\qcloud\\tat_agent\\tmp\\logs\\";
-        pub const SELF_UPDATE_PATH: &str = "C:\\Program Files\\qcloud\\tat_agent\\tmp\\self_update";
+        pub const SELF_UPDATE_PATH: &str = "C:\\Program Files\\qcloud\\tat_agent\\tmp\\self_update\\";
         pub const SELF_UPDATE_SCRIPT: &str = "self_update.bat";
     }
 }

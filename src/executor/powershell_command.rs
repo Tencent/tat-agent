@@ -4,13 +4,13 @@ use crate::start_failed_err_info;
 use async_trait::async_trait;
 use codepage_strings::Coding;
 use core::mem;
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
 use std::ffi::OsStr;
 use std::fmt;
 use std::fmt::{Debug, Formatter};
-use std::fs::{File, OpenOptions};
+use std::fs::{remove_file, File, OpenOptions};
 use std::io::Write;
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
@@ -104,8 +104,6 @@ impl PowerShellCommand {
 impl MyCommand for PowerShellCommand {
     /* TODO:
     1. support set username
-    2. support kill process when cancelled or timout.
-    3. support set process group.
      */
     async fn run(&mut self) -> Result<(), String> {
         info!("=>PowerShellCommand::run()");
@@ -115,15 +113,18 @@ impl MyCommand for PowerShellCommand {
         // work dir check
         self.work_dir_check()?;
 
-        let log_file = self.open_log_file()?;
-
         // create pipe
         let (our_pipe, their_pipe) = anon_pipe(true)?;
 
         // start child
         let mut cmd = self.prepare_cmd(their_pipe)?;
+        let log_file = self.open_log_file()?;
         let mut child = cmd.spawn().map_err(|e| {
             *self.base.err_info.lock().unwrap() = e.to_string();
+            // remove log_file when process run failed.
+            if let Err(e) = remove_file(self.base.log_file_path.as_str()) {
+                warn!("remove log file failed: {:?}", e)
+            }
             format!(
                 "PowerShellCommand {}, working_directory:{}, start fail: {}",
                 self.base.cmd_path, self.base.work_dir, e

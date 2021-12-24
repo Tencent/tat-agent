@@ -11,7 +11,7 @@ use crate::common::asserts::GracefulUnwrap;
 use crate::common::consts::{
     FINISH_RESULT_FAILED, FINISH_RESULT_START_FAILED, FINISH_RESULT_SUCCESS,
     FINISH_RESULT_TERMINATED, FINISH_RESULT_TIMEOUT, METADATA_API, OUTPUT_BYTE_LIMIT_EACH_REPORT,
-    TASK_LOG_PATH, TASK_STORE_PATH,
+    TASK_STORE_PATH,
 };
 use crate::cos::ObjectAPI;
 use crate::cos::COS;
@@ -19,9 +19,10 @@ use crate::http::MetadataAPIAdapter;
 use crate::ontime::timer::Timer;
 use crate::start_failed_err_info;
 use async_trait::async_trait;
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use std::fmt;
-use std::fs::{File, OpenOptions};
+use std::fs::{create_dir_all, File, OpenOptions};
+use std::path::Path;
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -468,17 +469,32 @@ impl BaseCommand {
                 start_failed_err_info!(ERR_SCRIPT_FILE_STORE_FAILED, TASK_STORE_PATH);
             return Err(ret);
         }
-        if self.log_file_path.is_empty() {
-            let ret = format!("start fail because log file store failed.");
-            *self.err_info.lock().unwrap() =
-                start_failed_err_info!(ERR_LOG_FILE_STORE_FAILED, TASK_LOG_PATH);
-            return Err(ret);
-        }
         Ok(())
     }
 
     fn open_log_file(&self) -> Result<File, String> {
+        let parent = Path::new(self.log_file_path.as_str()).parent();
+        match parent {
+            Some(parent) => {
+                if let Err(e) = create_dir_all(parent) {
+                    return Err(format!(
+                        "fail to open task log file {}: create parent dir fail {}: {:?}",
+                        self.log_file_path,
+                        parent.display(),
+                        e
+                    ));
+                }
+            }
+            None => {
+                warn!(
+                    "parent dir not found, skip: {}",
+                    self.log_file_path.as_str()
+                )
+            }
+        }
+
         let res = OpenOptions::new()
+            .create(true)
             .write(true)
             .open(self.log_file_path.clone());
         match res {
@@ -596,10 +612,10 @@ impl BaseCommand {
 }
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::fs::File;
     use std::io::Write;
     use std::time::{Duration, Instant, SystemTime};
-    use std::fs;
 
     use log::info;
     use rand::distributions::Alphanumeric;
@@ -683,7 +699,6 @@ mod tests {
         init_log();
         // it doesn't matter even if ./a.sh not exist
         let log_path = format!("./{}.log", gen_rand_str());
-        File::create(log_path.as_str()).unwrap_or_exit("create log path fail.");
         let ret = new(
             CMD_PATH,
             &username(),
@@ -700,7 +715,7 @@ mod tests {
         let ret = cmd.run().await;
         assert!(ret.is_ok());
         info!("cmd running, pid:{}", cmd.pid());
-        tokio::time::delay_for(Duration::from_secs(4)).await;
+        tokio::time::delay_for(Duration::from_secs(10)).await;
         // now it's NOT a defunct process, cmd will be auto-waited
         assert!(!is_process_exist(cmd.pid()).await);
         //thread::sleep(Duration::new(10, 0));
@@ -824,7 +839,6 @@ mod tests {
             }
         }
         let log_path = format!("./{}.log", gen_rand_str());
-        File::create(log_path.as_str()).unwrap_or_exit("create log path fail.");
         let ret = new(
             filename.as_str(),
             &username(),
@@ -879,7 +893,6 @@ mod tests {
             }
         }
         let log_path = format!("./{}.log", gen_rand_str());
-        File::create(log_path.as_str()).unwrap_or_exit("create log path fail.");
         let ret = new(
             filename.as_str(),
             &username(),
@@ -965,7 +978,6 @@ mod tests {
             }
         }
         let log_path = format!("./{}.log", gen_rand_str());
-        File::create(log_path.as_str()).unwrap_or_exit("create log path fail.");
         let ret = new(
             filename.as_str(),
             &username(),
@@ -1020,9 +1032,8 @@ mod tests {
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        info!("script {} start_time:{}",filename, start_time);
+        info!("script {} start_time:{}", filename, start_time);
         let log_path = format!("./{}.log", gen_rand_str());
-        File::create(log_path.as_str()).unwrap_or_exit("create log path fail.");
         let ret = new(
             filename.as_str(),
             &username(),
@@ -1076,7 +1087,6 @@ mod tests {
         let filename = format!("./.{}.sh", gen_rand_str());
         create_file("echo 'hello world'\nsleep 10 &\ndate", filename.as_str());
         let log_path = format!("./{}.log", gen_rand_str());
-        File::create(log_path.as_str()).unwrap_or_exit("create log path fail.");
         let ret = new(
             filename.as_str(),
             &username(),
@@ -1123,7 +1133,6 @@ mod tests {
         );
 
         let log_path = format!("./{}.log", gen_rand_str());
-        File::create(log_path.as_str()).unwrap_or_exit("create log path fail.");
         let ret = new(
             filename.as_str(),
             &username(),

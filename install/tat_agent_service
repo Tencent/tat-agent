@@ -43,6 +43,7 @@ stop() {
             echo "tat_agent not found, nothing to stop"
             RET=2
         fi
+        rm -f ${PID_FILE}
     else
         echo "pid file of tat_agent not exist"
         RET=3

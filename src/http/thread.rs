@@ -372,7 +372,7 @@ impl HttpWorker {
         proc_res
             .run()
             .await
-            .map_err(|e| error!("start process fail {}",e))
+            .map_err(|e| error!("start process fail {}", e))
             .ok();
         let cmd_arc = Arc::new(Mutex::new(proc_res));
 
@@ -589,7 +589,6 @@ mod tests {
             .then_return(Ok(ReportTaskFinishResponse {}));
 
         let log_path = format!("./{}.log", gen_rand_str());
-        File::create(log_path.as_str()).unwrap_or_exit("create log path fail.");
         let cmd = http_worker
             .create_proc(filename.as_str(), log_path.as_str(), &task)
             .await

@@ -70,6 +70,7 @@ pub fn run(
                 .timeout(Duration::from_secs(WS_CONNECT_TIMEOUT))
                 .map_err(|e| {
                     error!("connect fail:{:?}", e);
+                    thread::sleep(time::Duration::from_secs(WS_RECONNECT_INTERVAL));
                     panic!();
                 })
                 .and_then(|(duplex, _)| {

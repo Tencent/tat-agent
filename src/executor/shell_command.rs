@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::fs::File;
+use std::fs::{remove_file, File};
 use std::io::Write;
 use std::path::Path;
 use std::process::Stdio;
@@ -13,7 +13,7 @@ use crate::executor::proc::{BaseCommand, MyCommand};
 use crate::start_failed_err_info;
 use async_trait::async_trait;
 use libc;
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use procfs::process::Process;
 use tokio::io::{AsyncReadExt, BufReader};
 use tokio::process::{Child, Command};
@@ -147,10 +147,13 @@ impl MyCommand for ShellCommand {
         let user = self.user_check()?;
 
         let log_file = self.open_log_file()?;
-
         // start the process async
         let mut child = self.prepare_cmd(user).spawn().map_err(|e| {
             *self.base.err_info.lock().unwrap() = e.to_string();
+            // remove log_file when process run failed.
+            if let Err(e) = remove_file(self.base.log_file_path.as_str()) {
+                warn!("remove log file failed: {:?}", e)
+            }
             format!(
                 "ShellCommand {}, working_directory:{}, start fail: {}",
                 self.base.cmd_path, self.base.work_dir, e
