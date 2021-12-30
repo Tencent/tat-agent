@@ -104,6 +104,11 @@ impl ShellCommand {
         envs.insert("USER".to_string(), self.base.username.clone());
         envs.insert("LOGNAME".to_string(), self.base.username.clone());
         envs.insert("USERNAME".to_string(), self.base.username.clone());
+        envs.insert("TERM".to_string(), "unknown".to_string());
+        envs.insert(
+            "MAIL".to_string(),
+            format!("/var/spool/mail/{}", self.base.username),
+        );
 
         let etc_envs;
         if let Ok(content) = std::fs::read_to_string("/etc/environment") {
@@ -134,6 +139,22 @@ impl ShellCommand {
         }
         cmd
     }
+
+    fn spawn_cmd(&self, user: User) -> Result<Child, String> {
+        let child = self.prepare_cmd(user).spawn().map_err(|e| {
+            *self.base.err_info.lock().unwrap() = e.to_string();
+            // remove log_file when process run failed.
+            if let Err(e) = remove_file(self.base.log_file_path.as_str()) {
+                warn!("remove log file failed: {:?}", e)
+            }
+            format!(
+                "ShellCommand {}, working_directory:{}, start fail: {}",
+                self.base.cmd_path, self.base.work_dir, e
+            )
+        })?;
+        *self.base.pid.lock().unwrap() = Some(child.id());
+        Ok(child)
+    }
 }
 
 #[async_trait]
@@ -147,20 +168,9 @@ impl MyCommand for ShellCommand {
         let user = self.user_check()?;
 
         let log_file = self.open_log_file()?;
-        // start the process async
-        let mut child = self.prepare_cmd(user).spawn().map_err(|e| {
-            *self.base.err_info.lock().unwrap() = e.to_string();
-            // remove log_file when process run failed.
-            if let Err(e) = remove_file(self.base.log_file_path.as_str()) {
-                warn!("remove log file failed: {:?}", e)
-            }
-            format!(
-                "ShellCommand {}, working_directory:{}, start fail: {}",
-                self.base.cmd_path, self.base.work_dir, e
-            )
-        })?;
 
-        *self.base.pid.lock().unwrap() = Some(child.id());
+        let mut child = self.spawn_cmd(user)?;
+
         let base = self.base.clone();
         // async read output.
         tokio::spawn(async move {

@@ -1,15 +1,17 @@
+use crate::executor::powershell_command::adjust_privileage;
+use log::error;
 use std::env;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::ptr;
-use winapi::shared::minwindef::{DWORD, LPVOID, FALSE};
+use winapi::shared::minwindef::{DWORD, FALSE, LPVOID};
 use winapi::shared::ntdef::NULL;
+use winapi::shared::winerror::{ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS};
+use winapi::um::errhandlingapi::GetLastError;
+use winapi::um::minwinbase::LPSECURITY_ATTRIBUTES;
+use winapi::um::synchapi::*;
 use winapi::um::winnt::{LPWSTR, PVOID, SERVICE_WIN32_OWN_PROCESS};
 use winapi::um::winsvc::*;
 use winapi::um::wow64apiset::*;
-use winapi::um::synchapi::*;
-use winapi::um::minwinbase::LPSECURITY_ATTRIBUTES;
-use winapi::um::errhandlingapi::GetLastError;
-use log::error;
 
 //static var if not start with upper case, cargo build will report warn
 static mut HANDLE: SERVICE_STATUS_HANDLE = 0 as SERVICE_STATUS_HANDLE;
@@ -68,7 +70,7 @@ unsafe extern "system" fn service_handler(
     return 0;
 }
 
-fn  try_start_service(entry: fn()) {
+fn try_start_service(entry: fn()) {
     unsafe {
         TAT_ENTRY = entry;
         let service_name = str2wstr("TAT_AGENT");
@@ -107,23 +109,21 @@ fn clean_update_files() {
                 "del",
                 "C:\\Program Files\\qcloud\\tat_agent\\temp_*.exe",
             ])
-            .spawn().map_err(|_|error!("clean_update_files fail")).ok();
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|_| error!("clean_update_files fail"))
+            .ok();
     })
 }
-
-fn set_ps1_policy() {
-    let mut cmd = std::process::Command::new("PowerShell.exe");
-    cmd.args(&["set-ExecutionPolicy", "RemoteSigned"]);
-    let mut child = cmd.spawn().unwrap();
-    child.wait().map_err(|_| error!("set_ps1_policy fail")).ok();
-}
-
 
 fn set_work_dir() {
     let exe_path = env::current_exe().unwrap();
     let work_dir = exe_path.parent().unwrap();
     wow64_disable_exc(|| {
-        env::set_current_dir(work_dir).map_err(|_| error!("set_work_dir fail")).ok();
+        env::set_current_dir(work_dir)
+            .map_err(|_| error!("set_work_dir fail"))
+            .ok();
     })
 }
 
@@ -144,23 +144,26 @@ where
     result
 }
 
- fn  already_start()->bool {
-     unsafe {
-         let event_name = str2wstr("Global\\tatsvc");
-         CreateEventW(NULL as LPSECURITY_ATTRIBUTES,
-                      FALSE,FALSE, event_name.as_ptr());
-         //ERROR_ALREADY_EXISTS=183, ERROR_ACCESS_DENIED=05 get these value from vs winerror.h
-         let err= GetLastError();
-         return  err == 183 || err == 5
-     }
+fn already_start() -> bool {
+    unsafe {
+        let event_name = str2wstr("Global\\tatsvc");
+        CreateEventW(
+            NULL as LPSECURITY_ATTRIBUTES,
+            FALSE,
+            FALSE,
+            event_name.as_ptr(),
+        );
+        let err = GetLastError();
+        return err == ERROR_ALREADY_EXISTS || err == ERROR_ACCESS_DENIED;
+    }
 }
 
 pub fn daemonize(entry: fn()) {
-    clean_update_files();
-    set_work_dir();
-    set_ps1_policy();
     if already_start() {
         std::process::exit(183);
     }
+    clean_update_files();
+    set_work_dir();
+    adjust_privileage();
     try_start_service(entry);
 }

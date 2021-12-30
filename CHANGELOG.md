@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.18] - 2021-12-21
+
+### Changed
+
+- Support script run as user on windows platform.
+- Set MAIL and TERM env for Linux.
+
 ## [0.1.17] - 2021-12-10
 
 ### Changed

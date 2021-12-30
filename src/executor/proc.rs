@@ -282,7 +282,9 @@ impl BaseCommand {
         // current output exceeds max report, init bytes_dropped and clear output.
         if ret_len + bytes_pre >= self.bytes_max_report {
             let need_report_len = self.bytes_max_report - bytes_pre;
+            // truncate some bytes in ret
             ret.truncate(need_report_len as usize);
+            // set as the total dropped bytes
             self.bytes_dropped
                 .store(len as u64 - need_report_len, Ordering::SeqCst);
             output.clear();
@@ -528,10 +530,10 @@ impl BaseCommand {
                     {
                         error!("pub object to cos fail: {:?}", e);
                         *self.output_err_info.lock().unwrap() = format!("Upload output file to cos fail, please check if {} has permission to put file to COS:  output file: {}, bucket: {}, prefix: {}",
-                                instance_id.as_str(),
-                                self.log_file_path,
-                                self.cos_bucket,
-                                self.cos_prefix,
+                                                                        instance_id.as_str(),
+                                                                        self.log_file_path,
+                                                                        self.cos_bucket,
+                                                                        self.cos_prefix,
                         );
                     }
 
@@ -588,28 +590,36 @@ impl BaseCommand {
         let output_debug = String::from_utf8_lossy(output_clone.as_slice());
         let may_contain_binary = String::from_utf8(output_clone.clone()).is_err();
 
-        f.debug_struct("ShellCommand")
+        f.debug_struct("CommandDebugInfo")
             .field("cmd_path", &self.cmd_path)
+            .field("username", &self.username)
             .field("work_dir", &self.work_dir)
             .field("timeout", &self.timeout)
             .field("bytes_max_report", &self.bytes_max_report)
             .field("bytes_reported", &self.bytes_reported)
+            .field("bytes_dropped", &self.bytes_dropped)
             .field("finished", &self.finished)
             .field("exit_code", &self.exit_code)
             .field("output", &self.output)
             .field("output_debug", &output_debug)
             .field("may_contain_binary", &may_contain_binary)
             .field("output_idx", &self.output_idx)
+            .field("log_file_path", &self.log_file_path)
+            .field("output_url", &self.output_url)
+            .field("output_err_info", &self.output_err_info)
             .field("pid", &self.pid)
             .field("killed", &self.killed)
             .field("is_timeout", &self.is_timeout)
             .field("finish_time", &self.finish_time)
+            .field("err_info", &self.err_info)
+            .field("timer_info", &self.timer_info)
             .field("cos_bucket", &self.cos_bucket)
             .field("cos_prefix", &self.cos_prefix)
             .field("task_id", &self.task_id)
             .finish()
     }
 }
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -653,7 +663,8 @@ mod tests {
 
     #[cfg(windows)]
     fn username() -> String {
-        String::from("System")
+        use crate::executor::powershell_command::get_current_user;
+        get_current_user()
     }
 
     #[test]

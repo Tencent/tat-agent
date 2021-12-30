@@ -14,14 +14,14 @@ set COMPRESS_PROC="C:\Program Files\7-Zip\7z.exe"
 :: generate self update file for release
 :: .zip file is used for self-update but can also be used to install agent
 SET FILE="tat_agent_windows_install_%VERSION%.zip"
-%COMPRESS_PROC% a %FILE% %SIGNED_AGENT% install.bat uninstall.bat self_update.bat test.bat
+%COMPRESS_PROC% a %FILE% %SIGNED_AGENT% install.bat uninstall.bat self_update.bat test.bat winutil.ps1
 
 :: generate install file for release
 SET INSTALL_DIR="tat_agent_windows_install_%VERSION%"
 if not exist %INSTALL_DIR% (
     md %INSTALL_DIR%
 )
-for %%i in (%SIGNED_AGENT% install.bat uninstall.bat test.bat) do ( copy %%i %INSTALL_DIR% )
+for %%i in (%SIGNED_AGENT% install.bat uninstall.bat test.bat winutil.ps1) do ( copy %%i %INSTALL_DIR% )
 set FILE="%INSTALL_DIR%.tar.gz"
 :: del old file
 del %FILE% >nul 2>&1

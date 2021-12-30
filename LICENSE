@@ -209,6 +209,12 @@ Copyright (c) 2015-2020 The rust-hex Developers
 36. derive_more
 Copyright (c) 2016 Jelte Fennema
 
+37. ntapi
+Copyright (c) ntapi authors
+
+38. field-offset
+Copyright (c) field-offset authors
+
 
 Terms of the MIT License:
 --------------------------------------------------------------------

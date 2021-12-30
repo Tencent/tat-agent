@@ -14,7 +14,7 @@ impl Opts {
         static mut INS: Option<Arc<Opts>> = None;
         let &mut ins;
         unsafe {
-            ins = INS.get_or_insert(Arc::new(Self::generate_opts()));
+            ins = INS.get_or_insert_with(|| Arc::new(Self::generate_opts()));
         }
         ins.clone()
     }

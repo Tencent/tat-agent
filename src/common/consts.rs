@@ -50,7 +50,6 @@ pub const WS_ACTIVE_CLOSE_CODE: u16 = 3002;
 pub const MAX_PING_FROM_LAST_PONG: usize = 3;
 pub const WS_RECONNECT_INTERVAL: u64 = 3;
 pub const WS_LAST_CLOSE_INTERVAL: u64 = 1;
-pub const WS_CONNECT_TIMEOUT: u64 = 5;
 // ws msg
 pub const WS_MSG_TYPE_KICK: &str = "kick";
 pub const WS_MSG_TYPE_ACK: &str = "ack";

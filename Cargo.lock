@@ -499,7 +499,7 @@ dependencies = [
  "crossbeam-utils 0.7.2",
  "lazy_static",
  "maybe-uninit",
- "memoffset",
+ "memoffset 0.5.6",
  "scopeguard",
 ]
 
@@ -738,6 +738,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "field-offset"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e1c54951450cbd39f3dbcf1005ac413b49487dabf18a720ad2383eccfeffb92"
+dependencies = [
+ "memoffset 0.6.5",
+ "rustc_version 0.3.3",
 ]
 
 [[package]]
@@ -1413,6 +1423,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "memoffset"
+version = "0.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5aa361d4faea93603064a027415f07bd8e1d5c88c9fbf68bf56a285428fd79ce"
+dependencies = [
+ "autocfg 1.0.1",
+]
+
+[[package]]
 name = "mime"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1546,6 +1565,15 @@ checksum = "391630d12b68002ae1e25e8f974306474966550ad82dac6886fb8910c19568ae"
 dependencies = [
  "cfg-if 0.1.10",
  "libc",
+ "winapi 0.3.9",
+]
+
+[[package]]
+name = "ntapi"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f6bb902e437b6d86e03cce10a7e2af662292c5dfef23b65899ea3ac9354ad44"
+dependencies = [
  "winapi 0.3.9",
 ]
 
@@ -2427,7 +2455,7 @@ dependencies = [
 
 [[package]]
 name = "tat_agent"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "async-attributes",
  "async-std",
@@ -2442,6 +2470,7 @@ dependencies = [
  "derive_more",
  "encoding",
  "faux",
+ "field-offset",
  "futures 0.1.31",
  "futures 0.3.17",
  "hex",
@@ -2450,6 +2479,7 @@ dependencies = [
  "log 0.4.14",
  "log4rs",
  "md5",
+ "ntapi",
  "openssl",
  "procfs",
  "rand 0.7.3",

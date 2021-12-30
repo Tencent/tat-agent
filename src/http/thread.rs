@@ -166,11 +166,11 @@ impl HttpWorker {
                     if dropped > first_dropped {
                         final_log_index = idx;
                         info!(
-                        "ready to report output dropped length:idx:{}, dropped:{}, output_debug:{}",
-                        idx,
-                        dropped,
-                        String::from_utf8_lossy(&out[..]).replace("\n", "\\n"),
-                    );
+                            "ready to report output dropped length:idx:{}, dropped:{}, output_debug:{}",
+                            idx,
+                            dropped,
+                            String::from_utf8_lossy(&out[..]).replace("\n", "\\n"),
+                        );
                         // final dropped bytes report task here
                         self.upload_task_log(task_id, idx, out, dropped).await;
                         info!("report final dropped bytes of output.");
@@ -385,6 +385,8 @@ impl HttpWorker {
 mod tests {
     use crate::common::consts::FINISH_RESULT_TERMINATED;
     use crate::common::logger;
+    #[cfg(windows)]
+    use crate::executor::powershell_command::get_current_user;
     use crate::executor::proc;
     use crate::executor::proc::MyCommand;
     use crate::http::store::TaskFileStore;
@@ -445,7 +447,7 @@ mod tests {
             #[cfg(unix)]
             username: String::from(get_current_username().unwrap().to_str().unwrap()),
             #[cfg(windows)]
-            username: "system".to_string(),
+            username: get_current_user(),
             working_directory: "./".to_string(),
             cos_bucket_url: "".to_string(),
             cos_bucket_prefix: "".to_string(),
