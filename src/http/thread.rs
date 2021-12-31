@@ -383,7 +383,6 @@ impl HttpWorker {
 
 #[cfg(test)]
 mod tests {
-    use crate::common::asserts::GracefulUnwrap;
     use crate::common::consts::FINISH_RESULT_TERMINATED;
     use crate::common::logger;
     use crate::executor::proc;

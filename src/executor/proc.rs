@@ -284,7 +284,7 @@ impl BaseCommand {
             let need_report_len = self.bytes_max_report - bytes_pre;
             ret.truncate(need_report_len as usize);
             self.bytes_dropped
-                .store(ret_len - need_report_len, Ordering::SeqCst);
+                .store(len as u64 - need_report_len, Ordering::SeqCst);
             output.clear();
         }
 
@@ -959,6 +959,48 @@ mod tests {
         tokio::time::delay_for(Duration::new(1, 0)).await;
         assert!(!is_process_exist(cmd.pid()).await);
 
+        fs::remove_file(filename.as_str()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_long_output() {
+        init_log();
+        cfg_if::cfg_if! {
+            if #[cfg(unix)] {
+                let filename = format!("./.{}.sh", gen_rand_str());
+                create_file(format!("yes | head -c {}", OUTPUT_BYTE_LIMIT_EACH_REPORT + 1).as_str(), filename.as_str());
+            } else if #[cfg(windows)] {
+                let filename = format!("./{}.ps1", gen_rand_str());
+                create_file(
+                    format!("foreach ($i in 1..{}) {{ Write-Host 'y' -NoNewLine }};", OUTPUT_BYTE_LIMIT_EACH_REPORT + 1).as_str(),
+                    filename.as_str(),
+                );
+            }
+        }
+        let log_path = format!("./{}.log", gen_rand_str());
+        let ret = new(
+            filename.as_str(),
+            &username(),
+            CMD_TYPE,
+            "./",
+            10,
+            1024,
+            log_path.as_str(),
+            "",
+            "",
+            "",
+        );
+        let mut cmd = ret.unwrap();
+        let ret = cmd.run().await;
+        assert!(ret.is_ok());
+
+        while !cmd.is_finished() {
+            tokio::time::delay_for(Duration::new(1, 0)).await;
+        }
+
+        let (_, idx, dropped) = cmd.next_output();
+        assert_eq!(idx, 0);
+        assert_eq!(dropped, (OUTPUT_BYTE_LIMIT_EACH_REPORT + 1 - 1024) as u64);
         fs::remove_file(filename.as_str()).unwrap();
     }
 

@@ -82,7 +82,7 @@ impl TaskFileStore {
         &self,
         path: &str,
         ignore_exists: bool,
-        executable: bool,
+        #[cfg(unix)] executable: bool,
     ) -> Result<File, String> {
         let file_path = Path::new(path);
         if file_path.exists() {
@@ -166,7 +166,12 @@ impl TaskFileStore {
         );
 
         // store task file
-        let mut file = self.create_file(&task_file_path, true, true)?;
+        let mut file = self.create_file(
+            &task_file_path,
+            true,
+            #[cfg(unix)]
+            true,
+        )?;
         let s = t.decode_command()?;
         let res = file.write_all(&s);
         if res.is_err() {
