@@ -337,8 +337,7 @@ pub fn try_restart_agent() -> Result<(), String> {
             let cmd = Command::new("sh")
             .args(&[
                 "-c",
-                &script,
-                "restart"
+                format!("{} restart", script).as_str()
             ])
             .output();
         } else if #[cfg(windows)] {

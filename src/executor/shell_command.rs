@@ -24,6 +24,7 @@ use users::{get_user_by_name, User};
 pub struct ShellCommand {
     base: Arc<BaseCommand>,
 }
+
 impl ShellCommand {
     pub fn new(
         cmd_path: &str,
@@ -84,7 +85,8 @@ impl ShellCommand {
         // find shell
         let mut shell_path = cmd_path("bash");
         let (shell, login_init) = if shell_path.is_some() {
-            let login_init = ". ~/.bash_profile 2> /dev/null || . ~/.bashrc 2> /dev/null ; ";
+            let login_init = ". /etc/profile 2> /dev/null ; \
+                              . ~/.bash_profile 2> /dev/null || . ~/.bashrc 2> /dev/null ; ";
             ("bash", login_init)
         } else {
             shell_path = cmd_path("sh");
@@ -244,9 +246,7 @@ impl BaseCommand {
                     pid,
                     len
                 );
-                // type convert
-                let mut new_out: Vec<u8> = Vec::from(&buffer[..len]);
-                self.append_output(&mut new_out);
+                self.append_output(&buffer[..len]);
                 if process_finish && len < BUF_SIZE {
                     info!("process finish and len < BUF_SIZE,break");
                     break;

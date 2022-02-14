@@ -22,6 +22,7 @@ use async_trait::async_trait;
 use log::{debug, error, info, warn};
 use std::fmt;
 use std::fs::{create_dir_all, File, OpenOptions};
+use std::io::Write;
 use std::path::Path;
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -233,9 +234,9 @@ impl BaseCommand {
         output.len()
     }
 
-    pub fn append_output(&self, data: &mut Vec<u8>) {
+    pub fn append_output(&self, data:&[u8]) {
         let mut output = self.output.lock().unwrap_or_exit("lock failed");
-        output.append(data);
+        output.write(data).unwrap();
     }
 
     pub fn next_output(&self) -> (Vec<u8>, u32, u64) {

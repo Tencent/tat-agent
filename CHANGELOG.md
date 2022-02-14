@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.19] - 2022-02-11
+
+### Changed
+
+- Change powershell default encode.
+- Auto load env in /etc/profile.
+
 ## [0.1.18] - 2021-12-21
 
 ### Changed

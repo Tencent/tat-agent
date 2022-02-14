@@ -9,17 +9,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f26201604c87b1e01bd3d98f8d5d9a8fcbb815e8cedb41ffccbeb4bf593a35fe"
 
 [[package]]
-name = "ahash"
-version = "0.7.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fcb51a0695d8f838b1ee009b3fbf66bda078cd64590202a864a8f3e8c4315c47"
-dependencies = [
- "getrandom 0.2.3",
- "once_cell",
- "version_check 0.9.3",
-]
-
-[[package]]
 name = "ansi_term"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -409,26 +398,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ddfc5b9aa5d4507acaf872de71051dfd0e309860e88966e1051e462a077aac4f"
 dependencies = [
  "bitflags",
-]
-
-[[package]]
-name = "codepage"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b0e9222c0cdf2c6ac27d73f664f9520266fa911c3106329d359f8861cb8bde9"
-dependencies = [
- "encoding_rs",
-]
-
-[[package]]
-name = "codepage-strings"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d34f25fc635bc3c98b4a0c707c99b7ffe7f51cb98b904d814e9c24441fad8c52"
-dependencies = [
- "codepage",
- "encoding_rs",
- "oem_cp",
 ]
 
 [[package]]
@@ -1607,16 +1576,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "oem_cp"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "56428601ad4b928c5b705e89eb2db6ae070de7bad96f0e1c2ae07288fdfff082"
-dependencies = [
- "ahash",
- "lazy_static",
-]
-
-[[package]]
 name = "once_cell"
 version = "1.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2455,7 +2414,7 @@ dependencies = [
 
 [[package]]
 name = "tat_agent"
-version = "0.1.18"
+version = "0.1.19"
 dependencies = [
  "async-attributes",
  "async-std",
@@ -2465,7 +2424,6 @@ dependencies = [
  "cfg-if 1.0.0",
  "chrono",
  "clap",
- "codepage-strings",
  "daemonize",
  "derive_more",
  "encoding",

@@ -1,13 +1,11 @@
 use crate::common::consts::AGENT_VERSION;
 use crate::types::AgentErrorCode;
-use serde::{Deserialize, Serialize};
-
 use crate::uname::common::UnameExt;
 use crate::uname::Uname;
+use serde::{Deserialize, Serialize};
 #[cfg(windows)]
-use winapi::um::winnls::GetOEMCP;
-#[cfg(windows)]
-use codepage_strings::Coding;
+use std::io::Write;
+
 //==============================================================================
 // Declare standard request and response format for C/S communication
 // general parameters in reqeust
@@ -166,16 +164,23 @@ impl InvocationNormalTask {
         match base64::decode(&self.command) {
             Ok(command) => {
                 #[cfg(windows)]
-                let command = Coding::new(unsafe { GetOEMCP() } as u16)
-                    .map_err(|e| e.to_string())?
-                    .encode(String::from_utf8_lossy(&command))
-                    .map_err(|e|e.to_string())?;
+                {
+                    //powershell dont support utf8,but support utf8 with bom.
+                    //utf8 bom start with 0xEE,0xBB,0xBF,
+                    let utf8_bom_head: [u8; 3] = [0xEF, 0xBB, 0xBF];
+                    let mut utf8_bom_cmd = Vec::new();
+                    utf8_bom_cmd.write(&utf8_bom_head).unwrap();
+                    utf8_bom_cmd.write(command.as_slice()).unwrap();
+                    Ok(utf8_bom_cmd)
+                }
+                #[cfg(unix)]
                 Ok(command)
             }
             Err(e) => Err(format!("decode error: {:?}", e)),
         }
     }
 }
+
 //==============================================================================
 // ReportTaskStart API
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -240,6 +245,7 @@ impl UploadTaskLogRequest {
         }
     }
 }
+
 pub type UploadTaskLogResponse = Empty;
 //==============================================================================
 // CheckUpdate API
@@ -408,8 +414,21 @@ mod tests {
             cos_bucket_url: format!(""),
             cos_bucket_prefix: format!(""),
         };
+
+        #[cfg(unix)]
+        let contents = tasks1.decode_command().unwrap();
+        #[cfg(windows)]
+        let mut contents = tasks1.decode_command().unwrap();
+        #[cfg(windows)]
+        {
+            //check utf8 bom, start with 0xEF 0xBB 0xBF
+            assert_eq!(contents[0], 0xEF);
+            assert_eq!(contents[1], 0xBB);
+            assert_eq!(contents[2], 0xBF);
+            contents = Vec::from(&contents[3..]);
+        }
         assert_eq!(
-            String::from_utf8_lossy(&tasks1.decode_command().unwrap()),
+            String::from_utf8_lossy(&contents),
             String::from("ls -l;\necho \"Hello World\"")
         );
     }

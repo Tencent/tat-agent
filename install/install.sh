@@ -9,6 +9,15 @@ PATH_DIR="/usr/sbin/"
 TAT_AGENT="tat_agent"
 TAT_AGENT32="tat_agent32"
 
+try_kill_by_pid() {
+    if [ -f ${PID_FILE} ]; then
+        PID=$(cat ${PID_FILE})
+        kill ${PID} > /dev/null 2>&1
+        sleep 0.1 || sleep 1
+        rm -f ${PID_FILE}
+    fi
+}
+
 has_systemd() {
     [[ `systemctl` =~ -\.mount ]] > /dev/null 2>&1 && return 0
     if systemctl 2>/dev/null | grep -e "-\.mount" > /dev/null 2>&1; then
@@ -39,6 +48,7 @@ has_upstart() {
 
 install() {
   need_restart=$1
+  echo "try to install tat_agent, need_restart: $need_restart."
 
   # if arch is 32bit and 32bit bin exists, rename `tat_agent32` to `tat_agent`
   machine=$(uname -m)
@@ -85,7 +95,7 @@ install() {
       echo "use upstart(initctl) to manage service"
       cp -f tat_agent_service.conf /etc/init/
       if test "${need_restart}" = true; then
-          initctl stop tat_agent_service
+          try_kill_by_pid
           initctl start tat_agent_service
       fi
   elif has_sysvinit; then
@@ -111,10 +121,7 @@ install() {
   else
       if test "${need_restart}" = true; then
           echo "no proper daemon manager found, tat_agent can not auto start"
-          PID=$(cat ${PID_FILE})
-          kill ${PID} > /dev/null 2>&1
-          sleep 0.1 || sleep 1
-          rm -f ${PID_FILE}
+          try_kill_by_pid
           cd ${SERVICE_DIR}
           ./${TAT_AGENT}
           echo "tat_agent started"
@@ -123,20 +130,18 @@ install() {
 }
 
 restart() {
+  echo "try to restart tat_agent."
   if has_systemd; then
       echo "use systemd to manage service"
       systemctl restart tat_agent.service
   elif has_upstart; then
       echo "use upstart(initctl) to manage service"
-      initctl stop tat_agent_service
+      try_kill_by_pid
       initctl start tat_agent_service
   elif has_sysvinit; then
       /etc/init.d/tat_agent_service restart
   else
-      PID=$(cat ${PID_FILE})
-      kill ${PID} > /dev/null 2>&1
-      sleep 0.1 || sleep 1
-      rm -f ${PID_FILE}
+      try_kill_by_pid
       cd ${SERVICE_DIR}
       ./${TAT_AGENT}
       echo "tat_agent started"

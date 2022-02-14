@@ -2,7 +2,6 @@ use crate::daemonizer::wow64_disable_exc;
 use crate::executor::proc::{BaseCommand, MyCommand};
 use crate::start_failed_err_info;
 use async_trait::async_trait;
-use codepage_strings::Coding;
 use core::mem;
 use log::{debug, error, info, warn};
 use ntapi::ntpsapi::{
@@ -18,7 +17,7 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::fmt::{Debug, Formatter};
 use std::fs::{remove_file, File, OpenOptions};
-use std::io::{BufWriter, Write};
+use std::io::Write;
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::prelude::OsStringExt;
 use std::path::Path;
@@ -65,18 +64,7 @@ use winapi::um::winbase::{
     PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT,
 };
 
-use winapi::um::winnls::GetOEMCP;
-use winapi::um::winnt::{
-    SecurityDelegation, TokenPrimary, TokenStatistics, ANONYMOUS_LOGON_LUID, HANDLE,
-    LUID_AND_ATTRIBUTES, PROCESS_ALL_ACCESS, PSID, PTOKEN_DEFAULT_DACL, PTOKEN_GROUPS,
-    PTOKEN_OWNER, PTOKEN_PRIMARY_GROUP, PTOKEN_PRIVILEGES, PTOKEN_SOURCE, PTOKEN_USER,
-    SECURITY_DYNAMIC_TRACKING, SECURITY_QUALITY_OF_SERVICE, SE_CHANGE_NOTIFY_NAME,
-    SE_CREATE_GLOBAL_NAME, SE_GROUP_ENABLED, SE_GROUP_ENABLED_BY_DEFAULT, SE_GROUP_MANDATORY,
-    SE_GROUP_OWNER, SE_IMPERSONATE_NAME, SE_PRIVILEGE_ENABLED, SE_PRIVILEGE_ENABLED_BY_DEFAULT,
-    SE_PRIVILEGE_REMOVED, SID_AND_ATTRIBUTES, SID_NAME_USE, TOKEN_ALL_ACCESS, TOKEN_GROUPS,
-    TOKEN_INFORMATION_CLASS, TOKEN_PRIMARY_GROUP, TOKEN_PRIVILEGES, TOKEN_SOURCE, TOKEN_STATISTICS,
-    TOKEN_USER,
-};
+use winapi::um::winnt::{SecurityDelegation, TokenPrimary, TokenStatistics, ANONYMOUS_LOGON_LUID, HANDLE, LUID_AND_ATTRIBUTES, PROCESS_ALL_ACCESS, PSID, PTOKEN_DEFAULT_DACL, PTOKEN_GROUPS, PTOKEN_OWNER, PTOKEN_PRIMARY_GROUP, PTOKEN_PRIVILEGES, PTOKEN_SOURCE, PTOKEN_USER, SECURITY_DYNAMIC_TRACKING, SECURITY_QUALITY_OF_SERVICE, SE_CHANGE_NOTIFY_NAME, SE_CREATE_GLOBAL_NAME, SE_GROUP_ENABLED, SE_GROUP_ENABLED_BY_DEFAULT, SE_GROUP_MANDATORY, SE_GROUP_OWNER, SE_IMPERSONATE_NAME, SE_PRIVILEGE_ENABLED, SE_PRIVILEGE_ENABLED_BY_DEFAULT, SE_PRIVILEGE_REMOVED, SID_AND_ATTRIBUTES, SID_NAME_USE, TOKEN_ALL_ACCESS, TOKEN_GROUPS, TOKEN_INFORMATION_CLASS, TOKEN_PRIMARY_GROUP, TOKEN_PRIVILEGES, TOKEN_SOURCE, TOKEN_STATISTICS, TOKEN_USER, PROCESS_TERMINATE};
 
 pub struct PowerShellCommand {
     base: Arc<BaseCommand>,
@@ -138,9 +126,18 @@ impl PowerShellCommand {
             e.to_string()
         })?;
 
-        let mut command = Command::new("PowerShell.exe");
+        let mut command = Command::new("cmd.exe");
         command
-            .args(&["-ExecutionPolicy", "Bypass", self.base.cmd_path.as_str()])
+            .args(&[
+                "/C",
+                "powershell",
+                "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8",
+                "&",
+                "powershell",
+                "-ExecutionPolicy",
+                "Bypass",
+                self.base.cmd_path.as_str(),
+            ])
             .stdin(Stdio::null())
             .stdout(std_out)
             .stderr(std_err)
@@ -249,7 +246,6 @@ impl BaseCommand {
         let mut buffer: [u8; BUF_SIZE] = [0; BUF_SIZE];
 
         let mut file = tokio::fs::File::from_std(file);
-        let codepage = unsafe { GetOEMCP() };
         loop {
             let size = file.read(&mut buffer[..]).await;
             if size.is_err() {
@@ -258,17 +254,13 @@ impl BaseCommand {
             }
             let len = size.unwrap();
             if len > 0 {
-                let decoded_string = Coding::new(codepage as u16)
-                    .unwrap()
-                    .decode(&buffer[..len])
-                    .unwrap();
-                debug!("output:[{}], pid:{}, len:{}", decoded_string, pid, len);
-                if let Err(e) = log_file.write(decoded_string.as_bytes()) {
+                let output_string = String::from_utf8_lossy(&buffer[..len]);
+                debug!("output:[{}], pid:{}, len:{}", output_string, pid, len);
+
+                if let Err(e) = log_file.write(&buffer[..len]) {
                     error!("write output file fail: {:?}", e)
                 }
-                unsafe {
-                    self.append_output(String::from(decoded_string).as_mut_vec());
-                }
+                self.append_output(&buffer[..len]);
             } else {
                 info!("read output finished normally, pid:{}", pid);
                 break;
@@ -289,7 +281,6 @@ impl BaseCommand {
             let mut child_pids: Vec<u32> = Vec::new();
 
             //get process snapshot
-            child_pids.push(pid);
             let hp = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
             let mut pe: PROCESSENTRY32 = mem::zeroed();
             pe.dwSize = mem::size_of::<PROCESSENTRY32>() as DWORD;
@@ -304,6 +295,7 @@ impl BaseCommand {
             CloseHandle(hp);
 
             //find all child process
+            child_pids.push(pid);
             let mut index = 0;
             loop {
                 if index != child_pids.len() {
@@ -320,10 +312,13 @@ impl BaseCommand {
 
             //kill process
             for (_, pid) in child_pids.iter().enumerate() {
-                let handle = OpenProcess(PROCESS_ALL_ACCESS, FALSE, *pid);
+                info!("pid need to kill is {}",pid);
+                let handle = OpenProcess(PROCESS_TERMINATE, FALSE, *pid);
                 if handle != NULL {
                     TerminateProcess(handle, 0xffffffff as u32);
                     CloseHandle(handle);
+                }else {
+                    error!("open pid err, {}",GetLastError());
                 }
             }
         }
@@ -581,20 +576,19 @@ fn get_auth_id() -> LUID {
 }
 
 fn conver_to_sid(sid_name: &str) -> Vec<u8> {
-    let buffer_data = Vec::<u8>::new();
-    let mut writer = BufWriter::new(buffer_data);
+    let mut buffer_data = Vec::<u8>::new();
     let mut psid: PSID = null_mut();
     let wsz_sid = str2wsz(sid_name);
     unsafe {
         ConvertStringSidToSidW(wsz_sid.as_ptr(), &mut psid);
-        writer
+        buffer_data
             .write(slice::from_raw_parts(
                 psid as *const u8,
                 RtlLengthSid(psid as PSID) as usize,
             ))
             .unwrap();
         RtlFreeSid(psid);
-        writer.buffer().to_vec()
+        buffer_data
     }
 }
 
@@ -658,10 +652,9 @@ fn get_user_token_groups(user_name: &str) -> Vec<u8> {
         let group_offset: usize =
             field_offset::offset_of!(TOKEN_GROUPS => Groups).get_byte_offset();
 
-        let buffer_data = Vec::<u8>::new();
-        let mut writer = BufWriter::new(buffer_data);
+        let mut buffer_data = Vec::<u8>::new();
         let count: u64 = 0; //correct this value later
-        writer
+        buffer_data
             .write(slice::from_raw_parts(
                 &count as *const u64 as *const u8,
                 group_offset,
@@ -682,7 +675,7 @@ fn get_user_token_groups(user_name: &str) -> Vec<u8> {
                 Sid: NULL as PSID, //correct this value later
                 Attributes: group_sid_attrs.get(i).unwrap().1,
             };
-            writer
+            buffer_data
                 .write(slice::from_raw_parts(
                     &template as *const SID_AND_ATTRIBUTES as *const u8,
                     mem::size_of::<SID_AND_ATTRIBUTES>(),
@@ -692,14 +685,14 @@ fn get_user_token_groups(user_name: &str) -> Vec<u8> {
 
         //write sid to the buffer
         for (_, sid_attr) in group_sid_attrs.iter().enumerate() {
-            writer
+            buffer_data
                 .write(slice::from_raw_parts(
                     sid_attr.0.as_ptr() as *const u8,
                     RtlLengthSid(sid_attr.0.as_ptr() as PSID) as usize,
                 ))
                 .unwrap();
         }
-        let mut token_groups_data = writer.buffer().to_vec();
+        let mut token_groups_data = buffer_data;
 
         //correct count
         *(token_groups_data[0..3].as_mut_ptr() as *mut u32) = group_sid_attrs.len() as u32;
@@ -724,8 +717,7 @@ fn get_user_token_groups(user_name: &str) -> Vec<u8> {
 }
 
 fn get_user_privileges(user: &str) -> Vec<u8> {
-    let buffer_data = Vec::<u8>::new();
-    let mut writer = BufWriter::new(buffer_data);
+    let mut buffer_data = Vec::<u8>::new();
     unsafe {
         let privileges_offset: usize =
             field_offset::offset_of!(TOKEN_PRIVILEGES => Privileges).get_byte_offset();
@@ -773,7 +765,7 @@ fn get_user_privileges(user: &str) -> Vec<u8> {
         }
         LsaClose(lsa_handle);
         let count: u64 = right_set_temp.len() as u64;
-        writer
+        buffer_data
             .write(slice::from_raw_parts(
                 &count as *const u64 as *const u8,
                 privileges_offset,
@@ -796,16 +788,14 @@ fn get_user_privileges(user: &str) -> Vec<u8> {
                 Luid: luid,
                 Attributes: attr,
             };
-            writer
+            buffer_data
                 .write(slice::from_raw_parts(
                     &la as *const LUID_AND_ATTRIBUTES as *const u8,
                     mem::size_of::<LUID_AND_ATTRIBUTES>(),
                 ))
                 .unwrap();
         }
-
-        let token_privileges = writer.buffer().to_vec();
-        return token_privileges;
+        return buffer_data;
     }
 }
 

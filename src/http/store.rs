@@ -193,7 +193,7 @@ impl TaskFileStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs::{read_dir, read_to_string, remove_dir, remove_file};
+    use std::fs::{read, read_dir, remove_dir, remove_file};
 
     #[test]
     fn test_store_task() {
@@ -234,8 +234,20 @@ mod tests {
         );
 
         let (task_file, _) = store.store(&task).unwrap();
-        let contents = read_to_string(&task_file).unwrap();
-        assert_eq!(contents, "ls -l");
+        #[cfg(unix)]
+        let contents = read(&task_file).unwrap();
+        #[cfg(windows)]
+        let mut contents = read(&task_file).unwrap();
+        #[cfg(windows)]
+        {
+            //check utf8 bom, start with 0xEF 0xBB 0xBF
+            assert_eq!(contents[2], 0xBF);
+            assert_eq!(contents[1], 0xBB);
+            assert_eq!(contents[0], 0xEF);
+            contents = Vec::from(&contents[3..]);
+        }
+        let command = String::from_utf8_lossy(contents.as_slice());
+        assert_eq!(command, "ls -l");
         store.remove(&task_file);
         let paths = read_dir(Path::new(&task_file).parent().unwrap()).unwrap();
         for f in paths {
