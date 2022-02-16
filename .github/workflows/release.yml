@@ -1,0 +1,42 @@
+name: BuildReleaseAssets
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-linux:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v2
+    - name: Get latest release version number
+      id: get_version
+      uses: battila7/get-version-action@v2
+    - name: Cache for Rust
+      uses: actions/cache@v2
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          target/
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-release-v3
+    - name: Build
+      run: make release && cd install && mkdir tmp && ln tat_agent_linux_install_* tmp/
+    - name: Create Release With Asset
+      uses: Hs1r1us/Release-AIO@v1.0
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.ref }}
+        release_name: ${{ steps.get_version.outputs.version }}
+        asset_files: './install/tmp'
+

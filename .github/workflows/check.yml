@@ -1,0 +1,61 @@
+name: PullCheck
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check-build-linux:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v2
+    - uses: actions/cache@v2
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          target/
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-check-v1
+    - name: Build Check Warnings
+      # deny any warnings
+      run: RUSTFLAGS="-D warnings" cargo build
+    - name: Unit Tests
+      run: RUSTFLAGS="-D warnings" make lib-test
+    
+  check-build-windows:
+
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v2
+    - uses: actions/cache@v2
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          target/
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-check-v1
+    - name: Add Target
+      run: rustup target add x86_64-pc-windows-msvc
+    - name: Set Env
+      run: echo "RUSTFLAGS=-C target-feature=+crt-static -D warnings" >> $env:GITHUB_ENV
+    - name: Build Check Warnings
+      run: cargo build --release --target x86_64-pc-windows-msvc
+    - name: Unit Tests
+      run: cargo test --target x86_64-pc-windows-msvc --lib -- --nocapture --skip ontime
+
