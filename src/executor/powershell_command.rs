@@ -64,7 +64,17 @@ use winapi::um::winbase::{
     PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT,
 };
 
-use winapi::um::winnt::{SecurityDelegation, TokenPrimary, TokenStatistics, ANONYMOUS_LOGON_LUID, HANDLE, LUID_AND_ATTRIBUTES, PROCESS_ALL_ACCESS, PSID, PTOKEN_DEFAULT_DACL, PTOKEN_GROUPS, PTOKEN_OWNER, PTOKEN_PRIMARY_GROUP, PTOKEN_PRIVILEGES, PTOKEN_SOURCE, PTOKEN_USER, SECURITY_DYNAMIC_TRACKING, SECURITY_QUALITY_OF_SERVICE, SE_CHANGE_NOTIFY_NAME, SE_CREATE_GLOBAL_NAME, SE_GROUP_ENABLED, SE_GROUP_ENABLED_BY_DEFAULT, SE_GROUP_MANDATORY, SE_GROUP_OWNER, SE_IMPERSONATE_NAME, SE_PRIVILEGE_ENABLED, SE_PRIVILEGE_ENABLED_BY_DEFAULT, SE_PRIVILEGE_REMOVED, SID_AND_ATTRIBUTES, SID_NAME_USE, TOKEN_ALL_ACCESS, TOKEN_GROUPS, TOKEN_INFORMATION_CLASS, TOKEN_PRIMARY_GROUP, TOKEN_PRIVILEGES, TOKEN_SOURCE, TOKEN_STATISTICS, TOKEN_USER, PROCESS_TERMINATE};
+use winapi::um::winnt::{
+    SecurityDelegation, TokenPrimary, TokenStatistics, ANONYMOUS_LOGON_LUID, HANDLE,
+    LUID_AND_ATTRIBUTES, PROCESS_ALL_ACCESS, PROCESS_TERMINATE, PSID, PTOKEN_DEFAULT_DACL,
+    PTOKEN_GROUPS, PTOKEN_OWNER, PTOKEN_PRIMARY_GROUP, PTOKEN_PRIVILEGES, PTOKEN_SOURCE,
+    PTOKEN_USER, SECURITY_DYNAMIC_TRACKING, SECURITY_QUALITY_OF_SERVICE, SE_CHANGE_NOTIFY_NAME,
+    SE_CREATE_GLOBAL_NAME, SE_GROUP_ENABLED, SE_GROUP_ENABLED_BY_DEFAULT, SE_GROUP_MANDATORY,
+    SE_GROUP_OWNER, SE_IMPERSONATE_NAME, SE_PRIVILEGE_ENABLED, SE_PRIVILEGE_ENABLED_BY_DEFAULT,
+    SE_PRIVILEGE_REMOVED, SID_AND_ATTRIBUTES, SID_NAME_USE, SYSTEM_LUID, TOKEN_ALL_ACCESS,
+    TOKEN_GROUPS, TOKEN_INFORMATION_CLASS, TOKEN_PRIMARY_GROUP, TOKEN_PRIVILEGES, TOKEN_SOURCE,
+    TOKEN_STATISTICS, TOKEN_USER,
+};
 
 pub struct PowerShellCommand {
     base: Arc<BaseCommand>,
@@ -241,10 +251,10 @@ impl MyCommand for PowerShellCommand {
 
 impl BaseCommand {
     async fn read_ps1_output(&self, file: File, mut log_file: File) {
+        let mut utf8_bom_checked = false;
         let pid = self.pid.lock().unwrap().unwrap();
         const BUF_SIZE: usize = 1024;
         let mut buffer: [u8; BUF_SIZE] = [0; BUF_SIZE];
-
         let mut file = tokio::fs::File::from_std(file);
         loop {
             let size = file.read(&mut buffer[..]).await;
@@ -252,8 +262,17 @@ impl BaseCommand {
                 error!("read output err:{}, pid:{}", size.unwrap_err(), pid);
                 break;
             }
-            let len = size.unwrap();
+            let mut len = size.unwrap();
             if len > 0 {
+                //win2008 check utf8 bom header, start with 0xEE,0xBB,0xBF,
+                if utf8_bom_checked == false {
+                    utf8_bom_checked = true;
+                    let utf8_bom_header: [u8; 3] = [0xEF, 0xBB, 0xBF];
+                    if buffer.starts_with(&utf8_bom_header[..]) {
+                        buffer.rotate_left(3);
+                        len = len - 3;
+                    }
+                }
                 let output_string = String::from_utf8_lossy(&buffer[..len]);
                 debug!("output:[{}], pid:{}, len:{}", output_string, pid, len);
 
@@ -312,13 +331,13 @@ impl BaseCommand {
 
             //kill process
             for (_, pid) in child_pids.iter().enumerate() {
-                info!("pid need to kill is {}",pid);
+                info!("pid need to kill is {}", pid);
                 let handle = OpenProcess(PROCESS_TERMINATE, FALSE, *pid);
                 if handle != NULL {
                     TerminateProcess(handle, 0xffffffff as u32);
                     CloseHandle(handle);
-                }else {
-                    error!("open pid err, {}",GetLastError());
+                } else {
+                    error!("open pid err, {}", GetLastError());
                 }
             }
         }
@@ -483,7 +502,7 @@ fn create_user_token(user_name: &str) -> Result<HANDLE, String> {
         oa.Length = mem::size_of::<OBJECT_ATTRIBUTES>() as u32;
         oa.SecurityQualityOfService = &mut sqos as *mut SECURITY_QUALITY_OF_SERVICE as PVOID;
 
-        let mut auth_id = get_auth_id();
+        let mut auth_id = get_auth_id(user_name);
 
         let mut exptm: LARGE_INTEGER = mem::transmute(0xffffffffffffffff as u64);
 
@@ -542,8 +561,12 @@ fn create_user_token(user_name: &str) -> Result<HANDLE, String> {
     }
 }
 
-fn get_auth_id() -> LUID {
+fn get_auth_id(user_name: &str) -> LUID {
     unsafe {
+        if user_name.eq_ignore_ascii_case("System") {
+            return SYSTEM_LUID;
+        }
+
         static mut IS_2008: Option<bool> = None;
         let is_2008 = IS_2008.get_or_insert_with(|| {
             //only execute once

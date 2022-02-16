@@ -1,6 +1,12 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [0.1.20] - 2022-02-16
+
+### Changed
+
+- Optimize AuthenticationId logic.
+- Remove utf8 bom header from powershell output on windows 2008.
 
 ## [0.1.19] - 2022-02-11
 
