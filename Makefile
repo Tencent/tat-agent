@@ -23,6 +23,8 @@ else ifeq ($(arch), i686)
 	rust_target = i686-unknown-linux-musl
 else ifeq ($(arch), i586)
 	rust_target = i586-unknown-linux-musl
+else ifeq ($(arch), aarch64)
+	rust_target = aarch64-unknown-linux-musl
 endif
 
 # ensure cross installed. we use it for cross-compile.
@@ -50,13 +52,16 @@ release:
 ifeq ($(in_docker),true)
 	cross build --release --target=x86_64-unknown-linux-musl
 	cross build --release --target=i686-unknown-linux-musl
+	cross build --release --target=aarch64-unknown-linux-musl
 else
 	cargo build --release --target=x86_64-unknown-linux-musl
 	cargo build --release --target=i686-unknown-linux-musl
+	cargo build --release --target=aarch64-unknown-linux-musl
 endif
 
 	ln -f target/x86_64-unknown-linux-musl/release/tat_agent tat_agent
 	ln -f target/i686-unknown-linux-musl/release/tat_agent tat_agent32
+	ln -f target/aarch64-unknown-linux-musl/release/tat_agent tat_agent_aarch64
 	install/release.sh
 
 # stop the daemon via systemctl, or kill directly by pid

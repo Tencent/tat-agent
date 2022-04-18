@@ -8,6 +8,7 @@ SERVICE_DIR="/usr/local/qcloud/tat_agent/"
 PATH_DIR="/usr/sbin/"
 TAT_AGENT="tat_agent"
 TAT_AGENT32="tat_agent32"
+TAT_AGENT_AARCH64="tat_agent_aarch64"
 
 try_kill_by_pid() {
     if [ -f ${PID_FILE} ]; then
@@ -51,10 +52,16 @@ install() {
   echo "try to install tat_agent, need_restart: $need_restart."
 
   # if arch is 32bit and 32bit bin exists, rename `tat_agent32` to `tat_agent`
+  # if arch is aarch64 and aarch64 bin exists, rename `tat_agent_aarch64` to `tat_agent`
   machine=$(uname -m)
-  if [ "$machine" != "x86_64" ] && [ -f "$TAT_AGENT32" ]; then
+  if [ "$machine" != "x86_64" ]; then
+    if [ "$machine" != "aarch64" ] && [ -f "$TAT_AGENT32" ]; then
       mv ${TAT_AGENT} -f ${TAT_AGENT}64
       mv ${TAT_AGENT32} -f ${TAT_AGENT}
+    elif [ -f "$TAT_AGENT_AARCH64" ]; then
+      mv ${TAT_AGENT} -f ${TAT_AGENT}64
+      mv ${TAT_AGENT_AARCH64} -f ${TAT_AGENT}
+    fi  
   fi
 
   # check if agent runnable

@@ -5,8 +5,10 @@ log
 install/tat_agent
 install/tat_agent32
 install/tat_agent64
+install/tat_agent_aarch64
 tat_agent
 tat_agent32
+tat_agent_aarch64
 install/tat_agent_*.zip
 install/tat_agent_*.tar.gz
 install/tat_agent_*install*
