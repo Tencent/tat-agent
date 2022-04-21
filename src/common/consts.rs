@@ -1,4 +1,6 @@
 use std::env;
+// agent
+pub const AGENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 // log related
 pub const LOG_PATTERN: &str = "{d}|{f}:{L}|{l}|{m}{n}";
@@ -39,10 +41,6 @@ cfg_if::cfg_if! {
 // ws related
 pub const WS_VERSION_HEADER: &str = "Tat-Version";
 pub const WS_KERNEL_NAME_HEADER: &str = "Tat-KernelName";
-#[cfg(not(debug_assertions))]
-pub const WS_URL: &str = "ws://notify.tat-tc.tencent.cn:8086/ws";
-#[cfg(debug_assertions)]
-pub const WS_URL: &str = "ws://proxy:8086/ws";
 pub const WS_PASSIVE_CLOSE: &str = "cli_passive_close";
 pub const WS_PASSIVE_CLOSE_CODE: u16 = 3001;
 pub const WS_ACTIVE_CLOSE: &str = "cli_active_close";
@@ -65,9 +63,6 @@ pub const FINISH_RESULT_SUCCESS: &str = "SUCCESS";
 pub const FINISH_RESULT_FAILED: &str = "FAILED";
 pub const FINISH_RESULT_START_FAILED: &str = "START_FAILED";
 pub const FINISH_RESULT_TERMINATED: &str = "TERMINATED";
-
-// agent
-pub const AGENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 // task start failed errInfo
 #[macro_export]
@@ -95,21 +90,6 @@ macro_rules! start_failed_err_info {
     };
 }
 
-// service related
-#[cfg(not(debug_assertions))]
-pub const INVOKE_API: &str = "https://invoke.tat-tc.tencent.cn";
-#[cfg(debug_assertions)]
-pub const INVOKE_API: &str = "http://proxy-invoke";
-
-#[allow(dead_code)]
-pub const MOCK_INVOKE_API: &str = "http://127.0.0.1:8080";
-
-// metadata
-#[cfg(not(debug_assertions))]
-pub const METADATA_API: &str = "http://metadata.tencentyun.com";
-#[cfg(debug_assertions)]
-pub const METADATA_API: &str = "http://mock-server:8000";
-
 // cmd related
 pub const CMD_TYPE_SHELL: &str = "SHELL";
 pub const CMD_TYPE_POWERSHELL: &str = "POWERSHELL";
@@ -132,9 +112,32 @@ pub const ONTIME_CHECK_TASK_NUM: u64 = 10;
 
 // self update related
 pub const UPDATE_FILE_UNZIP_DIR: &str = "agent_update_unzip";
-
 pub const AGENT_FILENAME: &str = "tat_agent";
 pub const UPDATE_DOWNLOAD_TIMEOUT: u64 = 20 * 60;
+
+pub const WS_URL_DEBUG: &str = "ws://proxy:8086/ws";
+pub const WS_URLS: [&'static str; 4] = [
+    "ws://notify.tat-tc.tencent.cn:8086/ws",
+    "ws://notify.tat-tc.tencent.com.cn:8086/ws",
+    "ws://notify.tat-tc.tencentyun.com:8086/ws",
+    "ws://notify.tat.tencent-cloud.com:8086/ws",
+];
+
+pub const INVOKE_API_DEBUG: &str = "http://proxy-invoke";
+pub const INVOKE_APIS: [&'static str; 4] = [
+    "https://invoke.tat-tc.tencent.cn",
+    "https://invoke.tat-tc.tencent.com.cn",
+    "https://invoke.tat-tc.tencentyun.com",
+    "https://invoke.tat.tencent-cloud.com",
+];
+
+#[cfg(not(debug_assertions))]
+pub const METADATA_API: &str = "http://metadata.tencentyun.com";
+#[cfg(debug_assertions)]
+pub const METADATA_API: &str = "http://mock-server:8000";
+
+#[allow(dead_code)]
+pub const MOCK_INVOKE_API: &str = "http://127.0.0.1:8080";
 
 #[cfg(test)]
 mod tests {

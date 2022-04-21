@@ -1,6 +1,12 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [0.1.21] - 2022-04-22
+
+### Changed
+
+- Add new domain support.
+
 ## [0.1.20] - 2022-02-16
 
 ### Changed

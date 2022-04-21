@@ -21,7 +21,7 @@ use crate::common::asserts::GracefulUnwrap;
 use crate::common::consts::{
     AGENT_VERSION, MAX_PING_FROM_LAST_PONG, VIP_HEADER, VPCID_HEADER, WS_ACTIVE_CLOSE,
     WS_ACTIVE_CLOSE_CODE, WS_KERNEL_NAME_HEADER, WS_LAST_CLOSE_INTERVAL, WS_MSG_TYPE_ACK,
-    WS_MSG_TYPE_KICK, WS_PASSIVE_CLOSE, WS_PASSIVE_CLOSE_CODE, WS_RECONNECT_INTERVAL, WS_URL,
+    WS_MSG_TYPE_KICK, WS_PASSIVE_CLOSE, WS_PASSIVE_CLOSE_CODE, WS_RECONNECT_INTERVAL,
     WS_VERSION_HEADER,
 };
 use crate::common::envs;
@@ -61,7 +61,7 @@ pub fn run(
 
             let sender = kick_sender.clone();
 
-            let runner = ClientBuilder::new(WS_URL)
+            let runner = ClientBuilder::new(envs::get_ws_url().as_str())
                 .unwrap_or_exit("ws cli builder fail")
                 .custom_headers(&header)
                 .async_connect_insecure()

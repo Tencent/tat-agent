@@ -11,9 +11,10 @@ use tokio::runtime::{Builder, Runtime};
 use unzip::{Unzipper, UnzipperStats};
 
 use crate::common::consts::{
-    AGENT_FILENAME, INVOKE_API, SELF_UPDATE_FILENAME, SELF_UPDATE_PATH, SELF_UPDATE_SCRIPT,
+    AGENT_FILENAME, SELF_UPDATE_FILENAME, SELF_UPDATE_PATH, SELF_UPDATE_SCRIPT,
     UPDATE_DOWNLOAD_TIMEOUT, UPDATE_FILE_UNZIP_DIR,
 };
+use crate::common::envs;
 use crate::http::{HttpRequester, InvokeAPIAdapter, Requester};
 use crate::types::{AgentError, CheckUpdateResponse, HttpMethod};
 
@@ -40,7 +41,7 @@ pub fn try_update(self_updating: Arc<AtomicBool>, need_restart: Arc<AtomicBool>)
     }
     let mut rt = rt_res.unwrap();
 
-    let adapter = InvokeAPIAdapter::build(INVOKE_API);
+    let adapter = InvokeAPIAdapter::build(envs::get_invoke_url().as_str());
 
     let check_update_rsp = check_update(&mut rt, &adapter);
     if let Err(e) = check_update_rsp {

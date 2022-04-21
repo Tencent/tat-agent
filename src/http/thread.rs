@@ -13,8 +13,8 @@ use tokio::runtime::Builder;
 use tokio::sync::Mutex;
 
 use crate::common::asserts::GracefulUnwrap;
-use crate::common::consts::INVOKE_API;
 use crate::common::consts::{DEFAULT_OUTPUT_BYTE, FINISH_RESULT_TERMINATED};
+use crate::common::envs;
 use crate::executor::proc;
 use crate::executor::proc::MyCommand;
 use crate::http::store::TaskFileStore;
@@ -24,15 +24,15 @@ use crate::types::{InvocationCancelTask, InvocationNormalTask};
 
 // 实现http线程的启动，内部使用异步runtime
 pub fn run(msg_receiver: Receiver<KickMsg>, running_task_num: Arc<AtomicU64>) -> JoinHandle<()> {
-    let adapter = InvokeAPIAdapter::build(INVOKE_API);
-    let worker = Arc::new(HttpWorker::new(adapter, running_task_num));
+   
     let thread_handle = thread::spawn(move || {
         let rt_res = Builder::new().basic_scheduler().enable_all().build();
         match rt_res {
             Ok(mut rt) => loop {
                 match msg_receiver.try_recv() {
                     Ok(msg) => {
-                        let worker = worker.clone();
+                        let adapter = InvokeAPIAdapter::build(envs::get_invoke_url().as_str());
+                        let worker = Arc::new(HttpWorker::new(adapter, running_task_num.clone()));
                         rt.spawn(async move { worker.process(msg).await });
                     }
                     Err(e) => match e {
