@@ -1,8 +1,8 @@
 pub mod common;
-#[cfg(windows)]
-mod windows;
 #[cfg(unix)]
 mod unix;
+#[cfg(windows)]
+mod windows;
 
 pub struct Uname {
     sys_name: String,

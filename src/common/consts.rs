@@ -2,6 +2,10 @@ use std::env;
 // agent
 pub const AGENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+//event bus slots
+pub const EVENT_SLOT_DEFAULT: &str = "event_slot_default";
+pub const EVENT_SLOT_PTY_CMD: &str = "event_slot_pty_cmd";
+
 // log related
 pub const LOG_PATTERN: &str = "{d}|{f}:{L}|{l}|{m}{n}";
 pub const LOG_FILE_NAME: &str = "log/tat_agent.log";
@@ -19,15 +23,18 @@ pub const VIP_HEADER: &str = "Tat-Vip";
 pub const SELF_UPDATE_FILENAME: &str = "agent_update.zip";
 cfg_if::cfg_if! {
     if #[cfg(unix)] {
+        //bash block related
+        pub const BASH_PREEXC:&str="/usr/local/qcloud/bash-precmd/bash-preexec.sh";
+        pub const BLOCK_INIT:&str="/usr/local/qcloud/bash-precmd/bash-init.sh";
+        pub const COREOS_BASH_PREEXC:&str="/var/lib/qcloud/bash-precmd/bash-preexec.sh";
+        pub const COREOS_BLOCK_INIT:&str="/var/lib/qcloud/bash-precmd/bash-init.sh";
         // daemon related
         pub const PID_FILE: &str = "/var/run/tat_agent.pid";
-
         pub const TASK_STORE_PATH: &str = "/tmp/tat_agent/commands/";
         pub const TASK_LOG_PATH: &str = "/tmp/tat_agent/logs/";
         pub const SELF_UPDATE_PATH: &str = "/tmp/tat_agent/self_update/";
         pub const SELF_UPDATE_SCRIPT: &str = "self_update.sh";
         pub const INSTALL_SCRIPT: &str = "install.sh";
-        pub const AGENT_DEFAULT_WORK_DIRECTORY: &str = "/root";
         pub const FILE_EXECUTE_PERMISSION_MODE: u32 = 0o755;
         pub const PIPE_BUF_DEFAULT_SIZE: usize = 64 * 4096;
     } else if #[cfg(windows)] {
@@ -47,10 +54,22 @@ pub const WS_ACTIVE_CLOSE: &str = "cli_active_close";
 pub const WS_ACTIVE_CLOSE_CODE: u16 = 3002;
 pub const MAX_PING_FROM_LAST_PONG: usize = 3;
 pub const WS_RECONNECT_INTERVAL: u64 = 3;
-pub const WS_LAST_CLOSE_INTERVAL: u64 = 1;
 // ws msg
 pub const WS_MSG_TYPE_KICK: &str = "kick";
 pub const WS_MSG_TYPE_ACK: &str = "ack";
+
+pub const WS_MSG_TYPE_PTY_START: &str = "PtyStart";
+pub const WS_MSG_TYPE_PTY_STOP: &str = "PtyStop";
+pub const WS_MSG_TYPE_PTY_RESIZE: &str = "PtyResize";
+pub const WS_MSG_TYPE_PTY_INPUT: &str = "PtyInput";
+
+pub const WS_MSG_TYPE_PTY_READY: &str = "PtyReady";
+pub const WS_MSG_TYPE_PTY_ERROR: &str = "PtyReady";
+pub const WS_MSG_TYPE_PTY_OUTPUT: &str = "PtyOutput";
+
+pub const PTY_WS_MSG: &str = "pty_ws_msg";
+pub const PTY_REMOVE_INTERVAL: u64 = 10 * 60;
+
 // http related
 pub const HTTP_REQUEST_TIME_OUT: u64 = 5;
 pub const HTTP_REQUEST_RETRIES: u64 = 3;
@@ -131,13 +150,11 @@ pub const INVOKE_APIS: [&'static str; 4] = [
     "https://invoke.tat.tencent-cloud.com",
 ];
 
-#[cfg(not(debug_assertions))]
+pub const METADATA_API_DEBUG: &str = "http://mock-server:8000";
 pub const METADATA_API: &str = "http://metadata.tencentyun.com";
-#[cfg(debug_assertions)]
-pub const METADATA_API: &str = "http://mock-server:8000";
 
-#[allow(dead_code)]
-pub const MOCK_INVOKE_API: &str = "http://127.0.0.1:8080";
+//pty_flags
+pub const PTY_FLAG_INIT_BLOCK: u32 = 0x00000001;
 
 #[cfg(test)]
 mod tests {

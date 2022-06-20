@@ -1,0 +1,110 @@
+<html>
+
+<head>
+  <meta charset="utf-8">
+  <style>
+    body {
+      margin: 1em;
+      background: black;
+    }
+  </style>
+  <link rel="stylesheet" href="https://cdn.bootcdn.net/ajax/libs/xterm/3.9.2/xterm.min.css" />
+  <script type="text/javascript" src="https://cdn.bootcdn.net/ajax/libs/xterm/3.9.2/xterm.min.js"
+    charset="utf-8"></script>
+  <script type="text/javascript" src="https://cdn.bootcdn.net/ajax/libs/xterm/3.9.2/addons/fit/fit.min.js"
+    charset="utf-8"></script>
+</head>
+
+<body>
+  <div id="terminal"></div>
+  <script type="text/javascript">
+
+
+    function decodeBase64(base64) {
+      const text = atob(base64);
+      const length = text.length;
+      const bytes = new Uint8Array(length);
+      for (let i = 0; i < length; i++) {
+        bytes[i] = text.charCodeAt(i);
+      }
+      const decoder = new TextDecoder(); // default is utf-8
+      return decoder.decode(bytes);
+    }
+
+    Terminal.applyAddon(fit)
+    const term = new Terminal({
+      cols: 100,
+      rows: 50
+    })
+
+    const ws = new WebSocket(`ws://127.0.0.1:3333`, "rust-websocket");
+    ws.addEventListener('open', function () {
+      console.info('WebSocket connected');
+      let json = JSON.stringify({
+        Type: "PtyStart",
+        Data: {
+          SessionId: "1234",
+          Cols: 100,
+          Rows: 50,
+        }
+      });
+      ws.send(json);
+    })
+
+    ws.addEventListener('message', function (event) {
+      console.debug('Message from server ', event.data)
+      try {
+        //debugger
+        let msg = JSON.parse(event.data);
+        if (msg.Type == "PtyOutput") {
+          let output = decodeBase64(msg.Data.Output)
+          term.write(output);
+        }
+
+        if (msg.Type == "PtyReady") {
+          //term.write("测试\n");
+        }
+
+        if (msg.Type == "PtyError") {
+          term.write("disconnectted");
+        }
+
+      } catch (e) {
+        console.error(e);
+      }
+    })
+
+    term.open(document.getElementById('terminal'))
+
+    term.on('data', data => {
+      let b64 = window.btoa(data)
+      let json = JSON.stringify({
+        Type: "PtyInput",
+        Data: {
+          SessionId: "1234",
+          Input: b64
+        }
+      });
+      ws.send(json)
+    })
+
+    window.addEventListener('resize', () => {
+      term.fit()
+    })
+    term.fit()
+    term.on('resize', size => {
+      console.debug('resize')
+      let json = JSON.stringify({
+        Type: "PtyResize",
+        Data: {
+          SessionId: "1234",
+          Cols: size.cols,
+          Rows: size.rows,
+        }
+      });
+      ws.send(json)
+    })
+  </script>
+</body>
+
+</html>

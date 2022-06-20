@@ -1,60 +1,35 @@
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use std::sync::{mpsc::Receiver, mpsc::TryRecvError};
-use std::thread;
-use std::thread::JoinHandle;
-use std::time::Duration;
-use std::time::SystemTime;
-
-use async_std::task;
-use log::{debug, error, info};
-use tokio::runtime::Builder;
-use tokio::sync::Mutex;
-
 use crate::common::asserts::GracefulUnwrap;
+use crate::common::consts::WS_MSG_TYPE_KICK;
 use crate::common::consts::{DEFAULT_OUTPUT_BYTE, FINISH_RESULT_TERMINATED};
-use crate::common::envs;
+use crate::common::envs::get_invoke_url;
+use crate::common::evbus::EventBus;
 use crate::executor::proc;
 use crate::executor::proc::MyCommand;
 use crate::http::store::TaskFileStore;
 use crate::http::InvokeAPIAdapter;
-use crate::types::inner_msg::KickMsg;
 use crate::types::{InvocationCancelTask, InvocationNormalTask};
+use async_std::task;
+use log::{error, info};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+use std::time::SystemTime;
+use tokio::runtime::Runtime;
+use tokio::sync::Mutex;
 
-// 实现http线程的启动，内部使用异步runtime
-pub fn run(msg_receiver: Receiver<KickMsg>, running_task_num: Arc<AtomicU64>) -> JoinHandle<()> {
-   
-    let thread_handle = thread::spawn(move || {
-        let rt_res = Builder::new().basic_scheduler().enable_all().build();
-        match rt_res {
-            Ok(mut rt) => loop {
-                match msg_receiver.try_recv() {
-                    Ok(msg) => {
-                        let adapter = InvokeAPIAdapter::build(envs::get_invoke_url().as_str());
-                        let worker = Arc::new(HttpWorker::new(adapter, running_task_num.clone()));
-                        rt.spawn(async move { worker.process(msg).await });
-                    }
-                    Err(e) => match e {
-                        TryRecvError::Empty => {
-                            rt.block_on(async {
-                                task::sleep(Duration::from_millis(100)).await;
-                            });
-                            debug!("http thread channel empty, async await");
-                        }
-                        TryRecvError::Disconnected => {
-                            error!("http thread channel disconnected, break");
-                            break;
-                        }
-                    },
-                };
-            },
-            Err(e) => {
-                error!("http thread runtime error: {}", e);
-            }
-        }
+pub fn run(dispatcher: &Arc<EventBus>, running_task_num: &Arc<AtomicU64>) {
+    let runtime = Runtime::new().unwrap();
+    let running_task_num = running_task_num.clone();
+
+    dispatcher.register(WS_MSG_TYPE_KICK, move |source: String| {
+        let running_task_num = running_task_num.clone();
+        runtime.spawn(async move {
+            let adapter = InvokeAPIAdapter::build(get_invoke_url().as_str());
+            let worker = Arc::new(HttpWorker::new(adapter, running_task_num.clone()));
+            worker.process(source).await
+        });
     });
-    thread_handle
 }
 
 pub struct HttpWorker {
@@ -79,8 +54,8 @@ impl HttpWorker {
         }
     }
 
-    pub async fn process(&self, msg: KickMsg) -> Option<u64> {
-        info!("http thread processing message from: {}", msg.kick_source);
+    pub async fn process(&self, source: String) -> Option<u64> {
+        info!("http thread processing message from: {}", source);
         match self.adapter.describe_tasks().await {
             Ok(resp) => {
                 info!("describe task success: {:?}", resp);

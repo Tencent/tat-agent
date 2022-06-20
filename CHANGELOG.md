@@ -1,6 +1,13 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [0.1.23] - 2022-05-06
+
+### Changed
+
+- Add pty support.
+- Optimize windows install scripts.
+
 ## [0.1.22] - 2022-05-06
 
 ### Changed

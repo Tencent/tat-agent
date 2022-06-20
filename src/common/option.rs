@@ -1,12 +1,25 @@
 use std::sync::Arc;
 
-use clap::{App, Arg};
-
-use crate::common::consts::AGENT_VERSION;
-
-#[derive(Debug, Clone)]
+use clap::Parser;
+#[derive(Parser, Debug)]
+#[clap(author, version, about, long_about = None)]
 pub struct Opts {
-    debug: Option<bool>,
+    ///Work as pty server (for debug） 
+    #[clap(short, long)]
+    pub pty_server: bool,
+
+    ///Use console as log appender
+    #[clap(short, long)]
+    pub console_log: bool,
+
+    ///Set log level as debug
+    #[clap(short, long)]
+    pub debug_log: bool,
+
+    ///Do not daemonize
+    #[cfg(unix)]
+    #[clap(short, long)]
+    pub no_daemon: bool,
 }
 
 impl Opts {
@@ -14,31 +27,8 @@ impl Opts {
         static mut INS: Option<Arc<Opts>> = None;
         let &mut ins;
         unsafe {
-            ins = INS.get_or_insert_with(|| Arc::new(Self::generate_opts()));
+            ins = INS.get_or_insert_with(|| Arc::new(Opts::parse()));
         }
         ins.clone()
-    }
-
-    pub fn debug(&self) -> &Option<bool> {
-        &self.debug
-    }
-
-    fn generate_opts() -> Self {
-        let matches = App::new("tat_agent")
-            .version(AGENT_VERSION)
-            .arg(
-                Arg::with_name("debug")
-                    .long("debug")
-                    .help("Set log level to debug")
-                    .required(false),
-            )
-            .get_matches();
-
-        let mut debug = None;
-        if matches.is_present("debug") {
-            debug = Some(true);
-        }
-        // return Opts
-        Opts { debug }
     }
 }

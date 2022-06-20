@@ -43,20 +43,23 @@ function Write-IniFile( $InputObject, $FilePath ) {
     $content | Out-File $FilePath
 }
 
-function Add-Security([string]$UserName, [string]$SecurityName, $SaveFile = "$ScriptDir\gpo.ini") {
+function Add-Security([string]$UserName, [String[]]$SecurityArrays, $SaveFile = "$ScriptDir\gpo.ini") {
     secedit /export /areas USER_RIGHTS /cfg $SaveFile
     $iniObj = Read-IniFile $SaveFile;
-    $userList = $iniObj["Privilege Rights"][$SecurityName]
     $changed = $False
-    if ( $null -ne $userList ) {
-        if ( !$userList.contains($UserName) ) {
-            $iniObj["Privilege Rights"][$SecurityName] = "$userList,$UserName"
+    for ($i = 0; $i -lt $SecurityArrays.Count; $i++) {
+        $SecurityName = $SecurityArrays[$i]
+        $userList = $iniObj["Privilege Rights"][$SecurityName]
+        if ( $null -ne $userList ) {
+            if ( !$userList.contains($UserName) ) {
+                $iniObj["Privilege Rights"][$SecurityName] = "$userList,$UserName"
+                $changed = $True
+            }
+        }
+        else {
+            $iniObj["Privilege Rights"][$SecurityName] = " $UserName"
             $changed = $True
         }
-    }
-    else {
-        $iniObj["Privilege Rights"][$SecurityName] = " $UserName"
-        $changed = $True
     }
     if ( $changed ) {
         Write-Host "Privilege changed,need import."
@@ -77,7 +80,7 @@ function Get-RandomCharacters($length, $characters) {
 
 function Get-RandomPassword {
     $password = Get-RandomCharacters -length 5 -characters 'abcdefghiklmnoprstuvwxyz'
-    $password += Get-RandomCharacters -length 1 -characters '!@#$%^&*()'
+    $password += Get-RandomCharacters -length 2 -characters '!@#$%^&*()'
     $password += Get-RandomCharacters -length 2 -characters '1234567890'
     $password += Get-RandomCharacters -length 5 -characters 'ABCDEFGHKLMNOPRSTUVWXYZ'
     return $password;
@@ -112,8 +115,22 @@ function Install-Files {
         $newName = "$agentDir\temp_$randstr.exe";
         Rename-Item -Path $agentPath -NewName $newName
     }
-    $srcPath = "$ScriptDir\tat_agent.exe"
-    Copy-Item $srcPath  -Destination $agentPath
+
+    if ( Test-Path "$agentDir\winpty.dll" ) {
+        $randstr = Get-RandomCharacters -length 5 -characters 'abcdefghiklmnoprstuvwxyz';
+        $newName = "$agentDir\temp_$randstr.dll";
+        Rename-Item -Path "$agentDir\winpty.dll" -NewName $newName
+    }
+
+    if ( Test-Path "$agentDir\winpty.exe" ) {
+        $randstr = Get-RandomCharacters -length 5 -characters 'abcdefghiklmnoprstuvwxyz';
+        $newName = "$agentDir\temp_$randstr.exe";
+        Rename-Item -Path "$agentDir\winpty.exe" -NewName $newName
+    }
+
+    Copy-Item "$ScriptDir\tat_agent.exe"  -Destination "$agentDir\tat_agent.exe" 
+    Copy-Item "$ScriptDir\winpty-agent.exe"  -Destination "$agentDir\winpty-agent.exe"  
+    Copy-Item "$ScriptDir\winpty.dll"  -Destination "$agentDir\winpty.dll" 
 }
 
 
@@ -128,14 +145,12 @@ function Install-Service() {
         sc.exe failure tatsvc actions= restart/1000 reset= -1
     }
     sc.exe config tatsvc obj= ".\$userName" password= "$userPass"
-    Write-Host "$userPass"
 }
 
 function Install-Privilege {
     Write-Host "=>Install-Privilege"
-    Add-Security -UserName $userName -SecurityName "SeServiceLogonRight"
-    Add-Security -UserName $userName -SecurityName "SeCreateTokenPrivilege"
-    Add-Security -UserName $userName -SecurityName "SeAssignPrimaryTokenPrivilege"
+    $Arrays = ("SeServiceLogonRight", "SeCreateTokenPrivilege", "SeAssignPrimaryTokenPrivilege", "SeDenyNetworkLogonRight")
+    Add-Security -UserName $userName -SecurityArrays  $Arrays
 }
 
 Install-Files;

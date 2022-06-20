@@ -94,31 +94,15 @@ impl ShellCommand {
         };
 
         //build envs
-        let mut envs = HashMap::<String, String>::new();
-        let shell_path = shell_path.unwrap();
-        envs.insert("SHELL".to_string(), shell_path);
-        match user.home_dir().to_str() {
-            Some(dir) => {
-                envs.insert("HOME".to_string(), dir.to_string());
-            }
-            None => {}
+        let home_path = match user.home_dir().to_str() {
+            Some(dir) => dir.to_string(),
+            None => "/tmp".to_string(),
         };
-        envs.insert("USER".to_string(), self.base.username.clone());
-        envs.insert("LOGNAME".to_string(), self.base.username.clone());
-        envs.insert("USERNAME".to_string(), self.base.username.clone());
-        envs.insert("TERM".to_string(), "unknown".to_string());
-        envs.insert(
-            "MAIL".to_string(),
-            format!("/var/spool/mail/{}", self.base.username),
+        let envs = build_envs(
+            &self.base.username,
+            &home_path,
+            shell_path.unwrap().as_str(),
         );
-
-        let etc_envs;
-        if let Ok(content) = std::fs::read_to_string("/etc/environment") {
-            etc_envs = load_envs(content);
-            for (key, value) in etc_envs.into_iter() {
-                envs.insert(key, value);
-            }
-        };
 
         //build comand
         let entrypoint = format!("{}{}", login_init, self.base.cmd_path());
@@ -302,7 +286,7 @@ fn own_process_group() -> Result<(), io::Error> {
     }
 }
 
-fn cmd_path(cmd: &str) -> Option<String> {
+pub(crate) fn cmd_path(cmd: &str) -> Option<String> {
     if let Ok(path) = env::var("PATH") {
         for p in path.split(":") {
             let p_str = format!("{}/{}", p, cmd);
@@ -338,6 +322,29 @@ fn load_envs(content: String) -> HashMap<String, String> {
             envs.insert(key, value);
         }
     }
+    envs
+}
+
+pub fn build_envs(username: &str, home_path: &str, shell_path: &str) -> HashMap<String, String> {
+    let mut envs = HashMap::<String, String>::new();
+    envs.insert("SHELL".to_string(), shell_path.to_string());
+    envs.insert("HOME".to_string(), home_path.to_string());
+    envs.insert("USER".to_string(), username.to_string());
+    envs.insert("LOGNAME".to_string(), username.to_string());
+    envs.insert("USERNAME".to_string(), username.to_string());
+    envs.insert(
+        "MAIL".to_string(),
+        format!("/var/spool/mail/{}", username.to_string()),
+    );
+    envs.insert("TERM".to_string(), "xterm-color".to_string());
+
+    let etc_envs;
+    if let Ok(content) = std::fs::read_to_string("/etc/environment") {
+        etc_envs = load_envs(content);
+        for (key, value) in etc_envs.into_iter() {
+            envs.insert(key, value);
+        }
+    };
     envs
 }
 

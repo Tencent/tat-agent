@@ -1,36 +1,29 @@
+use crate::common::asserts::GracefulUnwrap;
+use crate::common::consts::{
+    ONTIME_CHECK_TASK_NUM, ONTIME_KICK_INTERVAL, ONTIME_KICK_SOURCE, ONTIME_THREAD_INTERVAL,
+    ONTIME_UPDATE_INTERVAL, WS_MSG_TYPE_KICK,
+};
+use crate::common::evbus::EventBus;
+use crate::ontime::self_update::{try_restart_agent, try_update};
+use crate::ontime::timer::Timer;
 use log::debug;
 use log::info;
 use log::warn;
 use std::ops::AddAssign;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, SystemTime};
 
-use futures01::sink::{Sink, Wait};
-use futures01::sync::mpsc::UnboundedSender;
-use websocket::OwnedMessage;
-
-use crate::common::asserts::GracefulUnwrap;
-use crate::common::consts::{ONTIME_CHECK_TASK_NUM, ONTIME_KICK_INTERVAL, ONTIME_KICK_SOURCE, ONTIME_PING_INTERVAL, ONTIME_THREAD_INTERVAL, ONTIME_UPDATE_INTERVAL};
-use crate::ontime::self_update::{try_update, try_restart_agent};
-use crate::ontime::timer::Timer;
-use crate::types::inner_msg::KickMsg;
-
 pub fn run(
-    ping_channel_receiver: Receiver<UnboundedSender<OwnedMessage>>,
-    ontime_kick_sender: Sender<KickMsg>,
-    running_task_num: Arc<AtomicU64>,
+    dispatcher: &Arc<EventBus>,
+    running_task_num: &Arc<AtomicU64>,
 ) -> thread::JoinHandle<()> {
-    let ret = thread::spawn(move || {
-        let ping_sender = ping_channel_receiver
-            .recv()
-            .unwrap_or_exit("ping channel recv fail");
-        let mut sender = ping_sender.wait();
+    let dispatcher = dispatcher.clone();
+    let running_task_num = running_task_num.clone();
 
+    let ret = thread::spawn(move || {
         let mut instant_kick = SystemTime::now();
-        let mut instant_ping = SystemTime::now();
         let mut instant_update =
             SystemTime::now() - Duration::from_secs(ONTIME_UPDATE_INTERVAL - 10);
         let mut instant_check_tasks = SystemTime::now();
@@ -38,24 +31,15 @@ pub fn run(
         // and then exit current agent to switch to new version agent.
         let need_restart = Arc::new(AtomicBool::new(false));
         let self_updating = Arc::new(AtomicBool::new(false));
-
-        // kick once after agent start
-        send_kick_msg(&ontime_kick_sender);
-        // ping once after agent start
-        send_ping_msg(&ping_channel_receiver, &mut sender);
-
         loop {
             // inter-thread channel communication, very fast
-            check_ontime_kick(&mut instant_kick, &ontime_kick_sender);
+            check_ontime_kick(&mut instant_kick, dispatcher.clone());
             // do self update in a new thread, will not block current thread
             check_ontime_update(&mut instant_update, &self_updating, &need_restart);
             // run the tasks whose timer is arrived, generally very quick task
             schedule_timer_task();
             // check running tasks number and need_restart flag to do graceful restart when no running tasks
             check_running_task_num(&mut instant_check_tasks, &need_restart, &running_task_num);
-            // may block thread during WebSocket reconnect, put it at end
-            check_ontime_ping(&mut instant_ping, &ping_channel_receiver, &mut sender);
-
             thread::sleep(Duration::from_secs(ONTIME_THREAD_INTERVAL));
         }
     });
@@ -80,77 +64,31 @@ fn schedule_timer_task() {
     }
 }
 
-fn check_ontime_kick(instant_kick: &mut SystemTime, ontime_kick_sender: &Sender<KickMsg>) {
-    let interval = Duration::from_secs(ONTIME_KICK_INTERVAL);
-    match instant_kick.elapsed() {
+fn check_interval_elapsed(instant_time: &mut SystemTime, secs: u64) -> bool {
+    let interval = Duration::from_secs(secs);
+    match instant_time.elapsed() {
         Ok(duration) => {
             if duration < interval {
                 // interval not reach, do nothing
-                return;
+                return false;
             }
         }
         Err(e) => {
             warn!("get systemTime err: {:?}", e);
-            return;
+            return false;
         }
     }
     // instant.add_assign() is better than *instant = now(),
     // the latter may cause accumulated latency after long term running.
-    instant_kick.add_assign(interval);
-    send_kick_msg(ontime_kick_sender);
+    instant_time.add_assign(interval);
+    return true;
 }
 
-fn send_kick_msg(ontime_kick_sender: &Sender<KickMsg>) {
-    let msg = KickMsg {
-        kick_source: ONTIME_KICK_SOURCE.to_string(),
-    };
-    ontime_kick_sender
-        .send(msg)
-        .unwrap_or_exit("ontime kick send fail");
-    info!("ontime kick sent");
-}
-
-fn check_ontime_ping(
-    instant_ping: &mut SystemTime,
-    ping_channel_receiver: &Receiver<UnboundedSender<OwnedMessage>>,
-    sender: &mut Wait<UnboundedSender<OwnedMessage>>,
-) {
-    let interval = Duration::from_secs(ONTIME_PING_INTERVAL);
-    match instant_ping.elapsed() {
-        Ok(duration) => {
-            if duration < interval {
-                // interval not reach, do nothing
-                return;
-            }
-        }
-        Err(e) => {
-            warn!("get systemTime err: {:?}", e);
-            return;
-        }
+fn check_ontime_kick(instant_kick: &mut SystemTime, dispatcher: Arc<EventBus>) {
+    if !check_interval_elapsed(instant_kick, ONTIME_KICK_INTERVAL) {
+        return;
     }
-    instant_ping.add_assign(interval);
-    send_ping_msg(ping_channel_receiver, sender);
-}
-
-fn send_ping_msg(
-    ping_channel_receiver: &Receiver<UnboundedSender<OwnedMessage>>,
-    sender: &mut Wait<UnboundedSender<OwnedMessage>>,
-) {
-    loop {
-        let ret = sender.send(OwnedMessage::Ping(Vec::new()));
-        if let Err(e) = ret {
-            info!("ping_sender ret: {:?}", e);
-            // may block few seconds at this line
-            let ping_sender = ping_channel_receiver
-                .recv()
-                .unwrap_or_exit("ping channel recv fail");
-            info!("new ping_sender got, try send again");
-            *sender = ping_sender.wait();
-        } else {
-            break;
-        }
-    }
-    info!("ontime ping sent");
+    dispatcher.dispatch(WS_MSG_TYPE_KICK, ONTIME_KICK_SOURCE.to_string());
 }
 
 fn check_ontime_update(
@@ -162,21 +100,9 @@ fn check_ontime_update(
         return;
     }
 
-    let interval = Duration::from_secs(ONTIME_UPDATE_INTERVAL);
-    match instant_update.elapsed() {
-        Ok(duration) => {
-            if duration < interval {
-                // interval not reach, do nothing
-                return;
-            }
-        }
-        Err(e) => {
-            warn!("get systemTime err: {:?}", e);
-            return;
-        }
+    if !check_interval_elapsed(instant_update, ONTIME_UPDATE_INTERVAL) {
+        return;
     }
-
-    instant_update.add_assign(interval);
 
     self_updating.store(true, Ordering::SeqCst);
     info!("start check self update");
@@ -194,20 +120,10 @@ fn check_running_task_num(
     need_restart: &Arc<AtomicBool>,
     running_task_num: &Arc<AtomicU64>,
 ) {
-    let interval = Duration::from_secs(ONTIME_CHECK_TASK_NUM);
-    match instance_check.elapsed() {
-        Ok(duration) => {
-            if duration < interval {
-                // interval not reach, do nothing
-                return;
-            }
-        }
-        Err(e) => {
-            warn!("get systemTime err: {:?}", e);
-            return;
-        }
+    if !check_interval_elapsed(instance_check, ONTIME_CHECK_TASK_NUM) {
+        return;
     }
-    instance_check.add_assign(interval);
+
     let restart_flag = need_restart.load(Ordering::SeqCst);
     if restart_flag {
         let task_num = running_task_num.load(Ordering::SeqCst);
@@ -217,7 +133,7 @@ fn check_running_task_num(
                 task_num, restart_flag
             );
 
-            if let Err(e) = try_restart_agent(){
+            if let Err(e) = try_restart_agent() {
                 warn!("try restart agent fail: {:?}", e)
             }
 

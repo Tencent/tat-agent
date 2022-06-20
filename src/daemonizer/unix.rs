@@ -1,17 +1,16 @@
-use log::debug;
-use log::info;
-use std::path::PathBuf;
 use daemonize::Daemonize;
 use daemonize::DaemonizeError;
+use log::info;
 
-use crate::common::consts::{AGENT_DEFAULT_WORK_DIRECTORY, PID_FILE};
+use crate::common::consts::PID_FILE;
+use crate::common::Opts;
 
 pub fn daemonize(entry: fn()) {
-    let agent_dir = get_agent_dir();
-    let daemonize = Daemonize::new()
-        // set working dir of the daemon to where agent program is
-        .working_directory(agent_dir)
-        .pid_file(PID_FILE);
+    if Opts::get_opts().no_daemon {
+        entry();
+        return;
+    };
+    let daemonize = Daemonize::new().pid_file(PID_FILE);
     match daemonize.start() {
         Ok(_) => info!("daemonize succ"),
         Err(e) => {
@@ -23,27 +22,4 @@ pub fn daemonize(entry: fn()) {
         }
     };
     entry();
-}
-
-fn get_agent_dir() -> PathBuf {
-    let mut dir = std::env::current_exe().unwrap();
-    debug!("agent path:{:?}", dir);
-    if dir.pop() {
-        debug!("agent dir:{:?}", dir);
-        dir
-    } else {
-        PathBuf::from(AGENT_DEFAULT_WORK_DIRECTORY)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::common::logger;
-
-    #[test]
-    fn test_get_agent_dir() {
-        logger::init_test_log();
-        get_agent_dir();
-    }
 }

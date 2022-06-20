@@ -7,6 +7,8 @@ use url::Url;
 
 use crate::common::consts::{INVOKE_APIS, INVOKE_API_DEBUG, WS_URLS, WS_URL_DEBUG};
 
+use super::consts::{METADATA_API, METADATA_API_DEBUG};
+
 pub fn enable_test() -> bool {
     cfg_if::cfg_if! {
         if #[cfg(debug_assertions)] {
@@ -25,6 +27,7 @@ pub fn test_vip() -> String {
     return env::var("MOCK_VIP").unwrap_or("192.168.0.1".to_string());
 }
 
+
 fn dns_resolve(url: &str) -> Result<(), ()> {
     let url = Url::parse(url).unwrap();
     let host = url.host().unwrap().to_string();
@@ -33,6 +36,7 @@ fn dns_resolve(url: &str) -> Result<(), ()> {
         Err(_) => Err(()),
     };
 }
+
 
 fn find_available_url<F>(urls: Vec<&str>, resolver: F) -> String
 where
@@ -73,6 +77,15 @@ pub fn get_invoke_url() -> String {
     }
     info!("get_invoke_url {}", result);
     return result;
+}
+
+
+pub fn get_meta_url()->String {
+    if enable_test() {
+       return METADATA_API_DEBUG.to_string();
+    } else {
+        return METADATA_API.to_string();
+    }
 }
 
 #[cfg(test)]

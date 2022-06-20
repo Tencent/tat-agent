@@ -1,9 +1,5 @@
-use log::info;
-use std::sync::atomic::AtomicU64;
-use std::sync::mpsc::channel;
-use std::sync::Arc;
-
 mod common;
+mod conpty;
 mod cos;
 mod daemonizer;
 mod executor;
@@ -13,48 +9,47 @@ mod types;
 mod uname;
 mod ws;
 
-use crate::common::asserts::GracefulUnwrap;
 use crate::common::consts::AGENT_VERSION;
+use crate::common::evbus::EventBus;
 use crate::common::logger;
 use crate::common::Opts;
-use crate::http::thread as http_thread;
-use crate::ontime::thread as ontime_thread;
 use crate::ontime::timer::Timer;
-use crate::ws::thread as ws_thread;
+use chrono::Local;
+use log::info;
+use std::env;
+use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
 
 #[tokio::main]
 async fn main() {
     let _opts = Opts::get_opts();
-    daemonizer::daemonize(|| {
-        // log init after daemonized, so log dir will at same dir of agent
-        logger::init();
-        info!("agent version:[{}]", AGENT_VERSION);
-        Timer::get_instance();
+    set_work_dir();
+    set_panic_handler();
+    logger::init();
+    info!("agent start,version:[{}]", AGENT_VERSION);
+    Timer::get_instance();
 
-        // code of thread communication
-        let (ws_kick_sender, kick_receiver) = channel();
-        let ontime_kick_sender = ws_kick_sender.clone();
-
-        let (ping_channel_sender, ping_channel_receiver) = channel();
-
+    daemonizer::daemonize(move || {
+        let eventbus = Arc::new(EventBus::new());
         let running_task_num = Arc::new(AtomicU64::new(0));
 
-        // ontime thread send ping request
-        let _ot_thread = ontime_thread::run(
-            ping_channel_receiver,
-            ontime_kick_sender,
-            running_task_num.clone(),
-        );
-
-        // http thread recv the notify
-        let _h_thread = http_thread::run(kick_receiver, running_task_num.clone());
-
-        loop {
-            info!("now spawn a new ws connection");
-            let s1 = ws_kick_sender.clone();
-            let s2 = ping_channel_sender.clone();
-            let ws_thread = ws_thread::run(s1, s2);
-            ws_thread.join().or_log("ws thread joined");
-        }
+        http::thread::run(&eventbus, &running_task_num);
+        ontime::thread::run(&eventbus, &running_task_num);
+        conpty::thread::run(&eventbus, &running_task_num);
+        ws::thread::run(&eventbus);
     });
+}
+
+fn set_work_dir() {
+    let exe_path = env::current_exe().unwrap();
+    let work_dir = exe_path.parent().unwrap();
+    env::set_current_dir(work_dir).unwrap();
+}
+
+fn set_panic_handler() {
+    std::panic::set_hook(Box::new(|pi| {
+        let date = Local::now();
+        let pi_str = format!("{} {}", date.format("[%Y-%m-%d %H:%M:%S]"), &pi.to_string());
+        let _ = std::fs::write("log/panic.log", pi_str.as_bytes());
+    }));
 }

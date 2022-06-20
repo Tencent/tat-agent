@@ -212,6 +212,11 @@ Copyright (c) ntapi authors
 37. field-offset
 Copyright (c) field-offset authors
 
+38. winpty
+Copyright (c) 2011-2016 Ryan Prichard
+
+39. bash-preexec
+Copyright (c) 2017 Ryan Caloras and contributors
 
 Terms of the MIT License:
 --------------------------------------------------------------------

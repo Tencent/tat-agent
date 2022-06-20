@@ -1,6 +1,6 @@
+use crate::common::strwsz::str2wsz;
 use crate::executor::powershell_command::adjust_privileage;
 use log::error;
-use std::env;
 use std::process::{Command, Stdio};
 use std::ptr;
 use winapi::shared::minwindef::{DWORD, FALSE, LPVOID};
@@ -16,12 +16,6 @@ use winapi::um::wow64apiset::*;
 //static var if not start with upper case, cargo build will report warn
 static mut HANDLE: SERVICE_STATUS_HANDLE = 0 as SERVICE_STATUS_HANDLE;
 static mut TAT_ENTRY: fn() = || {};
-
-fn str2wstr(name: &str) -> Vec<u16> {
-    let mut result: Vec<u16> = name.chars().map(|c| c as u16).collect();
-    result.push(0);
-    result
-}
 
 fn create_service_status(current_state: DWORD) -> SERVICE_STATUS {
     SERVICE_STATUS {
@@ -39,7 +33,7 @@ unsafe extern "system" fn service_main(
     _: DWORD,       // dw_num_services_args
     _: *mut LPWSTR, // lp_service_arg_vectors
 ) {
-    let service_name = str2wstr("TAT_AGENT");
+    let service_name = str2wsz("TAT_AGENT");
     HANDLE = RegisterServiceCtrlHandlerExW(
         service_name.as_ptr(),
         Some(service_handler),
@@ -73,7 +67,7 @@ unsafe extern "system" fn service_handler(
 fn try_start_service(entry: fn()) {
     unsafe {
         TAT_ENTRY = entry;
-        let service_name = str2wstr("TAT_AGENT");
+        let service_name = str2wsz("TAT_AGENT");
         let service_table: &[*const SERVICE_TABLE_ENTRYW] = &[
             &SERVICE_TABLE_ENTRYW {
                 lpServiceName: service_name.as_ptr(),
@@ -107,22 +101,12 @@ fn clean_update_files() {
             .args(&[
                 "/C",
                 "del",
-                "C:\\Program Files\\qcloud\\tat_agent\\temp_*.exe",
+                "C:\\Program Files\\qcloud\\tat_agent\\temp_*.*",
             ])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
             .map_err(|_| error!("clean_update_files fail"))
-            .ok();
-    })
-}
-
-fn set_work_dir() {
-    let exe_path = env::current_exe().unwrap();
-    let work_dir = exe_path.parent().unwrap();
-    wow64_disable_exc(|| {
-        env::set_current_dir(work_dir)
-            .map_err(|_| error!("set_work_dir fail"))
             .ok();
     })
 }
@@ -146,7 +130,7 @@ where
 
 fn already_start() -> bool {
     unsafe {
-        let event_name = str2wstr("Global\\tatsvc");
+        let event_name = str2wsz("Global\\tatsvc");
         CreateEventW(
             NULL as LPSECURITY_ATTRIBUTES,
             FALSE,
@@ -163,7 +147,6 @@ pub fn daemonize(entry: fn()) {
         std::process::exit(183);
     }
     clean_update_files();
-    set_work_dir();
     adjust_privileage();
     try_start_service(entry);
 }

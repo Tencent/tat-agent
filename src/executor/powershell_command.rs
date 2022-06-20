@@ -486,7 +486,7 @@ fn get_user_sid(user_name: &str) -> Result<Vec<u8>, String> {
     }
 }
 
-fn create_user_token(user_name: &str) -> Result<HANDLE, String> {
+pub fn create_user_token(user_name: &str) -> Result<HANDLE, String> {
     info!("=>enter create_user_token");
     unsafe {
         let user_sid = get_user_sid(user_name)?;
@@ -875,7 +875,7 @@ fn get_user_groups(user_name: &str) -> Vec<String> {
     result
 }
 
-fn load_environment(token: HANDLE, envs: &mut HashMap<String, String>) {
+pub fn load_environment(token: HANDLE, envs: &mut HashMap<String, String>) {
     unsafe {
         let mut environment: PVOID = null_mut();
         if 0 != CreateEnvironmentBlock(&mut environment as *mut LPVOID, token, FALSE) {

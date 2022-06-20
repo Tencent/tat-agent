@@ -1,10 +1,9 @@
 [package]
 name = "tat_agent"
-version = "0.1.22"
+version = "0.1.23"
 edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
 tokio = { version = "0.2.22", features = ["full"]}
 futures = "0.3"
@@ -14,7 +13,7 @@ reqwest = { version = "0.10", features = ["blocking", "json", "stream"] }
 serde_json = "1.0.57"
 serde = {version = "1.0.115", features = ["derive"]}
 url = "2.1.1"
-clap = "2.33.3"
+clap = { version = "3.1.6", features = ["derive"] }
 async-attributes = "1.0.0"
 tokio-test = "*"
 log = "0.4.11"
@@ -51,3 +50,7 @@ winapi = { version = "0.3", features = ["winsvc","winbase","winnt","stringapiset
     "ntlsa","ntsecapi","lsalookup","libloaderapi","securitybaseapi","userenv","tlhelp32"] }
 ntapi = "0.3.6"
 field-offset = "0.3.4"
+
+[build-dependencies]
+reqwest = { version = "0.10", features = ["blocking", "json", "stream"] }
+

@@ -125,7 +125,7 @@ impl Timer {
         static mut INS: Option<Arc<Mutex<Timer>>> = None;
         let &mut ins;
         unsafe {
-            ins = INS.get_or_insert(Arc::new(Mutex::new(Timer::new())));
+            ins = INS.get_or_insert_with(|| Arc::new(Mutex::new(Timer::new())));
         }
         ins.clone()
     }

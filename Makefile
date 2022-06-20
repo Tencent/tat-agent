@@ -9,10 +9,7 @@ AGENT_IMG=$(DOCKER_REGISTRY)/tat-develop/tat_agent
 
 # test all case
 lib-test:
-	cargo test --lib -- --nocapture --skip ontime
-
-integration-test:
-	cargo test --test http_test
+	cargo test --package tat_agent -- --nocapture --skip ontime
 
 arch ?= x86_64
 rust_target =

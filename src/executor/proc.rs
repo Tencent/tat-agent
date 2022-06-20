@@ -10,9 +10,10 @@ cfg_if::cfg_if! {
 use crate::common::asserts::GracefulUnwrap;
 use crate::common::consts::{
     FINISH_RESULT_FAILED, FINISH_RESULT_START_FAILED, FINISH_RESULT_SUCCESS,
-    FINISH_RESULT_TERMINATED, FINISH_RESULT_TIMEOUT, METADATA_API, OUTPUT_BYTE_LIMIT_EACH_REPORT,
+    FINISH_RESULT_TERMINATED, FINISH_RESULT_TIMEOUT, OUTPUT_BYTE_LIMIT_EACH_REPORT,
     TASK_STORE_PATH,
 };
+use crate::common::envs::get_meta_url;
 use crate::cos::ObjectAPI;
 use crate::cos::COS;
 use crate::http::MetadataAPIAdapter;
@@ -234,7 +235,7 @@ impl BaseCommand {
         output.len()
     }
 
-    pub fn append_output(&self, data:&[u8]) {
+    pub fn append_output(&self, data: &[u8]) {
         let mut output = self.output.lock().unwrap_or_exit("lock failed");
         output.write(data).unwrap();
     }
@@ -512,7 +513,7 @@ impl BaseCommand {
     pub async fn finish_logging(&self) {
         let log_file_path = self.log_file_path.to_string();
         if !self.cos_bucket.is_empty() {
-            let metadata = MetadataAPIAdapter::build(METADATA_API);
+            let metadata = MetadataAPIAdapter::build(get_meta_url().as_str());
             let rsp = metadata.tmp_credential().await;
             match rsp {
                 Ok(credential) => {
@@ -821,6 +822,11 @@ mod tests {
             .args(&["/FI", pid_str.as_str()])
             .output()
             .expect("failed find process");
+        info!(
+            "task find output for {} is {}",
+            pid,
+            String::from_utf8_lossy(&output.stdout)
+        );
         String::from_utf8_lossy(&output.stdout).contains(&pid.to_string())
     }
 
