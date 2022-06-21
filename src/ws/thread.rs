@@ -19,7 +19,7 @@ use crate::common::consts::{
     AGENT_VERSION, MAX_PING_FROM_LAST_PONG, ONTIME_PING_INTERVAL, PTY_WS_MSG, VIP_HEADER,
     VPCID_HEADER, WS_ACTIVE_CLOSE, WS_ACTIVE_CLOSE_CODE, WS_KERNEL_NAME_HEADER, WS_MSG_TYPE_ACK,
     WS_MSG_TYPE_KICK, WS_PASSIVE_CLOSE, WS_PASSIVE_CLOSE_CODE, WS_RECONNECT_INTERVAL,
-    WS_VERSION_HEADER,
+    WS_VERSION_HEADER, WS_MSG_TYPE_CHECK_UPDATE,
 };
 use crate::common::envs::get_ws_url;
 use crate::common::evbus::EventBus;
@@ -141,6 +141,7 @@ impl WsContext {
         match ret {
             Ok(ws_msg) => match ws_msg.r#type.as_str() {
                 WS_MSG_TYPE_KICK => self.handle_kick_msg(ws_msg),
+                WS_MSG_TYPE_CHECK_UPDATE => self.handle_check_update_msg(ws_msg),
                 _ => {
                     if let Some(v) = ws_msg.data {
                         let data = v.to_string();
@@ -159,6 +160,20 @@ impl WsContext {
     fn handle_kick_msg(&self, mut ws_msg: WsMsg) -> Option<OwnedMessage> {
         info!("kick_sender sent to notify fetch task, kick_source ws");
         self.dispatcher.dispatch(WS_MSG_TYPE_KICK, "ws".to_string());
+        ws_msg.r#type = WS_MSG_TYPE_ACK.to_string();
+        let ret = serde_json::to_string(&ws_msg);
+        match ret {
+            Ok(ws_rsp) => Some(OwnedMessage::Text(ws_rsp)),
+            Err(e) => {
+                error!("ws rsp json encode fail:{:?}", e);
+                None
+            }
+        }
+    }
+
+    fn handle_check_update_msg(&self, mut ws_msg: WsMsg) -> Option<OwnedMessage> {
+        info!("kick_sender sent to notify check update, kick_source ws");
+        self.dispatcher.dispatch(WS_MSG_TYPE_CHECK_UPDATE, "ws".to_string());
         ws_msg.r#type = WS_MSG_TYPE_ACK.to_string();
         let ret = serde_json::to_string(&ws_msg);
         match ret {

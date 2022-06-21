@@ -58,6 +58,8 @@ pub const WS_RECONNECT_INTERVAL: u64 = 3;
 pub const WS_MSG_TYPE_KICK: &str = "kick";
 pub const WS_MSG_TYPE_ACK: &str = "ack";
 
+pub const WS_MSG_TYPE_CHECK_UPDATE: &str = "CheckUpdate";
+
 pub const WS_MSG_TYPE_PTY_START: &str = "PtyStart";
 pub const WS_MSG_TYPE_PTY_STOP: &str = "PtyStop";
 pub const WS_MSG_TYPE_PTY_RESIZE: &str = "PtyResize";

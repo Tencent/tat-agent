@@ -1,7 +1,7 @@
 use crate::common::asserts::GracefulUnwrap;
 use crate::common::consts::{
     ONTIME_CHECK_TASK_NUM, ONTIME_KICK_INTERVAL, ONTIME_KICK_SOURCE, ONTIME_THREAD_INTERVAL,
-    ONTIME_UPDATE_INTERVAL, WS_MSG_TYPE_KICK,
+    ONTIME_UPDATE_INTERVAL, WS_MSG_TYPE_CHECK_UPDATE, WS_MSG_TYPE_KICK,
 };
 use crate::common::evbus::EventBus;
 use crate::ontime::self_update::{try_restart_agent, try_update};
@@ -31,6 +31,9 @@ pub fn run(
         // and then exit current agent to switch to new version agent.
         let need_restart = Arc::new(AtomicBool::new(false));
         let self_updating = Arc::new(AtomicBool::new(false));
+
+        register_update_handlers(&dispatcher, &self_updating, &need_restart);
+
         loop {
             // inter-thread channel communication, very fast
             check_ontime_kick(&mut instant_kick, dispatcher.clone());
@@ -44,6 +47,21 @@ pub fn run(
         }
     });
     ret
+}
+
+fn register_update_handlers(
+    dispatcher: &Arc<EventBus>,
+    self_updating: &Arc<AtomicBool>,
+    need_restart: &Arc<AtomicBool>,
+) {
+    let self_updating_clone = self_updating.clone();
+    let need_restart_clone = need_restart.clone();
+    dispatcher.register(WS_MSG_TYPE_CHECK_UPDATE, move |_source: String| {
+        if self_updating_clone.fetch_or(true, Ordering::SeqCst) {
+            return ;
+        }
+        try_update(self_updating_clone.clone(), need_restart_clone.clone());
+    });
 }
 
 fn schedule_timer_task() {
@@ -96,15 +114,15 @@ fn check_ontime_update(
     self_updating: &Arc<AtomicBool>,
     need_restart: &Arc<AtomicBool>,
 ) {
-    if self_updating.load(Ordering::SeqCst) {
-        return;
-    }
-
+  
     if !check_interval_elapsed(instant_update, ONTIME_UPDATE_INTERVAL) {
         return;
     }
 
-    self_updating.store(true, Ordering::SeqCst);
+    if self_updating.fetch_or(true, Ordering::SeqCst) {
+        return ;
+    }
+
     info!("start check self update");
     let self_updating_clone = self_updating.clone();
     let need_restart_clone = need_restart.clone();
