@@ -117,7 +117,7 @@ impl WsContext {
     }
 
     fn handle_server_msg(&self, msg: OwnedMessage) -> Option<OwnedMessage> {
-        info!("ws recv msg: {:?}", msg);
+        //info!("ws recv msg: {:?}", msg);
         match msg {
             OwnedMessage::Ping(data) => Some(OwnedMessage::Pong(data)),
             OwnedMessage::Pong(_) => {

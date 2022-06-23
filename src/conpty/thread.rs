@@ -13,6 +13,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Write;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU64, Ordering, Ordering::SeqCst};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -37,6 +38,7 @@ pub(crate) struct Session {
     pty_session: Arc<dyn PtySession + Send + Sync>,
     writer: Arc<Mutex<File>>,
     last_input_time: Arc<AtomicU64>,
+    is_stoped: Arc<AtomicBool>,
 }
 
 #[derive(Clone)]
@@ -149,6 +151,7 @@ impl SessionManager {
             pty_session,
             writer: Arc::new(Mutex::new(writer)),
             last_input_time: Arc::new(AtomicU64::new(input_time)),
+            is_stoped: Arc::new(AtomicBool::new(false)),
         });
 
         self.session_map
@@ -213,6 +216,14 @@ impl SessionManager {
         let duration = Duration::from_millis(100);
         let mut reader = tokio::fs::File::from_std(session.pty_session.get_reader().unwrap());
         loop {
+            if session.is_stoped.load(SeqCst) {
+                info!(
+                    "report_output find {} session stoped,break",
+                    session.session_id
+                );
+                break;
+            }
+            
             //no input about five miniutes, break
             if !self.check_last_input_time(&session) {
                 info!(
@@ -252,14 +263,9 @@ impl SessionManager {
     }
 
     fn remove_session(&self, session_id: &str) {
-        if self
-            .session_map
-            .write()
-            .unwrap()
-            .remove(session_id)
-            .is_some()
-        {
+        if let Some(session) = self.session_map.write().unwrap().remove(session_id) {
             info!("remove_session  {} removed", session_id);
+            session.is_stoped.store(true, SeqCst);
             self.running_task_num.fetch_sub(1, Ordering::SeqCst);
         }
     }

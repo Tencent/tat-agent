@@ -1,6 +1,11 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [0.1.24] - 2022-06-23
+
+### Changed
+- Fix pty stop logic.
+
 ## [0.1.23] - 2022-05-06
 
 ### Changed

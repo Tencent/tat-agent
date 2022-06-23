@@ -2414,7 +2414,7 @@ dependencies = [
 
 [[package]]
 name = "tat_agent"
-version = "0.1.23"
+version = "0.1.24"
 dependencies = [
  "async-attributes",
  "async-std",
