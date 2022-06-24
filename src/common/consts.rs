@@ -66,7 +66,7 @@ pub const WS_MSG_TYPE_PTY_RESIZE: &str = "PtyResize";
 pub const WS_MSG_TYPE_PTY_INPUT: &str = "PtyInput";
 
 pub const WS_MSG_TYPE_PTY_READY: &str = "PtyReady";
-pub const WS_MSG_TYPE_PTY_ERROR: &str = "PtyReady";
+pub const WS_MSG_TYPE_PTY_ERROR: &str = "PtyError";
 pub const WS_MSG_TYPE_PTY_OUTPUT: &str = "PtyOutput";
 
 pub const PTY_WS_MSG: &str = "pty_ws_msg";

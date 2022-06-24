@@ -223,7 +223,7 @@ impl SessionManager {
                 );
                 break;
             }
-            
+
             //no input about five miniutes, break
             if !self.check_last_input_time(&session) {
                 info!(
@@ -254,6 +254,12 @@ impl SessionManager {
                         "pty session {} report_output err, {}",
                         session.session_id, e
                     );
+
+                    let msg = self.build_error_msg(
+                        session.session_id.clone(),
+                        format!("Session {} terminated", session.session_id),
+                    );
+                    self.event_bus.dispatch(PTY_WS_MSG, msg);
                     break;
                 }
             }
