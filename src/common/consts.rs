@@ -130,7 +130,8 @@ pub const ONTIME_PING_INTERVAL: u64 = 2 * 60;
 pub const ONTIME_UPDATE_INTERVAL: u64 = 2 * 60 * 60;
 pub const ONTIME_THREAD_INTERVAL: u64 = 1;
 pub const ONTIME_CHECK_TASK_NUM: u64 = 10;
-
+pub const ONTIME_LEAK_CEHEK_INTERVAL: u64 = 10;
+pub const ONTIME_LEAK_REPORT_FREQUENCY: u64 = 360;
 // self update related
 pub const UPDATE_FILE_UNZIP_DIR: &str = "agent_update_unzip";
 pub const AGENT_FILENAME: &str = "tat_agent";

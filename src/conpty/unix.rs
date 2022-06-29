@@ -166,7 +166,12 @@ fn install_script(mem_data: String, path: &str) -> io::Result<()> {
     let file_data = read_to_string(path).unwrap_or_else(|_| "".to_string());
     if mem_data != file_data {
         //write
-        create_dir_all(Path::new(path).parent().unwrap())?;
+        let parent = Path::new(path).parent().unwrap();
+        create_dir_all(parent)?;
+        set_permissions(
+            parent,
+            Permissions::from_mode(consts::FILE_EXECUTE_PERMISSION_MODE),
+        )?;
         write(path, mem_data)?;
         set_permissions(
             path,

@@ -7,9 +7,10 @@ use crate::common::consts::{HTTP_REQUEST_NO_RETRIES, HTTP_REQUEST_RETRIES};
 use crate::http::{HttpRequester, Requester};
 use crate::types::{
     AgentError, AgentErrorCode, AgentRequest, CheckUpdateRequest, CheckUpdateResponse,
-    DescribeTasksRequest, DescribeTasksResponse, HttpMethod, ReportTaskFinishRequest,
-    ReportTaskFinishResponse, ReportTaskStartRequest, ReportTaskStartResponse, ServerRawResponse,
-    UploadTaskLogRequest, UploadTaskLogResponse,
+    DescribeTasksRequest, DescribeTasksResponse, HttpMethod, ReportResourceRequest,
+    ReportResourceResponse, ReportTaskFinishRequest, ReportTaskFinishResponse,
+    ReportTaskStartRequest, ReportTaskStartResponse, ServerRawResponse, UploadTaskLogRequest,
+    UploadTaskLogResponse,
 };
 
 #[cfg_attr(test, faux::create)]
@@ -83,6 +84,17 @@ impl InvokeAPIAdapter {
     pub async fn check_update(&self) -> Result<CheckUpdateResponse, AgentError<String>> {
         let body = CheckUpdateRequest::new();
         self.send("CheckUpdate", body, HTTP_REQUEST_NO_RETRIES)
+            .await
+    }
+
+    pub async fn report_resource(
+        &self,
+        fd_avg: u32,
+        mem_avg: u32,
+        zp_cnt: u32,
+    ) -> Result<ReportResourceResponse, AgentError<String>> {
+        let body = ReportResourceRequest::new(fd_avg, mem_avg, zp_cnt);
+        self.send("ReportResource", body, HTTP_REQUEST_NO_RETRIES)
             .await
     }
 

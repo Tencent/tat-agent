@@ -1,11 +1,13 @@
 use crate::common::asserts::GracefulUnwrap;
 use crate::common::consts::{
-    ONTIME_CHECK_TASK_NUM, ONTIME_KICK_INTERVAL, ONTIME_KICK_SOURCE, ONTIME_THREAD_INTERVAL,
-    ONTIME_UPDATE_INTERVAL, WS_MSG_TYPE_CHECK_UPDATE, WS_MSG_TYPE_KICK,
+    ONTIME_CHECK_TASK_NUM, ONTIME_KICK_INTERVAL, ONTIME_KICK_SOURCE, ONTIME_LEAK_CEHEK_INTERVAL,
+    ONTIME_THREAD_INTERVAL, ONTIME_UPDATE_INTERVAL, WS_MSG_TYPE_CHECK_UPDATE, WS_MSG_TYPE_KICK,
 };
 use crate::common::evbus::EventBus;
+use crate::ontime::leak_check::check_resource_leak;
 use crate::ontime::self_update::{try_restart_agent, try_update};
 use crate::ontime::timer::Timer;
+
 use log::debug;
 use log::info;
 use log::warn;
@@ -23,9 +25,13 @@ pub fn run(
     let running_task_num = running_task_num.clone();
 
     let ret = thread::spawn(move || {
+        let mut instant_leak = SystemTime::now();
+
         let mut instant_kick = SystemTime::now();
+
         let mut instant_update =
             SystemTime::now() - Duration::from_secs(ONTIME_UPDATE_INTERVAL - 10);
+
         let mut instant_check_tasks = SystemTime::now();
         // Will be set to true after self updating finished,
         // and then exit current agent to switch to new version agent.
@@ -35,6 +41,8 @@ pub fn run(
         register_update_handlers(&dispatcher, &self_updating, &need_restart);
 
         loop {
+            //leakage check
+            check_resource_leakage(&mut instant_leak);
             // inter-thread channel communication, very fast
             check_ontime_kick(&mut instant_kick, dispatcher.clone());
             // do self update in a new thread, will not block current thread
@@ -58,7 +66,7 @@ fn register_update_handlers(
     let need_restart_clone = need_restart.clone();
     dispatcher.register(WS_MSG_TYPE_CHECK_UPDATE, move |_source: String| {
         if self_updating_clone.fetch_or(true, Ordering::SeqCst) {
-            return ;
+            return;
         }
         try_update(self_updating_clone.clone(), need_restart_clone.clone());
     });
@@ -114,13 +122,12 @@ fn check_ontime_update(
     self_updating: &Arc<AtomicBool>,
     need_restart: &Arc<AtomicBool>,
 ) {
-  
     if !check_interval_elapsed(instant_update, ONTIME_UPDATE_INTERVAL) {
         return;
     }
 
     if self_updating.fetch_or(true, Ordering::SeqCst) {
-        return ;
+        return;
     }
 
     info!("start check self update");
@@ -165,4 +172,11 @@ fn check_running_task_num(
     } else {
         debug!("need_restart is {}, continue running", restart_flag);
     }
+}
+
+fn check_resource_leakage(instant_leak: &mut SystemTime) {
+    if !check_interval_elapsed(instant_leak, ONTIME_LEAK_CEHEK_INTERVAL) {
+        return;
+    }
+    check_resource_leak();
 }

@@ -16,7 +16,7 @@ pub use task::{
     AgentRequest, CheckUpdateRequest, CheckUpdateResponse, DescribeTasksRequest,
     DescribeTasksResponse, ReportTaskFinishRequest, ReportTaskFinishResponse,
     ReportTaskStartRequest, ReportTaskStartResponse, ServerRawResponse, UploadTaskLogRequest,
-    UploadTaskLogResponse,
+    UploadTaskLogResponse,ReportResourceRequest,ReportResourceResponse
 };
 
 pub use task::{InvocationCancelTask, InvocationNormalTask};
