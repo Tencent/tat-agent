@@ -1,3 +1,4 @@
+use std::cmp::min;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -18,8 +19,9 @@ use crate::common::asserts::GracefulUnwrap;
 use crate::common::consts::{
     AGENT_VERSION, MAX_PING_FROM_LAST_PONG, ONTIME_PING_INTERVAL, PTY_WS_MSG, VIP_HEADER,
     VPCID_HEADER, WS_ACTIVE_CLOSE, WS_ACTIVE_CLOSE_CODE, WS_KERNEL_NAME_HEADER, WS_MSG_TYPE_ACK,
-    WS_MSG_TYPE_KICK, WS_PASSIVE_CLOSE, WS_PASSIVE_CLOSE_CODE, WS_RECONNECT_INTERVAL,
-    WS_VERSION_HEADER, WS_MSG_TYPE_CHECK_UPDATE,
+    WS_MSG_TYPE_CHECK_UPDATE, WS_MSG_TYPE_KICK, WS_PASSIVE_CLOSE, WS_PASSIVE_CLOSE_CODE,
+    WS_RECONNECT_INTERVAL_BASE, WS_RECONNECT_RANDOM_MAX, WS_RECONNECT_RANDOM_MIN,
+    WS_RECONNECT_RANDOM_TIMES, WS_VERSION_HEADER,
 };
 use crate::common::envs::get_ws_url;
 use crate::common::evbus::EventBus;
@@ -70,6 +72,7 @@ impl WsContext {
             .build()
             .unwrap_or_exit("ws tokio runtime build fail");
 
+        let mut random_range = WS_RECONNECT_RANDOM_MIN;
         loop {
             info!("start ws connection...");
 
@@ -88,7 +91,7 @@ impl WsContext {
                 })
                 .and_then(|(duplex, _)| {
                     info!("ws connection established");
-
+                    random_range = WS_RECONNECT_RANDOM_MIN;
                     //dispatch kick msg on ws connected
                     self.dispatcher.dispatch(WS_MSG_TYPE_KICK, "ws".to_string());
 
@@ -112,7 +115,13 @@ impl WsContext {
 
             let _ = runtime.block_on(runner);
             self.msg_sender.write().unwrap().take();
-            thread::sleep(time::Duration::from_secs(WS_RECONNECT_INTERVAL));
+
+            let wait_time = WS_RECONNECT_INTERVAL_BASE + rand::random::<u64>() % random_range;
+            thread::sleep(time::Duration::from_secs(wait_time));
+            random_range = min(
+                random_range * WS_RECONNECT_RANDOM_TIMES,
+                WS_RECONNECT_RANDOM_MAX,
+            );
         }
     }
 
@@ -173,7 +182,8 @@ impl WsContext {
 
     fn handle_check_update_msg(&self, mut ws_msg: WsMsg) -> Option<OwnedMessage> {
         info!("kick_sender sent to notify check update, kick_source ws");
-        self.dispatcher.dispatch(WS_MSG_TYPE_CHECK_UPDATE, "ws".to_string());
+        self.dispatcher
+            .dispatch(WS_MSG_TYPE_CHECK_UPDATE, "ws".to_string());
         ws_msg.r#type = WS_MSG_TYPE_ACK.to_string();
         let ret = serde_json::to_string(&ws_msg);
         match ret {

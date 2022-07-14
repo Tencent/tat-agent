@@ -1,6 +1,11 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [0.1.27] - 2022-07-14
+
+### Changed
+- Change reconnect time from fixed to random.
+
 ## [0.1.26] - 2022-06-29
 
 ### Changed

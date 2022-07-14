@@ -100,6 +100,7 @@ impl PtySystem for ConPtySystem {
             .stdout(slave.try_clone().unwrap())
             .stderr(slave.try_clone().unwrap())
             .envs(envs)
+            .current_dir(home_path)
             .spawn()
             .map_err(|e| format!("spwan err {}", e))?;
 

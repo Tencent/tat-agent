@@ -53,7 +53,11 @@ pub const WS_PASSIVE_CLOSE_CODE: u16 = 3001;
 pub const WS_ACTIVE_CLOSE: &str = "cli_active_close";
 pub const WS_ACTIVE_CLOSE_CODE: u16 = 3002;
 pub const MAX_PING_FROM_LAST_PONG: usize = 3;
-pub const WS_RECONNECT_INTERVAL: u64 = 3;
+pub const WS_RECONNECT_INTERVAL_BASE: u64 = 3;
+pub const WS_RECONNECT_RANDOM_MAX: u64 = 512;
+pub const WS_RECONNECT_RANDOM_MIN: u64 = 4;
+pub const WS_RECONNECT_RANDOM_TIMES: u64 = 4;
+
 // ws msg
 pub const WS_MSG_TYPE_KICK: &str = "kick";
 pub const WS_MSG_TYPE_ACK: &str = "ack";

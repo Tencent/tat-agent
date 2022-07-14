@@ -1,6 +1,6 @@
 [package]
 name = "tat_agent"
-version = "0.1.26"
+version = "0.1.27"
 edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -40,7 +40,7 @@ derive_more = "0.99.5"
 
 [target.'cfg(target_family="unix")'.dependencies]
 daemonize = "0.4.1"
-users = { version = "0.11.0"}
+users = { version = "0.11.0" }
 openssl = { version = '0.10.35', features = ["vendored"] }
 procfs = "0.12.0"
 
@@ -49,6 +49,7 @@ winapi = { version = "0.3", features = ["winsvc","winbase","winnt","stringapiset
     "winnls","wow64apiset","synchapi","namedpipeapi","lmaccess","lmapibuf","sddl",
     "ntlsa","ntsecapi","lsalookup","libloaderapi","securitybaseapi","userenv","tlhelp32",
     "psapi","memoryapi"] }
+
 ntapi = "0.3.6"
 field-offset = "0.3.4"
 

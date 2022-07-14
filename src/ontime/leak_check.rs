@@ -32,7 +32,8 @@ pub(crate) fn check_resource_leak() {
     let fd_total = FD_CNT.fetch_add(get_handle_cnt(), SeqCst);
     let mem_total = MEM_CNT.fetch_add(get_mem_size(), SeqCst);
 
-    if CHECK_CNT.fetch_add(1, SeqCst) % ONTIME_LEAK_REPORT_FREQUENCY == 0 {
+    let check_cnt = CHECK_CNT.fetch_add(1, SeqCst);
+    if check_cnt != 0 && check_cnt % ONTIME_LEAK_REPORT_FREQUENCY == 0 {
         FD_CNT.store(0, SeqCst);
         MEM_CNT.store(0, SeqCst);
 
