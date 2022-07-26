@@ -143,10 +143,10 @@ pub const UPDATE_DOWNLOAD_TIMEOUT: u64 = 20 * 60;
 
 pub const WS_URL_DEBUG: &str = "ws://proxy:8086/ws";
 pub const WS_URLS: [&'static str; 4] = [
-    "ws://notify.tat-tc.tencent.cn:8086/ws",
-    "ws://notify.tat-tc.tencent.com.cn:8086/ws",
-    "ws://notify.tat-tc.tencentyun.com:8086/ws",
-    "ws://notify.tat.tencent-cloud.com:8086/ws",
+    "wss://notify.tat-tc.tencent.cn:8186/ws",
+    "wss://notify.tat-tc.tencent.com.cn:8186/ws",
+    "wss://notify.tat-tc.tencentyun.com:8186/ws",
+    "wss://notify.tat.tencent-cloud.com:8186/ws",
 ];
 
 pub const INVOKE_API_DEBUG: &str = "http://proxy-invoke";

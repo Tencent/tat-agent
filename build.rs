@@ -26,7 +26,9 @@ fn main() {
         let dest = target_dir.join(Path::new("deps/winpty.dll"));
         let _ = fs::copy(src, dest);
 
-        let src = env::current_dir().unwrap().join("target/winpty/winpty-agent.exe");
+        let src = env::current_dir()
+            .unwrap()
+            .join("target/winpty/winpty-agent.exe");
         let dest = target_dir.join(Path::new("winpty-agent.exe"));
         fs::copy(src.clone(), dest).unwrap();
         //for unit test

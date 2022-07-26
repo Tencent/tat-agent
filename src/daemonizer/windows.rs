@@ -1,15 +1,16 @@
 use crate::common::strwsz::str2wsz;
-use crate::executor::powershell_command::adjust_privileage;
 use log::error;
+use ntapi::ntrtl::RtlAdjustPrivilege;
+use ntapi::ntseapi::{SE_ASSIGNPRIMARYTOKEN_PRIVILEGE, SE_TCB_PRIVILEGE};
 use std::process::{Command, Stdio};
 use std::ptr;
 use winapi::shared::minwindef::{DWORD, FALSE, LPVOID};
-use winapi::shared::ntdef::NULL;
+use winapi::shared::ntdef::{NULL, TRUE};
 use winapi::shared::winerror::{ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS};
 use winapi::um::errhandlingapi::GetLastError;
 use winapi::um::minwinbase::LPSECURITY_ATTRIBUTES;
 use winapi::um::synchapi::*;
-use winapi::um::winnt::{LPWSTR, PVOID, SERVICE_WIN32_OWN_PROCESS};
+use winapi::um::winnt::{BOOLEAN, LPWSTR, PVOID, SERVICE_WIN32_OWN_PROCESS};
 use winapi::um::winsvc::*;
 use winapi::um::wow64apiset::*;
 
@@ -53,7 +54,7 @@ unsafe extern "system" fn service_handler(
     match dw_control {
         SERVICE_CONTROL_STOP | SERVICE_CONTROL_SHUTDOWN => {
             SetServiceStatus(HANDLE, &mut create_service_status(SERVICE_STOPPED));
-            // exit after this function return,void sc report err
+            // exit after this function return,avoid sc report err
             std::thread::spawn(|| {
                 std::thread::sleep(std::time::Duration::from_millis(10));
                 std::process::exit(0);
@@ -82,15 +83,6 @@ fn try_start_service(entry: fn()) {
             }
             _ => {}
         };
-
-        let service_table: &[*const SERVICE_TABLE_ENTRYW] = &[
-            &SERVICE_TABLE_ENTRYW {
-                lpServiceName: service_name.as_ptr(),
-                lpServiceProc: Some(service_main),
-            },
-            ptr::null(),
-        ];
-        StartServiceCtrlDispatcherW(*service_table.as_ptr());
         return;
     }
 }
@@ -101,6 +93,7 @@ fn clean_update_files() {
             .args(&[
                 "/C",
                 "del",
+                "/f",
                 "C:\\Program Files\\qcloud\\tat_agent\\temp_*.*",
             ])
             .stdout(Stdio::null())
@@ -142,11 +135,24 @@ fn already_start() -> bool {
     }
 }
 
+fn adjust_privileges() {
+    unsafe {
+        let mut enabled: BOOLEAN = FALSE as u8;
+        RtlAdjustPrivilege(
+            SE_ASSIGNPRIMARYTOKEN_PRIVILEGE as u32,
+            TRUE,
+            FALSE as u8,
+            &mut enabled,
+        );
+        RtlAdjustPrivilege(SE_TCB_PRIVILEGE as u32, TRUE, FALSE as u8, &mut enabled);
+    }
+}
+
 pub fn daemonize(entry: fn()) {
     if already_start() {
         std::process::exit(183);
     }
     clean_update_files();
-    adjust_privileage();
+    adjust_privileges();
     try_start_service(entry);
 }

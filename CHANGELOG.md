@@ -1,6 +1,11 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [0.1.28] - 2022-08-03
+
+### Changed
+- Optimize create_user_token logic.
+
 ## [0.1.27] - 2022-07-14
 
 ### Changed

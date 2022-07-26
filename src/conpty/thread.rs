@@ -70,34 +70,18 @@ fn register_pty_hander(sm: Arc<SessionManager>) {
     let self_2 = sm.clone();
     let self_3 = sm.clone();
     sm.event_bus
-        .slot_register(
-            EVENT_SLOT_PTY_CMD,
-            WS_MSG_TYPE_PTY_START,
-            move |value: String| {
-                self_0.handle_pty_start(value);
-            },
-        )
-        .slot_register(
-            EVENT_SLOT_PTY_CMD,
-            WS_MSG_TYPE_PTY_STOP,
-            move |value: String| {
-                self_1.handle_pty_stop(&value);
-            },
-        )
-        .slot_register(
-            EVENT_SLOT_PTY_CMD,
-            WS_MSG_TYPE_PTY_RESIZE,
-            move |value: String| {
-                self_2.handle_pty_resize(value);
-            },
-        )
-        .slot_register(
-            EVENT_SLOT_PTY_CMD,
-            WS_MSG_TYPE_PTY_INPUT,
-            move |value: String| {
-                self_3.handle_pty_input(value);
-            },
-        );
+        .slot_register(EVENT_SLOT_PTY_CMD, WS_MSG_TYPE_PTY_START, move |value| {
+            self_0.handle_pty_start(value);
+        })
+        .slot_register(EVENT_SLOT_PTY_CMD, WS_MSG_TYPE_PTY_STOP, move |value| {
+            self_1.handle_pty_stop(value);
+        })
+        .slot_register(EVENT_SLOT_PTY_CMD, WS_MSG_TYPE_PTY_RESIZE, move |value| {
+            self_2.handle_pty_resize(value);
+        })
+        .slot_register(EVENT_SLOT_PTY_CMD, WS_MSG_TYPE_PTY_INPUT, move |value| {
+            self_3.handle_pty_input(value);
+        });
 }
 
 impl SessionManager {
@@ -168,7 +152,7 @@ impl SessionManager {
         info!("handle_pty_start success");
     }
 
-    fn handle_pty_stop(&self, value: &str) {
+    fn handle_pty_stop(&self, value: String) {
         info!("handle_pty_stop {}", value);
         let pty_stop: PtyStop = match serde_json::from_str(&value) {
             Ok(v) => v,

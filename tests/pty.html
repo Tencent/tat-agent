@@ -37,7 +37,7 @@
       rows: 50
     })
 
-    const ws = new WebSocket(`ws://127.0.0.1:3333`, "rust-websocket");
+    const ws = new WebSocket(`ws://172.26.25.49:3333`, "rust-websocket");
     ws.addEventListener('open', function () {
       console.info('WebSocket connected');
       let json = JSON.stringify({
@@ -73,6 +73,13 @@
         console.error(e);
       }
     })
+
+
+    window.onunload() {
+
+    }
+
+
 
     term.open(document.getElementById('terminal'))
 

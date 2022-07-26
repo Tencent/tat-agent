@@ -6,7 +6,7 @@ use crate::conpty::bind::{
     winpty_spawn_config_new, winpty_t,
 };
 use crate::conpty::{PtySession, PtySystem};
-use crate::executor::powershell_command::{create_user_token, get_current_user, load_environment};
+use crate::executor::powershell_command::{get_user_token, load_environment};
 use crate::executor::proc::BaseCommand;
 use log::info;
 use ntapi::ntpsapi::{
@@ -23,16 +23,13 @@ use std::sync::{Arc, Mutex};
 use std::{mem, ptr};
 use winapi::shared::minwindef::{DWORD, LPDWORD};
 use winapi::shared::ntdef::{LPCWSTR, NULL};
-use winapi::um::errhandlingapi::GetLastError;
 use winapi::um::fileapi::{CreateFileW, OPEN_EXISTING};
 use winapi::um::handleapi::CloseHandle;
 use winapi::um::minwinbase::LPSECURITY_ATTRIBUTES;
-use winapi::um::processthreadsapi::{
-    GetCurrentProcess, GetProcessId, OpenProcessToken,
-};
+use winapi::um::processthreadsapi::GetProcessId;
 use winapi::um::userenv::GetUserProfileDirectoryW;
 use winapi::um::winnt::{
-    FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ, FILE_GENERIC_WRITE, LPWSTR, PVOID, TOKEN_ALL_ACCESS,
+    FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ, FILE_GENERIC_WRITE, LPWSTR, PVOID,
 };
 
 struct Inner {
@@ -148,19 +145,6 @@ fn openpty(token: HANDLE, cols: u16, rows: u16) -> Result<Inner, String> {
     }
 }
 
-fn get_user_token(user_name: &str) -> Result<HANDLE, String> {
-    if get_current_user().eq_ignore_ascii_case(user_name) {
-        let mut token: HANDLE = 0 as HANDLE;
-        unsafe {
-            if 0 == OpenProcessToken(GetCurrentProcess(), TOKEN_ALL_ACCESS, &mut token) {
-                return Err(format!("OpenProcessToken Fail {}", GetLastError()));
-            }
-            return Ok(token);
-        }
-    }
-    return create_user_token(user_name);
-}
-
 #[derive(Default)]
 pub struct ConPtySystem {}
 
@@ -172,11 +156,7 @@ impl PtySystem for ConPtySystem {
         rows: u16,
         _flag: u32,
     ) -> Result<Arc<dyn PtySession + Send + Sync>, String> {
-        
-        let token;
-        unsafe {
-            token = File::from_raw_handle(get_user_token(user_name)?);//for auto close
-        }
+        let token = get_user_token(user_name)?;
         let inner = openpty(token.as_raw_handle(), cols, rows)?;
         let session = Arc::new(WinPtySession {
             inner: Arc::new(Mutex::new(inner)),

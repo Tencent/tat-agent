@@ -128,7 +128,7 @@ mod test {
         };
 
         let url = find_available_url(Vec::from(WS_URLS), resolve_1);
-        assert_eq!(url, "ws://notify.tat-tc.tencentyun.com:8086/ws");
+        assert_eq!(url, "wss://notify.tat-tc.tencentyun.com:8186/ws");
         assert_eq!(resolve_1_cnt.load(SeqCst), 3);
 
         let url = find_available_url(Vec::from(INVOKE_APIS), resolve_2);

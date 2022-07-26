@@ -54,31 +54,38 @@ impl HttpWorker {
         }
     }
 
-    pub async fn process(&self, source: String) -> Option<u64> {
+    pub async fn process(&self, source: String) {
         info!("http thread processing message from: {}", source);
-        match self.adapter.describe_tasks().await {
-            Ok(resp) => {
-                info!("describe task success: {:?}", resp);
-                for task in resp.invocation_normal_task_set.iter() {
-                    match self.task_store.store(&task) {
-                        Ok((task_file, log_file)) => {
-                            // if task is not in command cache, execute it
-                            self.task_execute(task, &task_file, &log_file).await;
-                        }
-                        Err(_) => {
-                            // script file store failed, reuse this flow to report start failed
-                            self.task_execute(task, "", "").await;
+        for _ in 0..2 {
+            match self.adapter.describe_tasks().await {
+                Ok(resp) => {
+                    info!("describe task success: {:?}", resp);
+                    if source == "ws"
+                        && resp.invocation_normal_task_set.is_empty()
+                        && resp.invocation_cancel_task_set.is_empty()
+                    {
+                        tokio::time::delay_for(Duration::from_millis(100)).await;
+                        continue;
+                    }
+                    for task in resp.invocation_normal_task_set.iter() {
+                        match self.task_store.store(&task) {
+                            Ok((task_file, log_file)) => {
+                                self.task_execute(task, &task_file, &log_file).await;
+                            }
+                            Err(_) => {
+                                self.task_execute(task, "", "").await;
+                            }
                         }
                     }
+                    for task in resp.invocation_cancel_task_set.iter() {
+                        self.task_cancel(&task).await;
+                    }
+                    return;
                 }
-                for task in resp.invocation_cancel_task_set.iter() {
-                    self.task_cancel(&task).await;
+                Err(why) => {
+                    error!("describe task failed: {:?}", why);
+                    return;
                 }
-                Some(resp.invocation_normal_task_set.len() as u64)
-            }
-            Err(why) => {
-                error!("describe task failed: {:?}", why);
-                None
             }
         }
     }
