@@ -1,6 +1,12 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [0.1.29] - 2022-09-21
+
+### Changed
+- Add pty fs support.
+- Add ps1 block support.
+
 ## [0.1.28] - 2022-08-03
 
 ### Changed

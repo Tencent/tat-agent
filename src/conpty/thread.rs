@@ -1,10 +1,10 @@
 use crate::common::consts::{
-    EVENT_SLOT_PTY_CMD, PTY_FLAG_INIT_BLOCK, PTY_REMOVE_INTERVAL, PTY_WS_MSG,
-    WS_MSG_TYPE_PTY_ERROR, WS_MSG_TYPE_PTY_INPUT, WS_MSG_TYPE_PTY_OUTPUT, WS_MSG_TYPE_PTY_READY,
-    WS_MSG_TYPE_PTY_RESIZE, WS_MSG_TYPE_PTY_START, WS_MSG_TYPE_PTY_STOP,
+    PTY_CMD_MSG, PTY_FLAG_ENABLE_BLOCK, PTY_REMOVE_INTERVAL, SLOT_PTY_CMD, WS_MSG_TYPE_PTY_ERROR,
+    WS_MSG_TYPE_PTY_INPUT, WS_MSG_TYPE_PTY_OUTPUT, WS_MSG_TYPE_PTY_READY, WS_MSG_TYPE_PTY_RESIZE,
+    WS_MSG_TYPE_PTY_START, WS_MSG_TYPE_PTY_STOP,
 };
 use crate::common::evbus::EventBus;
-use crate::conpty::{PtySession, PtySystem};
+use crate::conpty::{PtySession, PtySystem, PTY_RUNTIME};
 
 use crate::types::ws_msg::{PtyError, PtyInput, PtyReady, PtyResize, PtyStop, WsMsg};
 use crate::types::ws_msg::{PtyOutput, PtyStart};
@@ -18,14 +18,15 @@ use std::sync::atomic::{AtomicU64, Ordering, Ordering::SeqCst};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncReadExt;
-use tokio::runtime::Runtime;
 use tokio::time::timeout;
+
+use super::ptybin::register_pty_bin_handlers;
 
 cfg_if::cfg_if! {
     if #[cfg(unix)] {
-        use super::unix::install_scripts;
         use super::unix::ConPtySystem;
         use users::get_current_username;
+        use procfs::process::Process;
     } else if #[cfg(windows)] {
         use super::windows::ConPtySystem;
         use crate::executor::powershell_command::get_current_user;
@@ -34,34 +35,30 @@ cfg_if::cfg_if! {
 
 #[derive(Clone)]
 pub(crate) struct Session {
-    session_id: String,
-    pty_session: Arc<dyn PtySession + Send + Sync>,
-    writer: Arc<Mutex<File>>,
-    last_input_time: Arc<AtomicU64>,
-    is_stoped: Arc<AtomicBool>,
+    pub(crate) session_id: String,
+    pub(crate) pty_session: Arc<dyn PtySession + Send + Sync>,
+    pub(crate) writer: Arc<Mutex<File>>,
+    pub(crate) last_input_time: Arc<AtomicU64>,
+    pub(crate) is_stoped: Arc<AtomicBool>,
 }
 
 #[derive(Clone)]
 pub(crate) struct SessionManager {
-    ws_seq_num: Arc<AtomicU64>,
-    running_task_num: Arc<AtomicU64>,
+    pub(crate) ws_seq_num: Arc<AtomicU64>,
+    pub(crate) running_task_num: Arc<AtomicU64>,
     pub(crate) session_map: Arc<RwLock<HashMap<String, Arc<Session>>>>,
     pub(crate) event_bus: Arc<EventBus>,
-    runtime: Arc<Runtime>,
 }
 
 pub fn run(dispatcher: &Arc<EventBus>, running_task_num: &Arc<AtomicU64>) {
-    #[cfg(unix)]
-    install_scripts();
-
     let context = Arc::new(SessionManager {
         event_bus: dispatcher.clone(),
         session_map: Arc::new(RwLock::new(HashMap::default())),
         running_task_num: running_task_num.clone(),
         ws_seq_num: Arc::new(AtomicU64::new(0)),
-        runtime: Arc::new(Runtime::new().unwrap()),
     });
     register_pty_hander(context.clone());
+    register_pty_bin_handlers(context.clone());
 }
 
 fn register_pty_hander(sm: Arc<SessionManager>) {
@@ -70,22 +67,23 @@ fn register_pty_hander(sm: Arc<SessionManager>) {
     let self_2 = sm.clone();
     let self_3 = sm.clone();
     sm.event_bus
-        .slot_register(EVENT_SLOT_PTY_CMD, WS_MSG_TYPE_PTY_START, move |value| {
+        .slot_register(SLOT_PTY_CMD, WS_MSG_TYPE_PTY_START, move |value| {
             self_0.handle_pty_start(value);
         })
-        .slot_register(EVENT_SLOT_PTY_CMD, WS_MSG_TYPE_PTY_STOP, move |value| {
+        .slot_register(SLOT_PTY_CMD, WS_MSG_TYPE_PTY_STOP, move |value| {
             self_1.handle_pty_stop(value);
         })
-        .slot_register(EVENT_SLOT_PTY_CMD, WS_MSG_TYPE_PTY_RESIZE, move |value| {
+        .slot_register(SLOT_PTY_CMD, WS_MSG_TYPE_PTY_RESIZE, move |value| {
             self_2.handle_pty_resize(value);
         })
-        .slot_register(EVENT_SLOT_PTY_CMD, WS_MSG_TYPE_PTY_INPUT, move |value| {
+        .slot_register(SLOT_PTY_CMD, WS_MSG_TYPE_PTY_INPUT, move |value| {
             self_3.handle_pty_input(value);
         });
 }
 
 impl SessionManager {
-    fn handle_pty_start(&self, value: String) {
+    fn handle_pty_start(&self, value: Vec<u8>) {
+        let value = String::from_utf8_lossy(&value[..]);
         info!("=>handle_pty_start {}", value);
         let pty_start: PtyStart = match serde_json::from_str(&value) {
             Ok(v) => v,
@@ -107,7 +105,7 @@ impl SessionManager {
 
         let mut flag: u32 = 0;
         if pty_start.init_block {
-            flag = flag | PTY_FLAG_INIT_BLOCK
+            flag = flag | PTY_FLAG_ENABLE_BLOCK
         }
 
         self.running_task_num.fetch_add(1, SeqCst);
@@ -117,8 +115,8 @@ impl SessionManager {
                 Ok(session) => session,
                 Err(e) => {
                     error!("=>openpty err {}", e.to_string());
-                    let msg = self.build_error_msg(session_id.clone(), e);
-                    self.event_bus.dispatch(PTY_WS_MSG, msg);
+                    let msg = self.build_error_msg(session_id, e);
+                    self.event_bus.dispatch(PTY_CMD_MSG, msg.into_bytes());
                     self.running_task_num.fetch_sub(1, SeqCst);
                     return;
                 }
@@ -144,15 +142,15 @@ impl SessionManager {
             .insert(session_id.clone(), session.clone());
 
         let msg = self.build_ready_msg(session_id.clone());
-        self.event_bus.dispatch(PTY_WS_MSG, msg);
+        self.event_bus.dispatch(PTY_CMD_MSG, msg.into_bytes());
 
         let self_0 = self.clone();
-        self.runtime
-            .spawn(async move { self_0.report_output(session).await });
+        PTY_RUNTIME.spawn(async move { self_0.report_output(session).await });
         info!("handle_pty_start success");
     }
 
-    fn handle_pty_stop(&self, value: String) {
+    fn handle_pty_stop(&self, value: Vec<u8>) {
+        let value = String::from_utf8_lossy(&value[..]);
         info!("handle_pty_stop {}", value);
         let pty_stop: PtyStop = match serde_json::from_str(&value) {
             Ok(v) => v,
@@ -162,7 +160,8 @@ impl SessionManager {
         info!("handle_pty_stop session {} removed ", &pty_stop.session_id);
     }
 
-    fn handle_pty_resize(&self, value: String) {
+    fn handle_pty_resize(&self, value: Vec<u8>) {
+        let value = String::from_utf8_lossy(&value[..]);
         info!("handle_pty_resize {}", value);
         let pty_resize: PtyResize = match serde_json::from_str(&value) {
             Ok(v) => v,
@@ -170,12 +169,13 @@ impl SessionManager {
         };
 
         let session_id = pty_resize.session_id.clone();
-        self.work_in_session(&session_id, move |session| {
+        if let Some(session) = self.check_session(&session_id) {
             let _ = session.pty_session.resize(pty_resize.cols, pty_resize.rows);
-        });
+        };
     }
 
-    fn handle_pty_input(&self, value: String) {
+    fn handle_pty_input(&self, value: Vec<u8>) {
+        let value = String::from_utf8_lossy(&value[..]);
         let pty_input: PtyInput = match serde_json::from_str(&value) {
             Ok(v) => v,
             _ => return,
@@ -188,10 +188,10 @@ impl SessionManager {
 
         if let Ok(input) = base64::decode(pty_input.input) {
             let session_id = pty_input.session_id.clone();
-            self.work_in_session(&session_id, move |session| {
+            if let Some(session) = self.check_session(&session_id) {
                 let _ = session.writer.lock().unwrap().write(&input).unwrap();
                 session.last_input_time.store(input_time, SeqCst);
-            })
+            }
         }
     }
 
@@ -199,7 +199,15 @@ impl SessionManager {
         info!("=>report_output {}", session.session_id);
         let duration = Duration::from_millis(100);
         let mut reader = tokio::fs::File::from_std(session.pty_session.get_reader().unwrap());
+        #[cfg(unix)]
+        let proc = Process::new(session.pty_session.get_pid().unwrap() as i32).unwrap();
         loop {
+            #[cfg(unix)]
+            if !proc.is_alive() {
+                info!("pty session {}  bash process exited", session.session_id);
+                break;
+            }
+
             if session.is_stoped.load(SeqCst) {
                 info!(
                     "report_output find {} session stoped,break",
@@ -227,7 +235,7 @@ impl SessionManager {
                     if size > 0 {
                         let msg =
                             self.build_output_msg(session.session_id.clone(), &mut buffer[0..size]);
-                        self.event_bus.dispatch(PTY_WS_MSG, msg);
+                        self.event_bus.dispatch(PTY_CMD_MSG, msg.into_bytes());
                     } else {
                         info!("pty session {} read size is 0 close", session.session_id);
                         break;
@@ -243,7 +251,7 @@ impl SessionManager {
                         session.session_id.clone(),
                         format!("Session {} terminated", session.session_id),
                     );
-                    self.event_bus.dispatch(PTY_WS_MSG, msg);
+                    self.event_bus.dispatch(PTY_CMD_MSG, msg.into_bytes());
                     break;
                 }
             }
@@ -273,19 +281,17 @@ impl SessionManager {
         };
     }
 
-    pub(crate) fn work_in_session<F>(&self, session_id: &str, func: F)
-    where
-        F: Fn(Arc<Session>) + 'static + Sync + Send,
-    {
+    pub(crate) fn check_session(&self, session_id: &str) -> Option<Arc<Session>> {
         if let Some(session) = self.session_map.read().unwrap().get(session_id) {
-            func(session.clone());
+            return Some(session.clone());
         } else {
             error!("Session {} not find", session_id);
             let msg = self.build_error_msg(
                 session_id.to_string(),
                 format!("Session {} not exist", session_id),
             );
-            self.event_bus.dispatch(PTY_WS_MSG, msg);
+            self.event_bus.dispatch(PTY_CMD_MSG, msg.into_bytes());
+            None
         }
     }
 
@@ -312,11 +318,10 @@ impl SessionManager {
     where
         T: Serialize,
     {
-        let value = serde_json::to_value(msg_body).unwrap();
         let msg = WsMsg {
             r#type: msg_type.to_string(),
             seq: self.ws_seq_num.fetch_add(1, SeqCst),
-            data: Some(value),
+            data: Some(msg_body),
         };
         serde_json::to_string(&msg).unwrap()
     }

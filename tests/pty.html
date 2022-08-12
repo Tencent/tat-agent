@@ -13,12 +13,35 @@
     charset="utf-8"></script>
   <script type="text/javascript" src="https://cdn.bootcdn.net/ajax/libs/xterm/3.9.2/addons/fit/fit.min.js"
     charset="utf-8"></script>
+  <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/bson@4.6.5/dist/bson.browser.umd.min.js"></script>
 </head>
 
 <body>
+  <input type="text" id="id_path" value="/tmp/test_file.txt">
+  <input type="text" id="id_data" value="test_data">
+  <button type="submit" id="create">create</button>
+  <button type="submit" id="delete">delete</button>
+  <button type="submit" id="write">write</button>
+  <button type="submit" id="read">read</button>
+  <button type="submit" id="list">list</button>
+  <button type="submit" id="exec">exec</button>
+  <button type="submit" id="stop">stop</button>
+
   <div id="terminal"></div>
   <script type="text/javascript">
 
+    function randomString(len) {
+      len = len || 32;
+      var $chars = 'ABCDEFGHJKMNPQRSTWXYZabcdefhijkmnprstwxyz2345678';    /****默认去掉了容易混淆的字符oOLl,9gq,Vv,Uu,I1****/
+      var maxPos = $chars.length;
+      var pwd = '';
+      for (i = 0; i < len; i++) {
+        pwd += $chars.charAt(Math.floor(Math.random() * maxPos));
+      }
+      return pwd;
+    }
+
+    let session_id = randomString(10)
 
     function decodeBase64(base64) {
       const text = atob(base64);
@@ -31,19 +54,179 @@
       return decoder.decode(bytes);
     }
 
+    function str2bytes(str) {
+      var ch, st, re = [];
+      for (var i = 0; i < str.length; i++) {
+        ch = str.charCodeAt(i);
+        st = [];
+        do {
+          st.push(ch & 0xFF);
+          ch = ch >> 8;
+        } while (ch);
+        re = re.concat(st.reverse());
+      }
+      return re;
+    }
+
+
+    function createFile(path) {
+      const doc = {
+        Type: 'PtyCreateFile',
+        Data: {
+          SessionId: session_id,
+          CustomData: 'c',
+          Data: {
+            Path: path,
+            Mode: 0o644,
+            Overwrite: true,
+          },
+        }
+      };
+      const msg = BSON.serialize(doc);
+      console.log('CreateMsg:', msg);
+      ws.send(msg);
+    }
+
+    function deleteFile(path) {
+      const doc = {
+        Type: 'PtyDeleteFile',
+        Data: {
+          SessionId: session_id,
+          CustomData: 'd',
+          Data: {
+            Path: path,
+          },
+        }
+      };
+      const msg = BSON.serialize(doc);
+      console.log('DeleteMsg:', msg);
+      ws.send(msg);
+    }
+
+    function writeFile(path, data) {
+      const doc = {
+        Type: 'PtyWriteFile',
+        Data: {
+          SessionId: session_id,
+          CustomData: 'd',
+          Data: {
+            Path: path,
+            Offset: 0,
+            Data: data,
+          },
+        }
+      };
+      const msg = BSON.serialize(doc);
+      console.log('WriteMsg:', msg);
+      ws.send(msg);
+    }
+
+
+    function readFile(path) {
+      const doc = {
+        Type: 'PtyReadFile',
+        Data: {
+          SessionId: session_id,
+          CustomData: 'd',
+          Data: {
+            Path: path,
+            Offset: 0,
+            //Size:-1,  //-1 means all
+          },
+        }
+      };
+      const msg = BSON.serialize(doc);
+      console.log('ReadMsg:', msg);
+      ws.send(msg);
+    }
+
+
+    function listPath() {
+      const doc = {
+        Type: 'PtyListPath',
+        Data: {
+          SessionId: session_id,
+          CustomData: 'd',
+          Data: {
+            Path: "/tmp",
+            Filter: "*",
+          },
+        }
+      };
+      const msg = BSON.serialize(doc);
+      console.log('ReadMsg:', msg);
+      ws.send(msg);
+    }
+
+    function execCmd() {
+      const doc = {
+        Type: 'PtyExecCmd',
+        Data: {
+          SessionId: session_id,
+          CustomData: 'd',
+          Data: {
+            Cmd: "pwd",
+          },
+        }
+      };
+      const msg = BSON.serialize(doc);
+      console.log('ReadMsg:', msg);
+      ws.send(msg);
+    }
+
+    document.getElementById("create").addEventListener("click", function handle_create() {
+      let path = document.getElementById("id_path").value;
+      createFile(path)
+    })
+
+    document.getElementById("delete").addEventListener("click", function handle_create() {
+      let path = document.getElementById("id_path").value;
+      deleteFile(path)
+    })
+
+    document.getElementById("write").addEventListener("click", function handle_create() {
+      let path = document.getElementById("id_path").value;
+      let data = document.getElementById("id_data").value;
+      writeFile(path, str2bytes(data))
+    })
+
+    document.getElementById("read").addEventListener("click", function handle_create() {
+      let path = document.getElementById("id_path").value;
+      readFile(path)
+    })
+
+    document.getElementById("list").addEventListener("click", function handle_create() {
+      listPath()
+    })
+
+    document.getElementById("exec").addEventListener("click", function handle_create() {
+      execCmd()
+    })
+
+    document.getElementById("stop").addEventListener("click", function handle_create() {
+      let json = JSON.stringify({
+        Type: "PtyStop",
+        Data: {
+          SessionId: session_id,
+        }
+      });
+      ws.send(json)
+    })
+
     Terminal.applyAddon(fit)
     const term = new Terminal({
       cols: 100,
       rows: 50
     })
 
-    const ws = new WebSocket(`ws://172.26.25.49:3333`, "rust-websocket");
+
+    const ws = new WebSocket(`ws://127.0.0.1:3333`, "rust-websocket");
     ws.addEventListener('open', function () {
       console.info('WebSocket connected');
       let json = JSON.stringify({
         Type: "PtyStart",
         Data: {
-          SessionId: "1234",
+          SessionId: session_id,
           Cols: 100,
           Rows: 50,
         }
@@ -54,32 +237,28 @@
     ws.addEventListener('message', function (event) {
       console.debug('Message from server ', event.data)
       try {
-        //debugger
-        let msg = JSON.parse(event.data);
-        if (msg.Type == "PtyOutput") {
-          let output = decodeBase64(msg.Data.Output)
-          term.write(output);
+        if (typeof event.data === 'string') {
+          let msg = JSON.parse(event.data);
+          //console.log("TxtMsg", msg);
+          if (msg.Type === "PtyOutput") {
+            let output = decodeBase64(msg.Data.Output)
+            term.write(output);
+            console.log("TxtMsg", output)
+          }
+          return
         }
 
-        if (msg.Type == "PtyReady") {
-          //term.write("测试\n");
-        }
-
-        if (msg.Type == "PtyError") {
-          term.write("disconnectted");
+        if (event.data instanceof Blob || event.data instanceof ArrayBuffer) {
+          event.data.arrayBuffer().then(buffer => {
+            let msg = BSON.deserialize(buffer);
+            console.log('BinMsg', msg);
+          });
         }
 
       } catch (e) {
         console.error(e);
       }
     })
-
-
-    window.onunload() {
-
-    }
-
-
 
     term.open(document.getElementById('terminal'))
 
@@ -88,7 +267,7 @@
       let json = JSON.stringify({
         Type: "PtyInput",
         Data: {
-          SessionId: "1234",
+          SessionId: session_id,
           Input: b64
         }
       });
@@ -98,13 +277,14 @@
     window.addEventListener('resize', () => {
       term.fit()
     })
+
     term.fit()
     term.on('resize', size => {
       console.debug('resize')
       let json = JSON.stringify({
         Type: "PtyResize",
         Data: {
-          SessionId: "1234",
+          SessionId: session_id,
           Cols: size.cols,
           Rows: size.rows,
         }

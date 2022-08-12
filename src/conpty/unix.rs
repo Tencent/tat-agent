@@ -1,19 +1,16 @@
-use super::{PtySession, PtySystem};
-use crate::common::consts::{
-    self, BASH_PREEXC, BLOCK_INIT, COREOS_BASH_PREEXC, COREOS_BLOCK_INIT, PTY_FLAG_INIT_BLOCK,
-};
-use crate::executor::proc::BaseCommand;
+use super::{Handler, PtySession, PtySystem};
+use crate::common::consts::PTY_INSPECT_READ;
 use crate::executor::shell_command::{build_envs, cmd_path};
-use libc::{self, waitpid, winsize};
-use log::{error, info};
-use std::fs::{create_dir_all, read_to_string, set_permissions, write, File, Permissions};
-use std::io::Write;
-use std::os::unix::prelude::{AsRawFd, CommandExt, FromRawFd, PermissionsExt, RawFd};
-use std::path::Path;
+use libc::{self, waitpid, winsize, EXIT_FAILURE, EXIT_SUCCESS, SIGHUP};
+use std::fs::{metadata, File};
+use std::io::{Read, Write};
+use std::os::linux::fs::MetadataExt;
+use std::os::unix::prelude::{AsRawFd, CommandExt, FromRawFd, RawFd};
 use std::process::{Child, Command};
 use std::ptr::null_mut;
 use std::sync::{Arc, Mutex};
 use std::{io, ptr};
+use unix_mode::{is_allowed, Access, Accessor};
 use users::get_user_by_name;
 use users::os::unix::UserExt;
 use users::User;
@@ -21,6 +18,7 @@ use users::User;
 struct Inner {
     master: File,
     child: Child,
+    user: User,
 }
 
 fn openpty(user: User, cols: u16, rows: u16) -> Result<(File, File), String> {
@@ -62,30 +60,19 @@ impl PtySystem for ConPtySystem {
         user_name: &str,
         cols: u16,
         rows: u16,
-        #[allow(dead_code)] flag: u32,
+        #[allow(dead_code)] _flag: u32,
     ) -> Result<std::sync::Arc<dyn PtySession + Send + Sync>, String> {
         let user = get_user_by_name(user_name).ok_or(format!("user {} not exist", user_name))?;
         let shell_path = cmd_path("bash").ok_or("bash not exist".to_string())?;
         let home_path = user.home_dir().to_str().unwrap_or_else(|| "/tmp");
 
         let envs = build_envs(user_name, home_path, &shell_path);
-        let (mut master, slave) = openpty(user.clone(), cols, rows)?;
+        let (master, slave) = openpty(user.clone(), cols, rows)?;
 
         let mut cmd = Command::new("bash");
         unsafe {
             cmd.pre_exec(move || {
-                for signo in &[
-                    libc::SIGCHLD,
-                    libc::SIGINT,
-                    libc::SIGQUIT,
-                    libc::SIGTERM,
-                    libc::SIGALRM,
-                ] {
-                    libc::signal(*signo, libc::SIG_DFL);
-                }
-
                 libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGHUP);
-
                 if libc::setsid() == -1 {
                     return Err(io::Error::last_os_error());
                 }
@@ -104,13 +91,12 @@ impl PtySystem for ConPtySystem {
             .spawn()
             .map_err(|e| format!("spwan err {}", e))?;
 
-        if (flag & PTY_FLAG_INIT_BLOCK) != 0 {
-            let init_block = format!("source {};clear\n", BLOCK_INIT);
-            let _ = master.write(init_block.as_bytes());
-        }
-
         return Ok(Arc::new(UnixPtySession {
-            inner: Arc::new(Mutex::new(Inner { master, child })),
+            inner: Arc::new(Mutex::new(Inner {
+                master,
+                child,
+                user,
+            })),
         }));
     }
 }
@@ -151,55 +137,112 @@ impl PtySession for UnixPtySession {
         let inner = self.inner.lock().unwrap();
         inner.master.try_clone().map_err(|e| format!("err {}", e))
     }
+
+    fn get_pid(&self) -> Result<u32, String> {
+        let pid = self.inner.lock().unwrap().child.id();
+        Ok(pid)
+    }
+
+    fn work_as_user(&self, func: Handler) -> Result<Vec<u8>, String> {
+        let user = self.inner.lock().unwrap().user.clone();
+        unsafe {
+            let mut pipefd: [i32; 2] = [0, 0];
+            libc::pipe(pipefd.as_mut_ptr());
+            let pid = libc::fork();
+            if pid == 0 {
+                libc::setgid(user.primary_group_id());
+                libc::setuid(user.uid());
+                let mut stdin = File::from_raw_fd(pipefd[1]);
+                match func() {
+                    Ok(output) => {
+                        let _ = stdin.write_all(&output);
+                        libc::_exit(EXIT_SUCCESS);
+                    }
+                    Err(err) => {
+                        let _ = stdin.write_all(err.as_bytes());
+                        libc::_exit(EXIT_FAILURE);
+                    }
+                }
+            } else {
+                libc::close(pipefd[1]);
+                let mut output: Vec<u8> = Vec::new();
+                let mut stdout = File::from_raw_fd(pipefd[0]);
+                let _ = stdout.read_to_end(&mut output);
+                let mut exit_code = 0 as i32;
+                libc::waitpid(pid, &mut exit_code, 0);
+                if exit_code == EXIT_SUCCESS {
+                    return Ok(output);
+                } else {
+                    return Err(String::from_utf8_lossy(&output).to_string());
+                }
+            }
+        }
+    }
+
+    fn inspect_access(&self, path: &str, access: u8) -> Result<(), String> {
+        let meta_data = metadata(path).map_err(|e| e.to_string())?;
+
+        let user = self.inner.lock().unwrap().user.clone();
+        let access = if access == PTY_INSPECT_READ {
+            Access::Read
+        } else {
+            Access::Write
+        };
+        //check owner
+        if meta_data.st_uid() == user.uid()
+            && is_allowed(Accessor::User, access, meta_data.st_mode())
+        {
+            return Ok(());
+        }
+        //check group
+        if user.primary_group_id() == meta_data.st_gid()
+            && is_allowed(Accessor::Group, access, meta_data.st_mode())
+        {
+            return Ok(());
+        }
+        if let Some(groups) = user.groups() {
+            for group in groups {
+                if group.gid() == meta_data.st_gid()
+                    && is_allowed(Accessor::Group, access, meta_data.st_mode())
+                {
+                    return Ok(());
+                }
+            }
+        }
+        //check others
+        if is_allowed(Accessor::Other, access, meta_data.st_mode()) {
+            return Ok(());
+        }
+        Err("access denied".to_string())
+    }
 }
 
 impl Drop for UnixPtySession {
     fn drop(&mut self) {
         let pid = self.inner.lock().unwrap().child.id() as i32;
-        BaseCommand::kill_process_group(pid as u32);
         unsafe {
+            libc::kill(pid * -1, SIGHUP);
             waitpid(pid, null_mut(), 0);
         }
     }
 }
 
-fn install_script(mem_data: String, path: &str) -> io::Result<()> {
-    let file_data = read_to_string(path).unwrap_or_else(|_| "".to_string());
-    if mem_data != file_data {
-        //write
-        let parent = Path::new(path).parent().unwrap();
-        create_dir_all(parent)?;
-        set_permissions(
-            parent,
-            Permissions::from_mode(consts::FILE_EXECUTE_PERMISSION_MODE),
-        )?;
-        write(path, mem_data)?;
-        set_permissions(
-            path,
-            Permissions::from_mode(consts::FILE_EXECUTE_PERMISSION_MODE),
-        )?;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use users::get_current_username;
+    #[test]
+    fn test_work_as_user() {
+        let name = get_current_username().unwrap();
+        let user_name = String::from(name.to_str().unwrap());
+        let pty_session = ConPtySystem::default()
+            .openpty(&user_name, 100, 100, 0)
+            .unwrap();
+        let result = pty_session
+            .work_as_user(Box::new(|| Ok("foo".to_string().into_bytes())))
+            .unwrap();
+
+        let foo = String::from_utf8_lossy(&result).to_string();
+        assert_eq!(foo, "foo");
     }
-    Ok(())
-}
-
-pub(crate) fn install_scripts() {
-    let is_coreos = match read_to_string("/etc/os-release") {
-        Ok(data) => data.contains("CoreOS"),
-        Err(_) => false,
-    };
-    info!("install_scripts is_coreos {}", is_coreos);
-    let (pexec_path, init_path) = if is_coreos {
-        (COREOS_BASH_PREEXC, COREOS_BLOCK_INIT)
-    } else {
-        (BASH_PREEXC, BLOCK_INIT)
-    };
-
-    let mem_data = String::from_utf8_lossy(include_bytes!("../../misc/bash-preexec.sh"));
-    let _ = install_script(mem_data.to_string(), pexec_path).map_err(|e| {
-        error!("install_scripts {} fail {}", pexec_path, e);
-    });
-    let mem_data = String::from_utf8_lossy(include_bytes!("../../misc/bash-init.sh"));
-    let _ = install_script(mem_data.to_string(), init_path).map_err(|e| {
-        error!("install_scripts {} fail {}", init_path, e);
-    });
 }

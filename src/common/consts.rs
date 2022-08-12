@@ -3,8 +3,9 @@ use std::env;
 pub const AGENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 //event bus slots
-pub const EVENT_SLOT_DEFAULT: &str = "event_slot_default";
-pub const EVENT_SLOT_PTY_CMD: &str = "event_slot_pty_cmd";
+pub const SLOT_DEFAULT: &str = "event_slot_default";
+pub const SLOT_PTY_CMD: &str = "event_slot_pty_cmd";
+pub const SLOT_PTY_BIN: &str = "event_slot_pty_file";
 
 // log related
 pub const LOG_PATTERN: &str = "{d}|{f}:{L}|{l}|{m}{n}";
@@ -23,11 +24,6 @@ pub const VIP_HEADER: &str = "Tat-Vip";
 pub const SELF_UPDATE_FILENAME: &str = "agent_update.zip";
 cfg_if::cfg_if! {
     if #[cfg(unix)] {
-        //bash block related
-        pub const BASH_PREEXC:&str="/usr/local/qcloud/bash-precmd/bash-preexec.sh";
-        pub const BLOCK_INIT:&str="/usr/local/qcloud/bash-precmd/bash-init.sh";
-        pub const COREOS_BASH_PREEXC:&str="/var/lib/qcloud/bash-precmd/bash-preexec.sh";
-        pub const COREOS_BLOCK_INIT:&str="/var/lib/qcloud/bash-precmd/bash-init.sh";
         // daemon related
         pub const PID_FILE: &str = "/var/run/tat_agent.pid";
         pub const TASK_STORE_PATH: &str = "/tmp/tat_agent/commands/";
@@ -73,7 +69,17 @@ pub const WS_MSG_TYPE_PTY_READY: &str = "PtyReady";
 pub const WS_MSG_TYPE_PTY_ERROR: &str = "PtyError";
 pub const WS_MSG_TYPE_PTY_OUTPUT: &str = "PtyOutput";
 
-pub const PTY_WS_MSG: &str = "pty_ws_msg";
+pub const WS_MSG_TYPE_PTY_LIST_PATH: &str = "PtyListPath";
+pub const WS_MSG_TYPE_PTY_FILE_EXIST: &str = "PtyFileExist";
+pub const WS_MSG_TYPE_CREATE_FILE: &str = "PtyCreateFile";
+pub const WS_MSG_TYPE_PTY_DELETE_FILE: &str = "PtyDeleteFile";
+pub const WS_MSG_TYPE_PTY_READ_FILE: &str = "PtyReadFile";
+pub const WS_MSG_TYPE_PTY_WRITE_FILE: &str = "PtyWriteFile";
+pub const WS_MSG_TYPE_PTY_FILE_INFO: &str = "PtyFileInfo";
+pub const WS_MSG_TYPE_PTY_EXEC_CMD: &str = "PtyExecCmd";
+
+pub const PTY_CMD_MSG: &str = "pty_cmd_msg";
+pub const PTY_BIN_MSG: &str = "pty_file_msg";
 pub const PTY_REMOVE_INTERVAL: u64 = 10 * 60;
 
 // http related
@@ -88,6 +94,12 @@ pub const FINISH_RESULT_SUCCESS: &str = "SUCCESS";
 pub const FINISH_RESULT_FAILED: &str = "FAILED";
 pub const FINISH_RESULT_START_FAILED: &str = "START_FAILED";
 pub const FINISH_RESULT_TERMINATED: &str = "TERMINATED";
+
+pub const FS_TYPE_FILE: &str = "-";
+pub const FS_TYPE_DIR: &str = "d";
+pub const FS_TYPE_LINK: &str = "l";
+#[cfg(windows)]
+pub const FS_TYPE_PARTITION: &str = "p";
 
 // task start failed errInfo
 #[macro_export]
@@ -161,7 +173,10 @@ pub const METADATA_API_DEBUG: &str = "http://mock-server:8000";
 pub const METADATA_API: &str = "http://metadata.tencentyun.com";
 
 //pty_flags
-pub const PTY_FLAG_INIT_BLOCK: u32 = 0x00000001;
+pub const PTY_FLAG_ENABLE_BLOCK: u32 = 0x00000001;
+
+pub const PTY_INSPECT_READ: u8 = 0x0;
+pub const PTY_INSPECT_WRITE: u8 = 0x1;
 
 #[cfg(test)]
 mod tests {

@@ -209,14 +209,23 @@ Copyright (c) 2016 Jelte Fennema
 36. ntapi
 Copyright (c) ntapi authors
 
-37. field-offset
-Copyright (c) field-offset authors
-
-38. winpty
+37. winpty
 Copyright (c) 2011-2016 Ryan Prichard
 
-39. bash-preexec
-Copyright (c) 2017 Ryan Caloras and contributors
+38. serde_bytes
+Copyright (c) "Erick Tryzelaar <erick.tryzelaar@gmail.com>", "David Tolnay <dtolnay@gmail.com>"
+
+39. bson
+Copyright (c) 2015 Y. T. CHUNG <zonyitoo@gmail.com>
+
+39. glob
+Copyright (c) 2014 The Rust Project Developers
+
+40. unix_mode
+Copyright (c) sourcefrog
+
+40. nom
+Copyright (c) 2014-2019 Geoffroy Couprie
 
 Terms of the MIT License:
 --------------------------------------------------------------------

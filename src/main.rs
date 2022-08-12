@@ -8,7 +8,6 @@ mod ontime;
 mod types;
 mod uname;
 mod ws;
-
 use crate::common::consts::AGENT_VERSION;
 use crate::common::evbus::EventBus;
 use crate::common::logger;

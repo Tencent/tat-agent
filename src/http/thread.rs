@@ -22,7 +22,8 @@ pub fn run(dispatcher: &Arc<EventBus>, running_task_num: &Arc<AtomicU64>) {
     let runtime = Runtime::new().unwrap();
     let running_task_num = running_task_num.clone();
 
-    dispatcher.register(WS_MSG_TYPE_KICK, move |source: String| {
+    dispatcher.register(WS_MSG_TYPE_KICK, move |source| {
+        let source = String::from_utf8_lossy(&source).to_string(); //from vec to string
         let running_task_num = running_task_num.clone();
         runtime.spawn(async move {
             let adapter = InvokeAPIAdapter::build(get_invoke_url().as_str());
@@ -68,6 +69,7 @@ impl HttpWorker {
                         continue;
                     }
                     for task in resp.invocation_normal_task_set.iter() {
+                        self.running_task_num.fetch_add(1, Ordering::SeqCst);
                         match self.task_store.store(&task) {
                             Ok((task_file, log_file)) => {
                                 self.task_execute(task, &task_file, &log_file).await;
@@ -76,6 +78,7 @@ impl HttpWorker {
                                 self.task_execute(task, "", "").await;
                             }
                         }
+                        self.running_task_num.fetch_sub(1, Ordering::SeqCst);
                     }
                     for task in resp.invocation_cancel_task_set.iter() {
                         self.task_cancel(&task).await;
@@ -180,7 +183,6 @@ impl HttpWorker {
         if result.is_none() {
             return;
         }
-        self.running_task_num.fetch_add(1, Ordering::SeqCst);
         let cmd_arc = result.unwrap();
 
         let mut final_log_index = 0;
@@ -219,7 +221,6 @@ impl HttpWorker {
                 );
             })
             .ok();
-        self.running_task_num.fetch_sub(1, Ordering::SeqCst);
         // process finish ,remove
         self.running_tasks
             .lock()

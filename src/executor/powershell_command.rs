@@ -331,7 +331,7 @@ impl Debug for PowerShellCommand {
     }
 }
 
-fn anon_pipe(ours_readable: bool) -> Result<(File, File), String> {
+pub fn anon_pipe(ours_readable: bool) -> Result<(File, File), String> {
     unsafe {
         let mut tries = 0;
         let mut name;

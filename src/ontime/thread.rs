@@ -64,7 +64,7 @@ fn register_update_handlers(
 ) {
     let self_updating_clone = self_updating.clone();
     let need_restart_clone = need_restart.clone();
-    dispatcher.register(WS_MSG_TYPE_CHECK_UPDATE, move |_source: String| {
+    dispatcher.register(WS_MSG_TYPE_CHECK_UPDATE, move |_source: Vec<u8>| {
         if self_updating_clone.fetch_or(true, Ordering::SeqCst) {
             return;
         }
@@ -114,7 +114,7 @@ fn check_ontime_kick(instant_kick: &mut SystemTime, dispatcher: Arc<EventBus>) {
     if !check_interval_elapsed(instant_kick, ONTIME_KICK_INTERVAL) {
         return;
     }
-    dispatcher.dispatch(WS_MSG_TYPE_KICK, ONTIME_KICK_SOURCE.to_string());
+    dispatcher.dispatch(WS_MSG_TYPE_KICK, ONTIME_KICK_SOURCE.to_string().into_bytes());
 }
 
 fn check_ontime_update(
