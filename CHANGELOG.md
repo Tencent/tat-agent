@@ -1,6 +1,11 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [0.1.30] - 2022-09-21
+
+### Changed
+- Add some log for conpty mod.
+
 ## [0.1.29] - 2022-09-21
 
 ### Changed

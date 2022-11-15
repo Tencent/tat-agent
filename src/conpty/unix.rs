@@ -2,6 +2,7 @@ use super::{Handler, PtySession, PtySystem};
 use crate::common::consts::PTY_INSPECT_READ;
 use crate::executor::shell_command::{build_envs, cmd_path};
 use libc::{self, waitpid, winsize, EXIT_FAILURE, EXIT_SUCCESS, SIGHUP};
+use log::error;
 use std::fs::{metadata, File};
 use std::io::{Read, Write};
 use std::os::linux::fs::MetadataExt;
@@ -159,6 +160,7 @@ impl PtySession for UnixPtySession {
                         libc::_exit(EXIT_SUCCESS);
                     }
                     Err(err) => {
+                        error!("[child] work_as_user func exit fail {}", err);
                         let _ = stdin.write_all(err.as_bytes());
                         libc::_exit(EXIT_FAILURE);
                     }
@@ -173,7 +175,9 @@ impl PtySession for UnixPtySession {
                 if exit_code == EXIT_SUCCESS {
                     return Ok(output);
                 } else {
-                    return Err(String::from_utf8_lossy(&output).to_string());
+                    let outsting = String::from_utf8_lossy(&output).to_string();
+                    error!("[parent] work_as_user func exit fail {}", outsting);
+                    return Err(outsting);
                 }
             }
         }

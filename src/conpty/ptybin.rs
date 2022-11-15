@@ -15,7 +15,7 @@ use crate::types::ws_msg::{
 };
 use bson::Document;
 use glob::Pattern;
-use log::info;
+use log::{error, info};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::fs::File;
@@ -143,6 +143,7 @@ impl SessionManager {
                 };
 
                 if let Some(session) = self.check_session(&req.session_id) {
+                    info!("{} receice ptyBinMsg {} ", req.session_id, op);
                     let context = Arc::new(Context {
                         session_id: req.session_id.clone(),
                         op: op.to_string(),
@@ -153,16 +154,29 @@ impl SessionManager {
                     });
 
                     let self_0 = self.clone();
-                    let result = session
+                    let context_0 = context.clone();
+                    match session
                         .pty_session
                         .work_as_user(Box::new(move || func(&self_0, context.clone())))
-                        .unwrap();
-
-                    self.event_bus.dispatch(PTY_BIN_MSG, result);
+                    {
+                        Ok(result) => {
+                            self.event_bus.dispatch(PTY_BIN_MSG, result);
+                        }
+                        Err(err) => {
+                            error!(
+                                "{} work_as_user fail,err is {}",
+                                context_0.req.session_id, err
+                            );
+                            self.event_bus
+                                .dispatch(PTY_BIN_MSG, build_ptybin_error(context_0, &err));
+                        }
+                    };
+                } else {
+                    error!("do not session find {}  ", req.session_id)
                 };
             }
             Err(e) => {
-                log::error!("work_as_user_flow from_reader fail {}", e.to_string())
+                error!("work_as_user_flow from_reader fail {}", e.to_string())
             }
         };
     }
@@ -183,6 +197,7 @@ impl SessionManager {
                 };
 
                 if let Some(session) = self.check_session(&req.session_id) {
+                    info!("{} receice ptyBinMsg {} ", req.session_id, op);
                     let context = Arc::new(Context {
                         session_id: req.session_id.clone(),
                         op: op.to_string(),
@@ -191,8 +206,9 @@ impl SessionManager {
                         session: session.pty_session.clone(),
                         event_bus: self.event_bus.clone(),
                     });
-
                     func(&self, context);
+                } else {
+                    error!("do not session find {}  ", req.session_id)
                 };
             }
             Err(e) => {
@@ -465,30 +481,63 @@ impl SessionManager {
     }
 
     fn pty_exec(&self, context: Arc<Context<ExecCmdReq>>) -> Result<Vec<u8>, String> {
+        info!(
+            "{} =>pty_exec,cmd {}",
+            context.session_id, context.req.data.cmd
+        );
         #[cfg(unix)]
         unsafe {
             let param = &context.req.data;
             let cmd = param.cmd.clone();
-            let pid = context.session.get_pid().unwrap();
-            let process = Process::new(pid as i32).unwrap();
 
-            let output = Command::new("bash")
+            let pid = context.session.get_pid().map_err(|err| {
+                error!("{} get_pid fail {}", context.session_id, err);
+                err
+            })?;
+
+            let process = Process::new(pid as i32).map_err(|err| {
+                error!("{} Process::new fail {}", context.session_id, err);
+                err.to_string()
+            })?;
+
+            let cwd = process.cwd().map_err(|err| {
+                error!("{} process.cwd() fail {}", context.session_id, err);
+                err.to_string()
+            })?;
+
+            match Command::new("bash")
                 .args(&["-c", cmd.as_str()])
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
-                .current_dir(process.cwd().unwrap())
+                .current_dir(&cwd)
                 .pre_exec(|| {
                     libc::dup2(1, 2);
                     Ok(())
                 })
                 .output()
-                .unwrap();
-            let output = String::from_utf8_lossy(&output.stdout);
-            let data = ExecCmdResp {
-                output: output.to_string(),
-            };
-            return Ok(build_ptybin_result(context, data));
+            {
+                Ok(output) => {
+                    let output = String::from_utf8_lossy(&output.stdout);
+                    error!(
+                        "{} pty_exec sucess, output is {}",
+                        context.session_id, output
+                    );
+                    let data = ExecCmdResp {
+                        output: output.to_string(),
+                    };
+                    return Ok(build_ptybin_result(context, data));
+                }
+                Err(err) => {
+                    error!(
+                        "{} pty_exec fail, cws {},err is {}",
+                        context.session_id,
+                        cwd.to_string_lossy(),
+                        err.to_string()
+                    );
+                    return Err(err.to_string());
+                }
+            }
         }
         #[cfg(windows)]
         Ok(build_ptybin_error(context, "not support on windows"))
@@ -701,10 +750,10 @@ mod test {
         },
     };
 
-    use log::info;
     use crate::types::ws_msg::WsMsg;
     use bson::Document;
     use glob::Pattern;
+    use log::info;
     use rand::{distributions::Alphanumeric, thread_rng, Rng};
 
     const SESSION_ID: &str = "x-xxxxxxxxx";
