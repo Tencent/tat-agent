@@ -81,18 +81,29 @@ fn get_mem_size() -> u64 {
 
 #[cfg(unix)]
 fn get_handle_cnt() -> u64 {
+    use log::error;
     let pid = process::id();
-    let proc = Process::new(pid as i32).unwrap();
-    proc.fd_count().unwrap() as u64
+    if let Ok(proc) = Process::new(pid as i32) {
+        match proc.fd_count() {
+            Ok(fd) => return fd as u64,
+            Err(err) => error!("get_handle_cnt {}", err.to_string()),
+        }
+    }
+    return 0;
 }
 
 #[cfg(unix)]
 fn get_mem_size() -> u64 {
-    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    use log::error;
     let pid = process::id();
-    let proc = Process::new(pid as i32).unwrap();
-    let statm = proc.statm().unwrap();
-    statm.size * page_size as u64
+    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    if let Ok(proc) = Process::new(pid as i32) {
+        match proc.statm() {
+            Ok(statm) => return statm.size * page_size as u64,
+            Err(err) => error!("get_mem_size {}", err.to_string()),
+        }
+    }
+    return 0;
 }
 
 #[cfg(unix)]
@@ -103,7 +114,11 @@ fn get_zoom_prcesss() -> u32 {
     for item in items {
         if let Ok(entry) = item {
             let entry_path = entry.path();
-            if !entry.metadata().unwrap().is_dir() {
+            if let Ok(meta) = entry.metadata() {
+                if !meta.is_dir() {
+                    continue;
+                }
+            } else {
                 continue;
             }
 

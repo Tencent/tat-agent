@@ -1,7 +1,12 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
-## [0.1.30] - 2022-09-21
+## [0.1.31] - 2022-11-17
+
+### Changed
+- Optimize leak check logic.
+
+## [0.1.30] - 2022-11-15
 
 ### Changed
 - Add some log for conpty mod.

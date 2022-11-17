@@ -22,7 +22,6 @@ cfg_if::cfg_if! {
     if #[cfg(unix)] {
         use std::os::unix::fs::PermissionsExt;
         use std::fs::{set_permissions,Permissions};
-
         use crate::common::consts::{INSTALL_SCRIPT, FILE_EXECUTE_PERMISSION_MODE};
     } else if #[cfg(windows)] {
         use crate::daemonizer::wow64_disable_exc;

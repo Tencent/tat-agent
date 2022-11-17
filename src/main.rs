@@ -13,7 +13,7 @@ use crate::common::evbus::EventBus;
 use crate::common::logger;
 use crate::common::Opts;
 use crate::ontime::timer::Timer;
-use chrono::Local;
+use log::error;
 use log::info;
 use std::env;
 use std::sync::atomic::AtomicU64;
@@ -23,12 +23,14 @@ use std::sync::Arc;
 async fn main() {
     let _opts = Opts::get_opts();
     set_work_dir();
-    set_panic_handler();
     logger::init();
     info!("agent start,version:[{}]", AGENT_VERSION);
     Timer::get_instance();
 
     daemonizer::daemonize(move || {
+        //set panic handler
+        set_panic_handler();
+
         let eventbus = Arc::new(EventBus::new());
         let running_task_num = Arc::new(AtomicU64::new(0));
 
@@ -47,8 +49,7 @@ fn set_work_dir() {
 
 fn set_panic_handler() {
     std::panic::set_hook(Box::new(|pi| {
-        let date = Local::now();
-        let pi_str = format!("{} {}", date.format("[%Y-%m-%d %H:%M:%S]"), &pi.to_string());
-        let _ = std::fs::write("log/panic.log", pi_str.as_bytes());
+        error!("panic {}", pi.to_string());
+        std::process::exit(-1);
     }));
 }
