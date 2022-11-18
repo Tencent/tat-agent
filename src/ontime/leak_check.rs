@@ -1,8 +1,12 @@
-use log::info;
-use std::sync::atomic::AtomicU64;
+use log::{error, info, warn};
+use once_cell::sync::Lazy;
+use ringbuffer::{AllocRingBuffer, RingBufferExt, RingBufferWrite};
 use std::sync::atomic::Ordering::SeqCst;
+use std::sync::{atomic::AtomicU64, Mutex};
 use tokio::runtime::Builder;
 
+use crate::common::consts::{ONTIME_MAX_FD_COUNT, ONTIME_MAX_MEM_RES_BYTES};
+use crate::ontime::self_update::try_restart_agent;
 use crate::{
     common::{consts::ONTIME_LEAK_REPORT_FREQUENCY, envs},
     http::InvokeAPIAdapter,
@@ -28,11 +32,39 @@ pub(crate) fn check_resource_leak() {
     static CHECK_CNT: AtomicU64 = AtomicU64::new(0);
     static FD_CNT: AtomicU64 = AtomicU64::new(0);
     static MEM_CNT: AtomicU64 = AtomicU64::new(0);
-
-    let fd_total = FD_CNT.fetch_add(get_handle_cnt(), SeqCst);
-    let mem_total = MEM_CNT.fetch_add(get_mem_size(), SeqCst);
+    static MEM_RES_RF: Lazy<Mutex<AllocRingBuffer<u64>>> =
+        Lazy::new(|| Mutex::new(AllocRingBuffer::with_capacity(64)));
+    static FD_RF: Lazy<Mutex<AllocRingBuffer<u64>>> =
+        Lazy::new(|| Mutex::new(AllocRingBuffer::with_capacity(64)));
 
     let check_cnt = CHECK_CNT.fetch_add(1, SeqCst);
+    let handle_cnt = get_handle_cnt();
+    let mem_size = get_mem_size();
+
+    let mut fd_rf = FD_RF.lock().unwrap();
+    let mut mem_res_rf = MEM_RES_RF.lock().unwrap();
+    fd_rf.push(handle_cnt);
+    mem_res_rf.push(mem_size);
+
+    if fd_rf.iter().all(|x| *x >= ONTIME_MAX_FD_COUNT)
+        || mem_res_rf.iter().all(|x| *x >= ONTIME_MAX_MEM_RES_BYTES)
+    {
+        warn!(
+            "Resource leak detected, fd:{:?}, mem:{:?}",
+            fd_rf.to_vec(),
+            mem_res_rf.to_vec()
+        );
+        if let Err(e) = try_restart_agent() {
+            error!("try restart agent fail: {:?}", e)
+        }
+
+        // should not comes here, because agent should has been killed when called `try_restart_agent`.
+        std::process::exit(2);
+    }
+
+    let fd_total = FD_CNT.fetch_add(handle_cnt, SeqCst);
+    let mem_total = MEM_CNT.fetch_add(mem_size, SeqCst);
+
     if check_cnt != 0 && check_cnt % ONTIME_LEAK_REPORT_FREQUENCY == 0 {
         FD_CNT.store(0, SeqCst);
         MEM_CNT.store(0, SeqCst);
@@ -75,13 +107,12 @@ fn get_mem_size() -> u64 {
         let cb = mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
         mm_info.cb = cb;
         GetProcessMemoryInfo(GetCurrentProcess(), &mut mm_info, cb);
-        (mm_info.WorkingSetSize + mm_info.PagefileUsage) as u64
+        mm_info.WorkingSetSize as u64
     }
 }
 
 #[cfg(unix)]
 fn get_handle_cnt() -> u64 {
-    use log::error;
     let pid = process::id();
     if let Ok(proc) = Process::new(pid as i32) {
         match proc.fd_count() {
@@ -94,12 +125,13 @@ fn get_handle_cnt() -> u64 {
 
 #[cfg(unix)]
 fn get_mem_size() -> u64 {
-    use log::error;
     let pid = process::id();
     let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
     if let Ok(proc) = Process::new(pid as i32) {
         match proc.statm() {
-            Ok(statm) => return statm.size * page_size as u64,
+            Ok(statm) => {
+                return statm.resident * page_size as u64;
+            }
             Err(err) => error!("get_mem_size {}", err.to_string()),
         }
     }

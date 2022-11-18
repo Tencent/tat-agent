@@ -32,6 +32,9 @@ Copyright 2011-2017 Google Inc.
 2. time
 Copyright 2021 Jacob Pratt et al.
 
+3. unix-mode
+Copyright 2020 Google LLC
+
 
 Terms of the Apache License Version 2.0:
 --------------------------------------------------------------------
@@ -209,23 +212,29 @@ Copyright (c) 2016 Jelte Fennema
 36. ntapi
 Copyright (c) ntapi authors
 
-37. winpty
+37. field-offset
+Copyright (c) field-offset authors
+
+38. winpty
 Copyright (c) 2011-2016 Ryan Prichard
 
-38. serde_bytes
-Copyright (c) "Erick Tryzelaar <erick.tryzelaar@gmail.com>", "David Tolnay <dtolnay@gmail.com>"
+39. bash-preexec
+Copyright (c) 2017 Ryan Caloras and contributors
 
-39. bson
-Copyright (c) 2015 Y. T. CHUNG <zonyitoo@gmail.com>
-
-39. glob
+40. serde_bytes
 Copyright (c) 2014 The Rust Project Developers
 
-40. unix_mode
-Copyright (c) sourcefrog
+41. bson-rust
+Copyright (c) 2015 Y. T. CHUNG <zonyitoo@gmail.com>
 
-40. nom
+42. glob
+Copyright (c) 2014 The Rust Project Developers
+
+43. nom
 Copyright (c) 2014-2019 Geoffroy Couprie
+
+44. ringbuffer
+Copyright (c) 2022 Victor Roest and Jonathan Dönszelmann
 
 Terms of the MIT License:
 --------------------------------------------------------------------
@@ -235,5 +244,10 @@ The above copyright notice and this permission notice shall be included in all c
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
+Open Source Software Licensed under the MIT and Apache License Version 2.0:
+--------------------------------------------------------------------
+1. once_cell
+Copyright once_cell authors and contributrs
 
+The terms of the MIT and Apache v2 license are included in this text file.
 

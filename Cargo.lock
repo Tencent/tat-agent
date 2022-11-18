@@ -1625,9 +1625,9 @@ dependencies = [
 
 [[package]]
 name = "once_cell"
-version = "1.12.0"
+version = "1.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7709cef83f0c1f58f666e746a08b21e0085f7440fa6a29cc194d68aac97a4225"
+checksum = "86f0b0d4bf799edbc74508c1e8bf170ff5f41238e5f8225603ca7caaae2b7860"
 
 [[package]]
 name = "opaque-debug"
@@ -2188,6 +2188,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "ringbuffer"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "310a2514cb46bb500a2f2ad70c79c51c5a475cc23faa245d2c675faabe889370"
+
+[[package]]
 name = "rust-crypto"
 version = "0.2.36"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2471,7 +2477,7 @@ dependencies = [
 
 [[package]]
 name = "tat_agent"
-version = "0.1.31"
+version = "0.1.32"
 dependencies = [
  "async-attributes",
  "async-std",
@@ -2497,10 +2503,12 @@ dependencies = [
  "md5",
  "nom",
  "ntapi",
+ "once_cell",
  "openssl",
  "procfs",
  "rand 0.7.3",
  "reqwest",
+ "ringbuffer",
  "rust-crypto",
  "serde",
  "serde_bytes",

@@ -195,6 +195,7 @@ impl BaseCommand {
             Ok(proc) => proc,
             Err(_) => return,
         };
+
         loop {
             let process_finish = !proc.is_alive();
             let timeout_read =
@@ -230,7 +231,9 @@ impl BaseCommand {
                     pid,
                     len
                 );
+
                 self.append_output(&buffer[..len]);
+
                 if process_finish && len < BUF_SIZE {
                     info!("process finish and len < BUF_SIZE,break");
                     break;

@@ -237,60 +237,44 @@ impl BaseCommand {
 
     pub fn append_output(&self, data: &[u8]) {
         let mut output = self.output.lock().unwrap_or_exit("lock failed");
-        output.write(data).unwrap();
+        let len = data.len();
+
+        if self.bytes_dropped.load(Ordering::SeqCst) > 0 {
+            self.bytes_dropped.fetch_add(len as u64, Ordering::SeqCst);
+        } else {
+            let need_report_len = len;
+            if self.bytes_reported.load(Ordering::SeqCst) + len as u64 > self.bytes_max_report {
+                let need_report_len =
+                    self.bytes_max_report - self.bytes_reported.load(Ordering::SeqCst);
+                // set as the total dropped bytes
+                self.bytes_dropped
+                    .store(len as u64 - need_report_len, Ordering::SeqCst);
+            }
+            output.write(&data[..need_report_len]).unwrap();
+            self.bytes_reported
+                .fetch_add(need_report_len as u64, Ordering::SeqCst);
+        }
     }
 
     pub fn next_output(&self) -> (Vec<u8>, u32, u64) {
         let mut output = self.output.lock().unwrap_or_exit("lock failed");
         let len = output.len();
-        // current output is empty, return.
-        if len == 0 {
-            return (
-                vec![],
-                self.output_idx.fetch_add(1, Ordering::SeqCst),
-                self.bytes_dropped.load(Ordering::SeqCst),
-            );
-        }
 
-        // already exceed max report, update dropped, index then return.
-        let dropped_pre = self.bytes_dropped.load(Ordering::SeqCst);
-        if dropped_pre > 0 {
-            self.bytes_dropped.fetch_add(len as u64, Ordering::SeqCst);
+        let ret = if len == 0 {
+            vec![]
+        } else if len > 0 && len <= OUTPUT_BYTE_LIMIT_EACH_REPORT {
+            let r = output.clone();
             output.clear();
-            return (
-                vec![],
-                self.output_idx.fetch_add(1, Ordering::SeqCst),
-                dropped_pre + len as u64,
-            );
-        }
-
-        // not exceed max report, continue report output.
-        let mut ret;
-        if len <= OUTPUT_BYTE_LIMIT_EACH_REPORT {
-            // copy and move out
-            ret = output.clone();
-            output.clear();
+            r
         } else {
             debug!("output origin:{:?}", output);
             // move [0..OUTPUT_BYTE_LIMIT_EACH_REPORT] out to ret
             output.rotate_left(OUTPUT_BYTE_LIMIT_EACH_REPORT);
-            ret = output.split_off(len - OUTPUT_BYTE_LIMIT_EACH_REPORT);
-            debug!("output to ret:{:?}", ret);
+            let r = output.split_off(len - OUTPUT_BYTE_LIMIT_EACH_REPORT);
+            debug!("output to ret:{:?}", r);
             debug!("output left:{:?}", output);
-        }
-
-        let ret_len = ret.len() as u64;
-        let bytes_pre = self.bytes_reported.fetch_add(ret_len, Ordering::SeqCst);
-        // current output exceeds max report, init bytes_dropped and clear output.
-        if ret_len + bytes_pre >= self.bytes_max_report {
-            let need_report_len = self.bytes_max_report - bytes_pre;
-            // truncate some bytes in ret
-            ret.truncate(need_report_len as usize);
-            // set as the total dropped bytes
-            self.bytes_dropped
-                .store(len as u64 - need_report_len, Ordering::SeqCst);
-            output.clear();
-        }
+            r
+        };
 
         (
             ret,

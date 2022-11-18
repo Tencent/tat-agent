@@ -148,16 +148,18 @@ impl HttpWorker {
                     let (out, idx, dropped) = cmd.next_output();
                     // dropped > first_dropped means more output generated after first drop occur,
                     // so need update final idx and drop when cmd finished.
+                    let last_index = idx;
                     if dropped > first_dropped {
-                        final_log_index = idx;
+                        final_log_index = last_index;
                         info!(
                             "ready to report output dropped length:idx:{}, dropped:{}, output_debug:{}",
-                            idx,
+                            last_index,
                             dropped,
                             String::from_utf8_lossy(&out[..]).replace("\n", "\\n"),
                         );
                         // final dropped bytes report task here
-                        self.upload_task_log(task_id, idx, out, dropped).await;
+                        self.upload_task_log(task_id, last_index, out, dropped)
+                            .await;
                         info!("report final dropped bytes of output.");
                     }
                 }

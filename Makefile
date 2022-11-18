@@ -72,7 +72,7 @@ run:
 
 # build a pure static binary for debugging
 build:
-	cargo build --target=x86_64-unknown-linux-musl
+	cross build --target=x86_64-unknown-linux-musl
 	ln -f target/x86_64-unknown-linux-musl/debug/tat_agent tat_agent
 
 # a shortcut for fuzzy matching
