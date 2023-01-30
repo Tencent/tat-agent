@@ -1,10 +1,10 @@
 use reqwest::header::{HeaderMap, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, DATE, HOST};
 use std::collections::HashMap;
 
-use crate::cos::auth::*;
-use crate::cos::client::COS;
-use crate::cos::errors::{Error, ObjectError};
-use crate::cos::utils::*;
+use crate::network::cos::auth::*;
+use crate::network::cos::client::COS;
+use crate::network::cos::errors::{Error, ObjectError};
+use crate::network::cos::utils::*;
 use async_trait::async_trait;
 use log::info;
 use tokio::fs::File;

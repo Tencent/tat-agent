@@ -6,7 +6,7 @@ use crypto::sha1::Sha1;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use urlencoding::encode;
 
-use crate::cos::client::COS;
+use crate::network::cos::client::COS;
 
 pub trait Auth {
     fn cos_sign(

@@ -1,21 +1,14 @@
 use std::env;
 // agent
 pub const AGENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const REGISTER_FILE: &str = "register.dat";
+pub const WS_VERSION_HEADER: &str = "Tat-Version";
+pub const WS_KERNEL_NAME_HEADER: &str = "Tat-KernelName";
 
 //event bus slots
 pub const SLOT_DEFAULT: &str = "event_slot_default";
 pub const SLOT_PTY_CMD: &str = "event_slot_pty_cmd";
 pub const SLOT_PTY_BIN: &str = "event_slot_pty_file";
-
-// log related
-pub const LOG_PATTERN: &str = "{d}|{f}:{L}|{l}|{m}{n}";
-pub const LOG_FILE_NAME: &str = "log/tat_agent.log";
-pub const LOG_FILE_NAME_WHEN_ROLL: &str = "log/tat_agent_{}.log";
-pub const LOG_FILE_SIZE: u64 = 10 * 1024 * 1024;
-pub const LOG_FILE_BASE_INDEX: u32 = 0;
-pub const MAX_LOG_FILE_COUNT: u32 = 2;
-pub const LOG_LEVEL: log::LevelFilter = log::LevelFilter::Info;
-pub const LOG_LEVEL_DEBUG: log::LevelFilter = log::LevelFilter::Debug;
 
 // http headers used for e2e test.
 pub const VPCID_HEADER: &str = "Tat-Vpcid";
@@ -32,7 +25,6 @@ cfg_if::cfg_if! {
         pub const SELF_UPDATE_SCRIPT: &str = "self_update.sh";
         pub const INSTALL_SCRIPT: &str = "install.sh";
         pub const FILE_EXECUTE_PERMISSION_MODE: u32 = 0o755;
-        pub const PIPE_BUF_DEFAULT_SIZE: usize = 64 * 4096;
     } else if #[cfg(windows)] {
         pub const TASK_STORE_PATH: &str = "C:\\Program Files\\qcloud\\tat_agent\\tmp\\commands\\";
         pub const TASK_LOG_PATH: &str = "C:\\Program Files\\qcloud\\tat_agent\\tmp\\logs\\";
@@ -40,19 +32,6 @@ cfg_if::cfg_if! {
         pub const SELF_UPDATE_SCRIPT: &str = "self_update.bat";
     }
 }
-
-// ws related
-pub const WS_VERSION_HEADER: &str = "Tat-Version";
-pub const WS_KERNEL_NAME_HEADER: &str = "Tat-KernelName";
-pub const WS_PASSIVE_CLOSE: &str = "cli_passive_close";
-pub const WS_PASSIVE_CLOSE_CODE: u16 = 3001;
-pub const WS_ACTIVE_CLOSE: &str = "cli_active_close";
-pub const WS_ACTIVE_CLOSE_CODE: u16 = 3002;
-pub const MAX_PING_FROM_LAST_PONG: usize = 3;
-pub const WS_RECONNECT_INTERVAL_BASE: u64 = 3;
-pub const WS_RECONNECT_RANDOM_MAX: u64 = 512;
-pub const WS_RECONNECT_RANDOM_MIN: u64 = 4;
-pub const WS_RECONNECT_RANDOM_TIMES: u64 = 4;
 
 // ws msg
 pub const WS_MSG_TYPE_KICK: &str = "kick";
@@ -71,22 +50,26 @@ pub const WS_MSG_TYPE_PTY_OUTPUT: &str = "PtyOutput";
 
 pub const WS_MSG_TYPE_PTY_LIST_PATH: &str = "PtyListPath";
 pub const WS_MSG_TYPE_PTY_FILE_EXIST: &str = "PtyFileExist";
-pub const WS_MSG_TYPE_CREATE_FILE: &str = "PtyCreateFile";
+pub const WS_MSG_TYPE_PTY_CREATE_FILE: &str = "PtyCreateFile";
 pub const WS_MSG_TYPE_PTY_DELETE_FILE: &str = "PtyDeleteFile";
 pub const WS_MSG_TYPE_PTY_READ_FILE: &str = "PtyReadFile";
 pub const WS_MSG_TYPE_PTY_WRITE_FILE: &str = "PtyWriteFile";
 pub const WS_MSG_TYPE_PTY_FILE_INFO: &str = "PtyFileInfo";
 pub const WS_MSG_TYPE_PTY_EXEC_CMD: &str = "PtyExecCmd";
 
-pub const PTY_CMD_MSG: &str = "pty_cmd_msg";
-pub const PTY_BIN_MSG: &str = "pty_file_msg";
-pub const PTY_REMOVE_INTERVAL: u64 = 10 * 60;
+pub const WS_MSG_TYPE_PTY_PROXY_NEW: &str = "PtyProxyNew";
+pub const WS_MSG_TYPE_PTY_PROXY_READY: &str = "PtyProxyReady";
+pub const WS_MSG_TYPE_PTY_PROXY_DATA: &str = "PtyProxyData";
+pub const WS_MSG_TYPE_PTY_PROXY_CLOSE: &str = "PtyProxyClose";
+
+pub const WS_TXT_MSG: &str = "pty_cmd_msg";
+pub const WS_BIN_MSG: &str = "pty_file_msg";
+pub const PTY_REMOVE_INTERVAL: u64 = 3 * 60;
 
 // http related
 pub const HTTP_REQUEST_TIME_OUT: u64 = 5;
 pub const HTTP_REQUEST_RETRIES: u64 = 3;
 pub const HTTP_REQUEST_NO_RETRIES: u64 = 1;
-pub const HTTP_REQUEST_RETRY_INTERVAL: u64 = 5;
 
 pub const TASK_STORE_PREFIX: &str = "task";
 pub const FINISH_RESULT_TIMEOUT: &str = "TIMEOUT";
@@ -146,7 +129,7 @@ pub const ONTIME_PING_INTERVAL: u64 = 2 * 60;
 pub const ONTIME_UPDATE_INTERVAL: u64 = 2 * 60 * 60;
 pub const ONTIME_THREAD_INTERVAL: u64 = 1;
 pub const ONTIME_CHECK_TASK_NUM: u64 = 10;
-pub const ONTIME_LEAK_CEHEK_INTERVAL: u64 = 10;
+pub const ONTIME_LEAK_CEHECK_INTERVAL: u64 = 10;
 pub const ONTIME_LEAK_REPORT_FREQUENCY: u64 = 360;
 pub const ONTIME_MAX_MEM_RES_BYTES: u64 = 200 * 1024 * 1024;
 #[cfg(unix)]
@@ -158,7 +141,7 @@ pub const UPDATE_FILE_UNZIP_DIR: &str = "agent_update_unzip";
 pub const AGENT_FILENAME: &str = "tat_agent";
 pub const UPDATE_DOWNLOAD_TIMEOUT: u64 = 20 * 60;
 
-pub const WS_URL_DEBUG: &str = "ws://proxy:8086/ws";
+pub const WS_URL_MOCK: &str = "ws://proxy:8086/ws";
 pub const WS_URLS: [&'static str; 4] = [
     "wss://notify.tat-tc.tencent.cn:8186/ws",
     "wss://notify.tat-tc.tencent.com.cn:8186/ws",
@@ -166,7 +149,7 @@ pub const WS_URLS: [&'static str; 4] = [
     "wss://notify.tat.tencent-cloud.com:8186/ws",
 ];
 
-pub const INVOKE_API_DEBUG: &str = "http://proxy-invoke";
+pub const INVOKE_API_MOCK: &str = "http://proxy-invoke";
 pub const INVOKE_APIS: [&'static str; 4] = [
     "https://invoke.tat-tc.tencent.cn",
     "https://invoke.tat-tc.tencent.com.cn",
@@ -174,14 +157,11 @@ pub const INVOKE_APIS: [&'static str; 4] = [
     "https://invoke.tat.tencent-cloud.com",
 ];
 
-pub const METADATA_API_DEBUG: &str = "http://mock-server:8000";
+pub const METADATA_API_MOCK: &str = "http://mock-server:8000";
 pub const METADATA_API: &str = "http://metadata.tencentyun.com";
 
 //pty_flags
 pub const PTY_FLAG_ENABLE_BLOCK: u32 = 0x00000001;
-
-pub const PTY_INSPECT_READ: u8 = 0x0;
-pub const PTY_INSPECT_WRITE: u8 = 0x1;
 
 #[cfg(test)]
 mod tests {

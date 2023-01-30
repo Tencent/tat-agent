@@ -1,7 +1,6 @@
 use crate::common::consts::AGENT_VERSION;
-use crate::types::AgentErrorCode;
-use crate::uname::common::UnameExt;
-use crate::uname::Uname;
+use crate::sysinfo::Uname;
+use crate::network::types::AgentErrorCode;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 #[cfg(windows)]
@@ -274,9 +273,9 @@ impl fmt::Debug for UploadTaskLogRequest {
 }
 
 pub type UploadTaskLogResponse = Empty;
+
 //==============================================================================
 // CheckUpdate API
-
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "PascalCase")]
 pub struct CheckUpdateRequest {
@@ -291,10 +290,10 @@ impl CheckUpdateRequest {
     pub fn new() -> Self {
         let uname = Uname::new().unwrap();
         CheckUpdateRequest {
-            kernel_name: uname.sys_name(),
-            kernel_release: uname.release(),
-            kernel_version: uname.version(),
-            machine: uname.machine(),
+            kernel_name: uname.sys_name,
+            kernel_release: uname.release,
+            kernel_version: uname.version,
+            machine: uname.machine,
             version: AGENT_VERSION.to_string(),
         }
     }
@@ -326,7 +325,6 @@ impl CheckUpdateResponse {
 
 //==============================================================================
 // Report resource API
-
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "PascalCase")]
 pub struct ReportResourceRequest {
@@ -335,7 +333,7 @@ pub struct ReportResourceRequest {
     #[serde(default)]
     fd_avg: u32,
     #[serde(default)]
-    zp_cnt: u32, //alaws 0 on winodws;
+    zp_cnt: u32, // always  0 on winodws;
 }
 
 impl ReportResourceRequest {
@@ -350,10 +348,109 @@ impl ReportResourceRequest {
 
 pub type ReportResourceResponse = Empty;
 
+//==============================================================================
+// registration related
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "PascalCase")]
+pub struct RegisterInstanceRequest {
+    #[serde(default)]
+    machine_id: String,
+    #[serde(default)]
+    active_code: String,
+    #[serde(default)]
+    active_value: String,
+    #[serde(default)]
+    pub_key: String,
+    #[serde(default)]
+    hostname: String,
+    #[serde(default)]
+    local_ip: String,
+    #[serde(default)]
+    sys_name: String,
+}
+
+impl RegisterInstanceRequest {
+    pub fn new(
+        machine_id: String,
+        active_code: String,
+        active_value: String,
+        pub_key: String,
+        hostname: String,
+        local_ip: String,
+    ) -> Self {
+        RegisterInstanceRequest {
+            machine_id,
+            active_code,
+            active_value,
+            pub_key,
+            hostname,
+            local_ip,
+            #[cfg(windows)]
+            sys_name: "Windows".to_string(),
+            #[cfg(unix)]
+            sys_name: "Linux".to_string(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "PascalCase")]
+pub struct RegisterInstanceResponse {
+    #[serde(default)]
+    pub instance_id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "PascalCase")]
+pub struct ValidateInstanceRequest {
+    #[serde(default)]
+    sys_name: String,
+    #[serde(default)]
+    pub hostname: String,
+    #[serde(default)]
+    pub local_ip: String,
+}
+
+impl ValidateInstanceRequest {
+    pub fn new(hostname: String, local_ip: String) -> Self {
+        ValidateInstanceRequest {
+            hostname,
+            local_ip,
+            #[cfg(windows)]
+            sys_name: "Windows".to_string(),
+            #[cfg(unix)]
+            sys_name: "Linux".to_string(),
+        }
+    }
+}
+
+pub type ValidateInstanceResponse = Empty;
+
+//==============================================================================
+// metadata related
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "PascalCase")]
+pub struct GetTmpCredentialResponse {
+    #[serde(alias = "TmpSecretId")]
+    #[serde(default)]
+    pub secret_id: String,
+    #[serde(alias = "TmpSecretKey")]
+    #[serde(default)]
+    pub secret_key: String,
+    #[serde(default)]
+    pub expire_time: i64,
+    #[serde(default)]
+    pub expiration: String,
+    #[serde(default)]
+    pub token: String,
+    #[serde(default)]
+    pub code: String,
+}
+
 // Unit Tests
 #[cfg(test)]
 mod tests {
-    use crate::types::{InvocationNormalTask, ServerRawResponse};
+    use crate::network::types::{InvocationNormalTask, ServerRawResponse};
 
     #[test]
     fn serialize_agent_request() {
@@ -509,7 +606,7 @@ mod tests {
         use std::io::Read;
         use std::process::Command;
 
-        use crate::types::UploadTaskLogRequest;
+        use crate::network::types::UploadTaskLogRequest;
         let _cmd = Command::new("time")
             .arg("dd")
             .arg("if=/dev/urandom")

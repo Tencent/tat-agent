@@ -5,19 +5,15 @@ use std::io::Write;
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
-use std::time::Duration;
 use std::{env, fmt, io};
 
-use crate::common::consts::PIPE_BUF_DEFAULT_SIZE;
 use crate::executor::proc::{BaseCommand, MyCommand};
 use crate::start_failed_err_info;
 use async_trait::async_trait;
 use libc;
 use log::{debug, error, info, warn};
-use procfs::process::Process;
 use tokio::io::{AsyncReadExt, BufReader};
 use tokio::process::{Child, Command};
-use tokio::time::timeout;
 use users::os::unix::UserExt;
 use users::{get_user_by_name, User};
 
@@ -104,7 +100,7 @@ impl ShellCommand {
             shell_path.unwrap().as_str(),
         );
 
-        //build comand
+        //build command
         let entrypoint = format!("{}{}", login_init, self.base.cmd_path());
         let mut cmd = Command::new(shell);
         cmd.args(&["-c", entrypoint.as_str()])
@@ -190,69 +186,33 @@ impl BaseCommand {
         let mut buffer: [u8; BUF_SIZE] = [0; BUF_SIZE];
         let stdout = child.stdout.take();
         let mut reader = BufReader::new(stdout.unwrap());
-        let mut byte_after_finish = 0;
-        let proc = match Process::new(pid as i32) {
-            Ok(proc) => proc,
-            Err(_) => return,
-        };
 
         loop {
-            let process_finish = !proc.is_alive();
-            let timeout_read =
-                timeout(Duration::from_millis(100), reader.read(&mut buffer[..])).await;
-
-            if timeout_read.is_err() {
-                if process_finish {
-                    info!("read time out ,and process already finish,break");
+            match reader.read(&mut buffer[..]).await {
+                Ok(len) if len > 0 => {
+                    if let Err(e) = log_file.write(&buffer[..len]) {
+                        error!("write output file fail: {:?}", e)
+                    }
+                    debug!(
+                        "output:[{}], may_contain_binary:{}, pid:{}, len:{}",
+                        String::from_utf8_lossy(&buffer[..len]),
+                        String::from_utf8(Vec::from(&buffer[..len])).is_err(),
+                        pid,
+                        len
+                    );
+                    self.append_output(&buffer[..len]);
+                }
+                Ok(_) => {
+                    info!("read output finished normally, pid:{}", pid);
                     break;
                 }
-                continue;
-            }
 
-            let read_size = timeout_read.unwrap();
-            if read_size.is_err() {
-                error!("read output err:{} , pid:{}", read_size.unwrap_err(), pid);
-                break;
-            }
-
-            let len = read_size.unwrap();
-            if len > 0 {
-                if let Err(e) = log_file.write(&buffer[..len]) {
-                    error!("write output file fail: {:?}", e)
+                Err(err) => {
+                    error!("read stdout fail: {:?}", err);
                 }
-
-                if process_finish {
-                    byte_after_finish = byte_after_finish + len
-                }
-                debug!(
-                    "output:[{}], may_contain_binary:{}, pid:{}, len:{}",
-                    String::from_utf8_lossy(&buffer[..len]),
-                    String::from_utf8(Vec::from(&buffer[..len])).is_err(),
-                    pid,
-                    len
-                );
-
-                self.append_output(&buffer[..len]);
-
-                if process_finish && len < BUF_SIZE {
-                    info!("process finish and len < BUF_SIZE,break");
-                    break;
-                }
-            } else {
-                info!("read output finished normally, pid:{}", pid);
-                break;
-            }
-            if process_finish && byte_after_finish > PIPE_BUF_DEFAULT_SIZE {
-                info!("byte_after_finish > PIPE_BUF_DEFAULT_SIZE,break");
-                break;
-            }
+            };
         }
-
-        if let Err(e) = log_file.sync_all() {
-            error!("sync in-memory data to file fail: {:?}", e)
-        }
-
-        self.finish_logging().await;
+        self.upload_log_cos().await;
     }
 
     pub fn kill_process_group(pid: u32) {

@@ -8,11 +8,6 @@ pub enum AgentErrorCode {
     ResponseEmptyError = 100_003,
     UnexpectedResponseFormat = 100_004,
     RequestEmptyError = 100_005,
-    // errors in task executing
-    _StartExecutionError = 101_001,
-    // other error types
-    ClientNotInitialized = 102_001,
-    MaxRetryFailures = 102_002,
 }
 
 #[derive(Debug, Clone)]

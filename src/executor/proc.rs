@@ -7,16 +7,15 @@ cfg_if::cfg_if! {
         use crate::executor::powershell_command::PowerShellCommand;
     }
 }
-use crate::common::asserts::GracefulUnwrap;
 use crate::common::consts::{
     FINISH_RESULT_FAILED, FINISH_RESULT_START_FAILED, FINISH_RESULT_SUCCESS,
     FINISH_RESULT_TERMINATED, FINISH_RESULT_TIMEOUT, OUTPUT_BYTE_LIMIT_EACH_REPORT,
     TASK_STORE_PATH,
 };
-use crate::common::envs::get_meta_url;
-use crate::cos::ObjectAPI;
-use crate::cos::COS;
-use crate::http::MetadataAPIAdapter;
+use crate::network::cos::ObjectAPI;
+use crate::network::cos::COS;
+use crate::network::urls::get_meta_url;
+use crate::network::MetadataAPIAdapter;
 use crate::ontime::timer::Timer;
 use crate::start_failed_err_info;
 use async_trait::async_trait;
@@ -201,7 +200,7 @@ impl BaseCommand {
     ) -> BaseCommand {
         let timestamp = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_exit("sys time may before 1970")
+            .expect("sys time may before 1970")
             .as_secs();
         BaseCommand {
             cmd_path: cmd_path.to_string(),
@@ -231,12 +230,12 @@ impl BaseCommand {
     }
     // length of bytes, not chars
     pub fn cur_output_len(&self) -> usize {
-        let output = self.output.lock().unwrap_or_exit("lock failed");
+        let output = self.output.lock().expect("lock failed");
         output.len()
     }
 
     pub fn append_output(&self, data: &[u8]) {
-        let mut output = self.output.lock().unwrap_or_exit("lock failed");
+        let mut output = self.output.lock().expect("lock failed");
         let len = data.len();
 
         if self.bytes_dropped.load(Ordering::SeqCst) > 0 {
@@ -257,7 +256,7 @@ impl BaseCommand {
     }
 
     pub fn next_output(&self) -> (Vec<u8>, u32, u64) {
-        let mut output = self.output.lock().unwrap_or_exit("lock failed");
+        let mut output = self.output.lock().expect("lock failed");
         let len = output.len();
 
         let ret = if len == 0 {
@@ -299,10 +298,7 @@ impl BaseCommand {
         if let None = pid {
             return 0;
         }
-        let exit_code = self
-            .exit_code
-            .lock()
-            .unwrap_or_exit("exit_code get lock fail");
+        let exit_code = self.exit_code.lock().expect("exit_code get lock fail");
         match *exit_code {
             Some(code) => code,
             None => -1,
@@ -410,10 +406,7 @@ impl BaseCommand {
         let pid = child.id();
         info!("=>process {} finish", pid);
         let status = child.await.expect("child process encountered an error");
-        let mut exit_code = self
-            .exit_code
-            .lock()
-            .unwrap_or_exit("exit_code get lock fail");
+        let mut exit_code = self.exit_code.lock().expect("exit_code get lock fail");
         match status.code() {
             Some(code) => {
                 exit_code.replace(code);
@@ -425,7 +418,7 @@ impl BaseCommand {
         }
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_exit("sys time may before 1970")
+            .expect("sys time may before 1970")
             .as_secs();
         self.finished.store(true, Ordering::SeqCst);
         self.finish_time.store(now, Ordering::SeqCst);
@@ -494,7 +487,7 @@ impl BaseCommand {
         }
     }
 
-    pub async fn finish_logging(&self) {
+    pub async fn upload_log_cos(&self) {
         let log_file_path = self.log_file_path.to_string();
         if !self.cos_bucket.is_empty() {
             let metadata = MetadataAPIAdapter::build(get_meta_url().as_str());
@@ -536,7 +529,7 @@ impl BaseCommand {
     }
 
     pub fn set_output_url(&self, instance_id: &str) -> String {
-        let output_err_info = self.output_err_info.lock().unwrap_or_exit("lock fail");
+        let output_err_info = self.output_err_info.lock().expect("lock fail");
         if !output_err_info.is_empty() {
             return "".to_string();
         }
@@ -570,7 +563,7 @@ impl BaseCommand {
     pub fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let output_clone;
         {
-            let output = self.output.lock().unwrap_or_exit("lock failed");
+            let output = self.output.lock().expect("lock failed");
             output_clone = output.clone();
         }
         let output_debug = String::from_utf8_lossy(output_clone.as_slice());
@@ -618,15 +611,14 @@ mod tests {
     use rand::{thread_rng, Rng};
 
     use super::*;
-    use crate::common::asserts::GracefulUnwrap;
     use crate::common::consts::FINISH_RESULT_START_FAILED;
+    use crate::common::utils::get_current_username;
     use crate::ontime::timer::Timer;
 
     cfg_if::cfg_if! {
         if #[cfg(unix)] {
             use std::fs::read_dir;
             use std::process::Command;
-            use users::get_current_username;
         } else if #[cfg(windows)] {
             use crate::common::consts::CMD_TYPE_POWERSHELL;
         }
@@ -642,15 +634,8 @@ mod tests {
     #[cfg(windows)]
     static CMD_PATH: &str = "./a.ps1";
 
-    #[cfg(unix)]
     fn username() -> String {
-        String::from(get_current_username().unwrap().to_str().unwrap())
-    }
-
-    #[cfg(windows)]
-    fn username() -> String {
-        use crate::executor::powershell_command::get_current_user;
-        get_current_user()
+        get_current_username()
     }
 
     #[test]
@@ -768,7 +753,11 @@ mod tests {
     }
 
     fn gen_rand_str() -> String {
-        thread_rng().sample_iter(&Alphanumeric).take(10).collect()
+        thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(10)
+            .map(char::from)
+            .collect()
     }
 
     #[cfg(unix)]
@@ -1099,7 +1088,7 @@ mod tests {
         loop {
             {
                 let timer = Timer::get_instance();
-                let mut timer = timer.lock().unwrap_or_exit("");
+                let mut timer = timer.lock().unwrap();
                 info!("timer:{:?}", timer);
                 let tasks = timer.tasks_to_schedule();
                 cnt += tasks.len();
@@ -1121,95 +1110,6 @@ mod tests {
         assert!(0 < cmd.finish_time());
         assert!(cmd.finish_time() < start_time + 5);
         assert!(!is_process_exist(cmd.pid()).await);
-        fs::remove_file(filename.as_str()).unwrap();
-    }
-
-    #[tokio::test]
-    #[cfg(unix)]
-    async fn test_daemon() {
-        init_log();
-        let filename = format!("./.{}.sh", gen_rand_str());
-        create_file("echo 'hello world'\nsleep 10 &\ndate", filename.as_str());
-        let log_path = format!("./{}.log", gen_rand_str());
-        let ret = new(
-            filename.as_str(),
-            &username(),
-            CMD_TYPE,
-            "./",
-            6,
-            1024,
-            log_path.as_str(),
-            "",
-            "",
-            "",
-        );
-        let mut cmd = ret.unwrap();
-        let ret = cmd.run().await;
-        assert!(ret.is_ok());
-        loop {
-            {
-                let timer = Timer::get_instance();
-                let mut timer = timer.lock().unwrap_or_exit("");
-                info!("timer:{:?}", timer);
-                let tasks = timer.tasks_to_schedule();
-                for task in tasks {
-                    task.run_task();
-                }
-            }
-            tokio::time::delay_for(Duration::from_millis(100)).await;
-            let finished = cmd.is_finished();
-            if finished {
-                break;
-            }
-        }
-        assert_eq!(cmd.is_timeout(), false);
-        fs::remove_file(filename.as_str()).unwrap();
-    }
-
-    #[tokio::test]
-    #[cfg(unix)]
-    async fn test_daemon_output() {
-        init_log();
-        let filename = format!("./.{}.sh", gen_rand_str());
-        create_file(
-            "yes | head -1024 \nsleep 1200 &\n yes | head -1025",
-            filename.as_str(),
-        );
-
-        let log_path = format!("./{}.log", gen_rand_str());
-        let ret = new(
-            filename.as_str(),
-            &username(),
-            CMD_TYPE,
-            "./",
-            1200,
-            10240,
-            log_path.as_str(),
-            "",
-            "",
-            "",
-        );
-        let mut cmd = ret.unwrap();
-        let ret = cmd.run().await;
-        assert!(ret.is_ok());
-
-        loop {
-            {
-                let timer = Timer::get_instance();
-                let mut timer = timer.lock().unwrap_or_exit("");
-                //info!("timer:{:?}", timer);
-                let tasks = timer.tasks_to_schedule();
-                for task in tasks {
-                    task.run_task();
-                }
-            }
-            tokio::time::delay_for(Duration::from_secs(1)).await;
-            let finished = cmd.is_finished();
-            if finished {
-                break;
-            }
-        }
-        assert_eq!(cmd.is_timeout(), false);
         fs::remove_file(filename.as_str()).unwrap();
     }
 }

@@ -10,19 +10,21 @@ use log4rs::config::Root;
 use log4rs::encode::pattern::PatternEncoder;
 use log4rs::filter::threshold::ThresholdFilter;
 
-use crate::common::consts::{
-    LOG_FILE_BASE_INDEX, LOG_FILE_NAME, LOG_FILE_NAME_WHEN_ROLL, LOG_FILE_SIZE, LOG_LEVEL,
-    LOG_LEVEL_DEBUG, LOG_PATTERN, MAX_LOG_FILE_COUNT,
-};
 use crate::common::Opts;
 
-pub fn init() {
-    let log_level = if Opts::get_opts().debug_log {
-        LOG_LEVEL_DEBUG
-    } else {
-        LOG_LEVEL
-    };
+const LOG_PATTERN: &str = "{d}|{f}:{L}|{l}|{m}{n}";
+const LOG_FILE_NAME: &str = "log/tat_agent.log";
+const LOG_FILE_NAME_WHEN_ROLL: &str = "log/tat_agent_{}.log";
+const LOG_FILE_SIZE: u64 = 1 * 1024 * 1024;
+const LOG_FILE_BASE_INDEX: u32 = 0;
+const MAX_LOG_FILE_COUNT: u32 = 2;
+const LOG_LEVEL: log::LevelFilter = log::LevelFilter::Info;
+const LOG_LEVEL_DEBUG: log::LevelFilter = log::LevelFilter::Debug;
 
+
+
+pub fn init() {
+    let log_level = LOG_LEVEL;
     let logfile = RollingFileAppender::builder()
         .encoder(Box::new(PatternEncoder::new(LOG_PATTERN)))
         .build(
@@ -58,7 +60,7 @@ pub fn init() {
 
     let config_log = format!("{:?}", config);
     log4rs::init_config(config).unwrap();
-    debug!("logger init succ, config: {}", config_log);
+    debug!("logger init success, config: {}", config_log);
 }
 
 #[allow(dead_code)]

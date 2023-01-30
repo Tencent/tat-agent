@@ -22,8 +22,8 @@ use std::sync::Arc;
 use std::{fmt, slice};
 use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
-use winapi::shared::minwindef::{DWORD, FALSE, LPDWORD, LPVOID, ULONG, USHORT};
-use winapi::shared::ntdef::{LPWSTR, LUID, NTSTATUS, NULL, PCHAR, PVOID};
+use winapi::shared::minwindef::{DWORD, FALSE, LPVOID, ULONG, USHORT};
+use winapi::shared::ntdef::{LUID, NTSTATUS, NULL, PCHAR, PVOID};
 
 use winapi::shared::winerror::ERROR_ACCESS_DENIED;
 use winapi::um::errhandlingapi::GetLastError;
@@ -48,11 +48,11 @@ use winapi::um::tlhelp32::{
 };
 use winapi::um::userenv::{CreateEnvironmentBlock, DestroyEnvironmentBlock};
 use winapi::um::winbase::{
-    GetUserNameW, CREATE_SUSPENDED, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED,
-    PIPE_ACCESS_INBOUND, PIPE_ACCESS_OUTBOUND, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT,
+    CREATE_SUSPENDED, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, PIPE_ACCESS_INBOUND,
+    PIPE_ACCESS_OUTBOUND, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT,
 };
 
-use crate::common::strwsz::{str2wsz, wsz2string};
+use crate::common::utils::{get_current_username, str2wsz, wsz2string};
 use winapi::um::winnt::{
     RtlZeroMemory, SecurityImpersonation, TokenPrimary, HANDLE, PROCESS_ALL_ACCESS,
     PROCESS_TERMINATE, PTOKEN_GROUPS, QUOTA_LIMITS, TOKEN_ALL_ACCESS, TOKEN_SOURCE,
@@ -142,7 +142,7 @@ impl PowerShellCommand {
         })?;
 
         let mut envs = HashMap::<String, String>::new();
-        if !get_current_user().eq_ignore_ascii_case(&self.base.username) {
+        if !get_current_username().eq_ignore_ascii_case(&self.base.username) {
             load_environment(self.token.as_raw_handle(), &mut envs);
             if envs.len() != 0 {
                 command.env_clear().envs(envs);
@@ -155,7 +155,7 @@ impl PowerShellCommand {
         let pid = self.pid();
         unsafe {
             let process = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
-            let current_user = get_current_user();
+            let current_user = get_current_username();
             if !current_user.eq_ignore_ascii_case(&self.base.username) {
                 let mut access_token = PROCESS_ACCESS_TOKEN {
                     Token: self.token.as_raw_handle(),
@@ -266,12 +266,7 @@ impl BaseCommand {
                 break;
             }
         }
-
-        if let Err(e) = log_file.sync_all() {
-            error!("sync in-memory data to file fail: {:?}", e)
-        }
-
-        self.finish_logging().await;
+        self.upload_log_cos().await;
     }
 
     pub fn kill_process_group(pid: u32) {
@@ -344,6 +339,7 @@ pub fn anon_pipe(ours_readable: bool) -> Result<(File, File), String> {
                 thread_rng()
                     .sample_iter(&Alphanumeric)
                     .take(10)
+                    .map(char::from)
                     .collect::<String>(),
             );
 
@@ -373,8 +369,8 @@ pub fn anon_pipe(ours_readable: bool) -> Result<(File, File), String> {
                         continue;
                     }
                 }
-                error!("creat namepipe fail,{}", err);
-                return Err(format!("creat namepipe fail,{}", err));
+                error!("create namepipe fail,{}", err);
+                return Err(format!("create namepipe fail,{}", err));
             }
             ours = File::from_raw_handle(handle);
             break;
@@ -386,20 +382,6 @@ pub fn anon_pipe(ours_readable: bool) -> Result<(File, File), String> {
 
         let theirs = opts.open(Path::new(&name)).map_err(|e| e.to_string())?;
         Ok((ours, theirs))
-    }
-}
-
-pub fn get_current_user() -> String {
-    unsafe {
-        let mut len: DWORD = 256;
-        let mut user_name: Vec<u16> = Vec::new();
-        user_name.resize(len as usize, 0);
-
-        GetUserNameW(user_name.as_ptr() as LPWSTR, &mut len as LPDWORD);
-        user_name.set_len(len as usize);
-
-        let user_name = wsz2string(user_name.as_ptr());
-        user_name
     }
 }
 
@@ -570,7 +552,7 @@ pub fn get_user_token(user_name: &str) -> Result<File, String> {
         })
     };
 
-    if get_current_user().eq_ignore_ascii_case(user_name) || *is_2008 {
+    if get_current_username().eq_ignore_ascii_case(user_name) || *is_2008 {
         info!("use current token user:{} is_2008:{}", user_name, *is_2008);
         let mut token: HANDLE = 0 as HANDLE;
         unsafe {

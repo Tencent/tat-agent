@@ -14,9 +14,8 @@ use crate::common::consts::{
     AGENT_FILENAME, SELF_UPDATE_FILENAME, SELF_UPDATE_PATH, SELF_UPDATE_SCRIPT,
     UPDATE_DOWNLOAD_TIMEOUT, UPDATE_FILE_UNZIP_DIR,
 };
-use crate::common::envs;
-use crate::http::{HttpRequester, InvokeAPIAdapter, Requester};
-use crate::types::{AgentError, CheckUpdateResponse, HttpMethod};
+use crate::network::{HttpRequester, InvokeAPIAdapter};
+use crate::network::types::{AgentError, CheckUpdateResponse, HttpMethod};
 
 cfg_if::cfg_if! {
     if #[cfg(unix)] {
@@ -40,7 +39,7 @@ pub fn try_update(self_updating: Arc<AtomicBool>, need_restart: Arc<AtomicBool>)
     }
     let mut rt = rt_res.unwrap();
 
-    let adapter = InvokeAPIAdapter::build(envs::get_invoke_url().as_str());
+    let adapter = InvokeAPIAdapter::new();
 
     let check_update_rsp = check_update(&mut rt, &adapter);
     if let Err(e) = check_update_rsp {
@@ -176,15 +175,10 @@ fn download_file(
     }
     let mut file = file.unwrap();
 
-    let mut req = HttpRequester::new();
+    let req = HttpRequester::new(&url);
     req.with_time_out(UPDATE_DOWNLOAD_TIMEOUT);
-    let init_ret = req.initialize(url.as_str());
-    if let None = init_ret {
-        let s = "http init fail, maybe url invalid".to_string();
-        return Err(s);
-    }
 
-    let req = req.send_request::<String>(HttpMethod::GET, "", None);
+    let req = req.send_request::<String>(HttpMethod::GET, "", None,None);
     let rsp = rt.block_on(req);
     if let Err(e) = rsp {
         let s = format!("self update download fail:{:?}", e);

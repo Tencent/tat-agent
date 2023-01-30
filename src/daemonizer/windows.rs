@@ -1,4 +1,4 @@
-use crate::common::strwsz::str2wsz;
+use crate::common::utils::str2wsz;
 use log::error;
 use ntapi::ntrtl::RtlAdjustPrivilege;
 use ntapi::ntseapi::{SE_ASSIGNPRIMARYTOKEN_PRIVILEGE, SE_TCB_PRIVILEGE};
@@ -14,7 +14,6 @@ use winapi::um::winnt::{BOOLEAN, LPWSTR, PVOID, SERVICE_WIN32_OWN_PROCESS};
 use winapi::um::winsvc::*;
 use winapi::um::wow64apiset::*;
 
-//static var if not start with upper case, cargo build will report warn
 static mut HANDLE: SERVICE_STATUS_HANDLE = 0 as SERVICE_STATUS_HANDLE;
 static mut TAT_ENTRY: fn() = || {};
 

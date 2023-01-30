@@ -1,50 +1,66 @@
 mod common;
 mod conpty;
-mod cos;
 mod daemonizer;
 mod executor;
-mod http;
+mod network;
 mod ontime;
-mod types;
-mod uname;
-mod ws;
+mod sysinfo;
 use crate::common::consts::AGENT_VERSION;
 use crate::common::evbus::EventBus;
 use crate::common::logger;
+use crate::common::option::EnumCommands;
 use crate::common::Opts;
-use crate::ontime::timer::Timer;
-use log::error;
-use log::info;
+use log::{error, info};
+use network::register;
 use std::env;
+use std::process::exit;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
-#[tokio::main]
-async fn main() {
-    let _opts = Opts::get_opts();
-    set_work_dir();
-    logger::init();
-    info!("agent start,version:[{}]", AGENT_VERSION);
-    Timer::get_instance();
+fn main() {
+    init_agent();
+    check_args();
 
     daemonizer::daemonize(move || {
-        //set panic handler
         set_panic_handler();
+        //check register info
+        network::check();
 
         let eventbus = Arc::new(EventBus::new());
-        let running_task_num = Arc::new(AtomicU64::new(0));
-
-        http::thread::run(&eventbus, &running_task_num);
-        ontime::thread::run(&eventbus, &running_task_num);
-        conpty::thread::run(&eventbus, &running_task_num);
-        ws::thread::run(&eventbus);
+        let stop_counter = Arc::new(AtomicU64::new(0));
+        
+        executor::thread::run(&eventbus, &stop_counter);
+        ontime::thread::run(&eventbus, &stop_counter);
+        conpty::gather::run(&eventbus, &stop_counter);
+        network::ws::run(&eventbus);
     });
 }
 
-fn set_work_dir() {
-    let exe_path = env::current_exe().unwrap();
-    let work_dir = exe_path.parent().unwrap();
-    env::set_current_dir(work_dir).unwrap();
+fn init_agent() {
+    let current_bin = env::current_exe().expect("current path fail");
+    let current_path = current_bin.parent().expect("parent path fail");
+    env::set_current_dir(current_path).expect("set dir fail");
+    logger::init();
+    info!("agent initialized,version:[{}]", AGENT_VERSION);
+}
+
+fn check_args() {
+    if let Some(commands) = Opts::get_opts().command.as_ref() {
+        match commands {
+            EnumCommands::Register(opt) => {
+                match register(&opt.region, &opt.register_code_id, &opt.register_code_value) {
+                    Ok(_) => {
+                        print!("register success");
+                        exit(0)
+                    }
+                    Err(err) => {
+                        print!("register failed {}", err);
+                        exit(-1)
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn set_panic_handler() {

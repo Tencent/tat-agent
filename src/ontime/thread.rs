@@ -1,8 +1,8 @@
-use crate::common::asserts::GracefulUnwrap;
 use crate::common::consts::{
-    ONTIME_CHECK_TASK_NUM, ONTIME_KICK_INTERVAL, ONTIME_KICK_SOURCE, ONTIME_LEAK_CEHEK_INTERVAL,
+    ONTIME_CHECK_TASK_NUM, ONTIME_KICK_INTERVAL, ONTIME_KICK_SOURCE, ONTIME_LEAK_CEHECK_INTERVAL,
     ONTIME_THREAD_INTERVAL, ONTIME_UPDATE_INTERVAL, WS_MSG_TYPE_CHECK_UPDATE, WS_MSG_TYPE_KICK,
 };
+
 use crate::common::evbus::EventBus;
 use crate::ontime::leak_check::check_resource_leak;
 use crate::ontime::self_update::{try_restart_agent, try_update};
@@ -76,7 +76,7 @@ fn schedule_timer_task() {
     let tasks;
     {
         let timer = Timer::get_instance();
-        let mut timer = timer.lock().unwrap_or_exit("");
+        let mut timer = timer.lock().expect("sched lock fail");
         debug!("current status of timer:{:?}", timer);
         tasks = timer.tasks_to_schedule();
     }
@@ -114,7 +114,10 @@ fn check_ontime_kick(instant_kick: &mut SystemTime, dispatcher: Arc<EventBus>) {
     if !check_interval_elapsed(instant_kick, ONTIME_KICK_INTERVAL) {
         return;
     }
-    dispatcher.dispatch(WS_MSG_TYPE_KICK, ONTIME_KICK_SOURCE.to_string().into_bytes());
+    dispatcher.dispatch(
+        WS_MSG_TYPE_KICK,
+        ONTIME_KICK_SOURCE.to_string().into_bytes(),
+    );
 }
 
 fn check_ontime_update(
@@ -134,6 +137,7 @@ fn check_ontime_update(
     let self_updating_clone = self_updating.clone();
     let need_restart_clone = need_restart.clone();
     thread::Builder::new()
+        .name("update".to_string())
         .spawn(move || {
             try_update(self_updating_clone, need_restart_clone);
         })
@@ -175,7 +179,7 @@ fn check_running_task_num(
 }
 
 fn check_resource_leakage(instant_leak: &mut SystemTime) {
-    if !check_interval_elapsed(instant_leak, ONTIME_LEAK_CEHEK_INTERVAL) {
+    if !check_interval_elapsed(instant_leak, ONTIME_LEAK_CEHECK_INTERVAL) {
         return;
     }
     check_resource_leak();

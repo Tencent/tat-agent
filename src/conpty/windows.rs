@@ -1,5 +1,7 @@
-use crate::common::consts::{PTY_INSPECT_WRITE,PTY_FLAG_ENABLE_BLOCK};
-use crate::common::strwsz::{str2wsz, wsz2string};
+use crate::common::consts::PTY_FLAG_ENABLE_BLOCK;
+use crate::conpty::PTY_INSPECT_WRITE;
+
+use crate::common::utils::{str2wsz, wsz2string};
 use crate::conpty::bind::{
     winpty_agent_process, winpty_config_free, winpty_config_new, winpty_config_set_initial_size,
     winpty_conin_name, winpty_conout_name, winpty_error_free, winpty_error_msg, winpty_error_ptr_t,
@@ -7,8 +9,7 @@ use crate::conpty::bind::{
     winpty_spawn_config_new, winpty_t,
 };
 
-use crate::conpty::{PtySession, PtySystem};
-use crate::executor::powershell_command::{anon_pipe, get_user_token, load_environment};
+use crate::executor::powershell_command::{anon_pipe, load_environment, get_user_token};
 use crate::executor::proc::BaseCommand;
 use log::{error, info};
 use ntapi::ntpsapi::{
@@ -41,9 +42,10 @@ use winapi::um::winnt::{
     FILE_SHARE_READ, FILE_SHARE_WRITE, LPWSTR, PVOID,
 };
 
+use super::gather::PtyGather;
 use super::parser::EscapeItem;
 use super::parser::{do_parse, AnsiItem};
-use super::{Handler, PTY_RUNTIME};
+use super::{PtyAdapter, PtyBase};
 
 struct Inner {
     pty_ptr: Arc<Mutex<Box<winpty_t>>>,
@@ -162,16 +164,16 @@ fn openpty(user_name: &str, cols: u16, rows: u16) -> Result<Inner, String> {
 }
 
 #[derive(Default)]
-pub struct ConPtySystem {}
+pub struct ConPtyAdapter {}
 
-impl PtySystem for ConPtySystem {
+impl PtyAdapter for ConPtyAdapter {
     fn openpty(
         &self,
         user_name: &str,
         cols: u16,
         rows: u16,
         flag: u32,
-    ) -> Result<Arc<dyn PtySession + Send + Sync>, String> {
+    ) -> Result<Arc<dyn PtyBase + Send + Sync>, String> {
         let inner = openpty(user_name, cols, rows)?;
         let session = Arc::new(WinPtySession {
             inner: Arc::new(Mutex::new(inner)),
@@ -190,7 +192,7 @@ pub struct WinPtySession {
     enable_block: bool,
 }
 
-impl PtySession for WinPtySession {
+impl PtyBase for WinPtySession {
     fn resize(&self, cols: u16, rows: u16) -> Result<(), String> {
         unsafe {
             let err_ptr: *mut winpty_error_ptr_t = ptr::null_mut();
@@ -225,7 +227,7 @@ impl PtySession for WinPtySession {
             } else {
                 let input = File::from_raw_handle(conin);
                 let (read_pipe, write_pipe) = anon_pipe(true)?;
-                PTY_RUNTIME.spawn(async move {
+                PtyGather::runtime().spawn(async move {
                     let mut maker = BlockMarker::new(input, write_pipe);
                     maker.work().await;
                 });
@@ -263,19 +265,9 @@ impl PtySession for WinPtySession {
         }
     }
 
-    fn work_as_user(&self, func: Handler) -> Result<Vec<u8>, String> {
-        unsafe {
-            let handle = self.inner.lock().unwrap().token.as_raw_handle();
-            ImpersonateLoggedOnUser(handle);
-            let result = func();
-            RevertToSelf();
-            return result;
-        };
-    }
-
     fn inspect_access(&self, path: &str, access: u8) -> Result<(), String> {
         unsafe {
-            let desierd_access = if access == PTY_INSPECT_WRITE {
+            let desired_access = if access == PTY_INSPECT_WRITE {
                 FILE_GENERIC_WRITE
             } else {
                 FILE_GENERIC_READ
@@ -284,7 +276,7 @@ impl PtySession for WinPtySession {
             let mut file_name = str2wsz(path);
             let handle = CreateFileW(
                 file_name.as_mut_ptr() as LPCWSTR,
-                desierd_access,
+                desired_access,
                 FILE_SHARE_DELETE | FILE_SHARE_WRITE | FILE_SHARE_READ,
                 null_mut(),
                 OPEN_EXISTING,
@@ -299,6 +291,16 @@ impl PtySession for WinPtySession {
                 return Err("access deny".to_string());
             }
         }
+    }
+
+    fn execute(&self, f: &dyn Fn() -> Result<Vec<u8>, String>) -> Result<Vec<u8>, String> {
+        unsafe {
+            let handle = self.inner.lock().unwrap().token.as_raw_handle();
+            ImpersonateLoggedOnUser(handle);
+            let result = f();
+            RevertToSelf();
+            return result;
+        };
     }
 }
 

@@ -1,4 +1,4 @@
-use crate::cos::errors::Error;
+use crate::network::cos::errors::Error;
 use reqwest::header::{HeaderMap, HeaderName};
 use reqwest::Body;
 use std::collections::HashMap;

@@ -7,10 +7,7 @@ use tokio::runtime::Builder;
 
 use crate::common::consts::{ONTIME_MAX_FD_COUNT, ONTIME_MAX_MEM_RES_BYTES};
 use crate::ontime::self_update::try_restart_agent;
-use crate::{
-    common::{consts::ONTIME_LEAK_REPORT_FREQUENCY, envs},
-    http::InvokeAPIAdapter,
-};
+use crate::{common::consts::ONTIME_LEAK_REPORT_FREQUENCY, network::InvokeAPIAdapter};
 
 cfg_if::cfg_if! {
     if #[cfg(unix)] {
@@ -72,11 +69,11 @@ pub(crate) fn check_resource_leak() {
         let fd_avg = (fd_total / ONTIME_LEAK_REPORT_FREQUENCY) as u32;
         let mem_avg = (mem_total / ONTIME_LEAK_REPORT_FREQUENCY) as u32;
         #[cfg(unix)]
-        let zp_cnt = get_zoom_prcesss() as u32;
+        let zp_cnt = get_zoom_process() as u32;
         #[cfg(windows)]
         let zp_cnt = 0 as u32;
 
-        let adapter = InvokeAPIAdapter::build(envs::get_invoke_url().as_str());
+        let adapter = InvokeAPIAdapter::new();
         let requester = adapter.report_resource(fd_avg, mem_avg, zp_cnt);
         info!(
             "ReportResource mem {} handle {} zp_cnt {}",
@@ -139,7 +136,7 @@ fn get_mem_size() -> u64 {
 }
 
 #[cfg(unix)]
-fn get_zoom_prcesss() -> u32 {
+fn get_zoom_process() -> u32 {
     let pid = process::id() as i32;
     let mut nz: u32 = 0;
     let items = fs::read_dir(Path::new("/proc")).unwrap();
@@ -206,14 +203,14 @@ mod tests {
     fn test_get_zoom_prcesss() {
         use std::process::Command;
         init_test_log();
-        let mut nz = get_zoom_prcesss();
+        let mut nz = get_zoom_process();
         assert_eq!(0, nz);
         let mut cmd = Command::new("pwd");
         let mut child = cmd.spawn().unwrap();
-        nz = get_zoom_prcesss();
+        nz = get_zoom_process();
         assert_eq!(1, nz);
         let _ = child.wait();
-        nz = get_zoom_prcesss();
+        nz = get_zoom_process();
         assert_eq!(0, nz);
     }
 

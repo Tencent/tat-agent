@@ -10,14 +10,13 @@ use rand::{thread_rng, Rng};
 use crate::common::consts;
 #[cfg(test)]
 use crate::common::logger;
-use crate::types::InvocationNormalTask;
+use crate::network::types::InvocationNormalTask;
 
 cfg_if::cfg_if! {
     if #[cfg(unix)] {
         use std::fs::{set_permissions, Permissions};
         use std::os::unix::fs::PermissionsExt;
         use std::io;
-        use crate::common::asserts::GracefulUnwrap;
     }
 }
 
@@ -58,7 +57,11 @@ impl TaskFileStore {
         // use YYYYmm as task directory name
         // use random string as postfix
         let now: DateTime<Local> = Local::now();
-        let rand_str: String = thread_rng().sample_iter(&Alphanumeric).take(10).collect();
+        let rand_str: String = thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(10)
+            .map(char::from)
+            .collect();
 
         let suffix = self.get_suffix(&t.command_type);
         let file_name = format!(
@@ -148,7 +151,7 @@ impl TaskFileStore {
                 }
                 _ => match path.parent() {
                     Some(parent) => path = parent,
-                    None => Err("").unwrap_or_exit("should never come here"),
+                    None => Err("").expect("should never come here"),
                 },
             };
         }

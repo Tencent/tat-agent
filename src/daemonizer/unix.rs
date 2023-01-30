@@ -10,9 +10,10 @@ pub fn daemonize(entry: fn()) {
         entry();
         return;
     };
-    let daemonize = Daemonize::new().pid_file(PID_FILE);
+
+    let daemonize = Daemonize::new().pid_file(PID_FILE).working_directory(".");
     match daemonize.start() {
-        Ok(_) => info!("daemonize succ"),
+        Ok(_) => info!("daemonize success"),
         Err(e) => {
             let mut reason = format!("Daemonize failed because: {}.", e);
             if let DaemonizeError::LockPidfile(_errno) = e {

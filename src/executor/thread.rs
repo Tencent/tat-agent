@@ -1,14 +1,11 @@
-use crate::common::asserts::GracefulUnwrap;
 use crate::common::consts::WS_MSG_TYPE_KICK;
 use crate::common::consts::{DEFAULT_OUTPUT_BYTE, FINISH_RESULT_TERMINATED};
-use crate::common::envs::get_invoke_url;
 use crate::common::evbus::EventBus;
 use crate::executor::proc;
 use crate::executor::proc::MyCommand;
-use crate::http::store::TaskFileStore;
-use crate::http::InvokeAPIAdapter;
-use crate::types::{InvocationCancelTask, InvocationNormalTask};
-use async_std::task;
+use crate::executor::store::TaskFileStore;
+use crate::network::types::{InvocationCancelTask, InvocationNormalTask};
+use crate::network::InvokeAPIAdapter;
 use log::{error, info};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -17,16 +14,17 @@ use std::time::Duration;
 use std::time::SystemTime;
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
+use tokio::time::delay_for;
 
 pub fn run(dispatcher: &Arc<EventBus>, running_task_num: &Arc<AtomicU64>) {
-    let runtime = Runtime::new().unwrap();
-    let running_task_num = running_task_num.clone();
+    let runtime = Runtime::new().expect("executor-runime build fail");
 
+    let running_task_num = running_task_num.clone();
     dispatcher.register(WS_MSG_TYPE_KICK, move |source| {
         let source = String::from_utf8_lossy(&source).to_string(); //from vec to string
         let running_task_num = running_task_num.clone();
         runtime.spawn(async move {
-            let adapter = InvokeAPIAdapter::build(get_invoke_url().as_str());
+            let adapter = InvokeAPIAdapter::new();
             let worker = Arc::new(HttpWorker::new(adapter, running_task_num.clone()));
             worker.process(source).await
         });
@@ -57,7 +55,7 @@ impl HttpWorker {
 
     pub async fn process(&self, source: String) {
         info!("http thread processing message from: {}", source);
-        for _ in 0..2 {
+        for _ in 0..3 {
             match self.adapter.describe_tasks().await {
                 Ok(resp) => {
                     info!("describe task success: {:?}", resp);
@@ -73,6 +71,11 @@ impl HttpWorker {
                         match self.task_store.store(&task) {
                             Ok((task_file, log_file)) => {
                                 self.task_execute(task, &task_file, &log_file).await;
+                                //remove script after finished
+                                match std::fs::remove_file(&task_file) {
+                                    Ok(_) => info!("delete {} success", task_file),
+                                    Err(e) => error!("delete {} fail {}", task_file, e),
+                                };
                             }
                             Err(_) => {
                                 self.task_execute(task, "", "").await;
@@ -108,7 +111,7 @@ impl HttpWorker {
                 if finished {
                     break;
                 } else {
-                    task::sleep(Duration::from_millis(50)).await;
+                    delay_for(Duration::from_millis(50)).await;
                     finished = cmd_arc.lock().await.is_finished();
                 }
             }
@@ -230,6 +233,7 @@ impl HttpWorker {
                 );
             })
             .ok();
+
         // process finish ,remove
         self.running_tasks
             .lock()
@@ -267,7 +271,7 @@ impl HttpWorker {
         // report terminated
         let finish_time = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_exit("sys time may before 1970")
+            .expect("sys time may before 1970")
             .as_secs();
         self.adapter
             .report_task_finish(
@@ -329,7 +333,7 @@ impl HttpWorker {
 
         let start_timestamp = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_exit("sys time may before 1970")
+            .expect("sys time may before 1970")
             .as_secs();
 
         let result = self
@@ -377,17 +381,16 @@ impl HttpWorker {
 mod tests {
     use crate::common::consts::FINISH_RESULT_TERMINATED;
     use crate::common::logger;
-    #[cfg(windows)]
-    use crate::executor::powershell_command::get_current_user;
+    use crate::common::utils::get_current_username;
     use crate::executor::proc;
     use crate::executor::proc::MyCommand;
-    use crate::http::store::TaskFileStore;
-    use crate::http::thread::HttpWorker;
-    use crate::http::InvokeAPIAdapter;
-    use crate::types::{
+    use crate::executor::store::TaskFileStore;
+    use crate::executor::thread::HttpWorker;
+    use crate::network::types::{
         AgentError, AgentErrorCode, InvocationCancelTask, InvocationNormalTask,
         ReportTaskFinishResponse, ReportTaskStartResponse,
     };
+    use crate::network::InvokeAPIAdapter;
     use rand::distributions::Alphanumeric;
     use rand::{thread_rng, Rng};
     use std::fs;
@@ -397,11 +400,13 @@ mod tests {
     use std::time::Duration;
     use tokio::sync::Mutex;
     use tokio::time::timeout;
-    #[cfg(unix)]
-    use users::get_current_username;
 
     fn gen_rand_str() -> String {
-        thread_rng().sample_iter(&Alphanumeric).take(10).collect()
+        thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(10)
+            .map(char::from)
+            .collect()
     }
 
     fn create_file(content: &str, filename: &str) {
@@ -436,10 +441,7 @@ mod tests {
             time_out,
             command: cmd.to_string(),
             command_type: cmd_type.to_string(),
-            #[cfg(unix)]
-            username: String::from(get_current_username().unwrap().to_str().unwrap()),
-            #[cfg(windows)]
-            username: get_current_user(),
+            username: get_current_username(),
             working_directory: "./".to_string(),
             cos_bucket_url: "".to_string(),
             cos_bucket_prefix: "".to_string(),

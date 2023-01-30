@@ -1,32 +1,16 @@
 use log::info;
-use std::env;
+
 use std::net::ToSocketAddrs;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::SeqCst;
 use url::Url;
 
-use crate::common::consts::{INVOKE_APIS, INVOKE_API_DEBUG, WS_URLS, WS_URL_DEBUG};
+use crate::common::consts::{
+    INVOKE_APIS, INVOKE_API_MOCK, METADATA_API, METADATA_API_MOCK, WS_URLS, WS_URL_MOCK,
+};
 
-use super::consts::{METADATA_API, METADATA_API_DEBUG};
-
-pub fn enable_test() -> bool {
-    cfg_if::cfg_if! {
-        if #[cfg(debug_assertions)] {
-           return true
-        } else {
-           return false
-        }
-    }
-}
-
-pub fn test_vpcid() -> String {
-    return env::var("MOCK_VPCID").unwrap_or("123456".to_string());
-}
-
-pub fn test_vip() -> String {
-    return env::var("MOCK_VIP").unwrap_or("192.168.0.1".to_string());
-}
-
+use super::RegisterInfo;
+use crate::network::mock_enabled;
 
 fn dns_resolve(url: &str) -> Result<(), ()> {
     let url = Url::parse(url).unwrap();
@@ -37,7 +21,6 @@ fn dns_resolve(url: &str) -> Result<(), ()> {
     };
 }
 
-
 fn find_available_url<F>(urls: Vec<&str>, resolver: F) -> String
 where
     F: Fn(&str) -> Result<(), ()>,
@@ -47,7 +30,7 @@ where
     let mut cur = idx;
     for _ in 0..urls.len() {
         if resolver(urls[cur]).is_ok() {
-            if cur != idx && cur != IDX.swap(cur,SeqCst){
+            if cur != idx && cur != IDX.swap(cur, SeqCst) {
                 info!("cache index was changed to {}", cur);
             }
             return urls[cur].to_string();
@@ -59,8 +42,10 @@ where
 
 pub fn get_ws_url() -> String {
     let result;
-    if enable_test() {
-        result = WS_URL_DEBUG.to_string();
+    if mock_enabled() {
+        result = WS_URL_MOCK.to_string();
+    } else if let Some(region) = get_register_region() {
+        result = format!("wss://{}.notify.tat-tc.tencent.cn:8186/ws", region);
     } else {
         result = find_available_url(Vec::from(WS_URLS), dns_resolve);
     }
@@ -68,10 +53,21 @@ pub fn get_ws_url() -> String {
     return result;
 }
 
+fn get_register_region() -> Option<String> {
+    if let Some(info) = RegisterInfo::load() {
+        if info.available {
+            return Some(info.region);
+        }
+    }
+    None
+}
+
 pub fn get_invoke_url() -> String {
     let result;
-    if enable_test() {
-        result = INVOKE_API_DEBUG.to_string();
+    if mock_enabled() {
+        result = INVOKE_API_MOCK.to_string();
+    } else if let Some(region) = get_register_region() {
+        result = format!("https://{}.invoke.tat-tc.tencent.cn", region);
     } else {
         result = find_available_url(Vec::from(INVOKE_APIS), dns_resolve);
     }
@@ -79,19 +75,29 @@ pub fn get_invoke_url() -> String {
     return result;
 }
 
-
-pub fn get_meta_url()->String {
-    if enable_test() {
-       return METADATA_API_DEBUG.to_string();
+pub fn get_meta_url() -> String {
+    if mock_enabled() {
+        return METADATA_API_MOCK.to_string();
     } else {
         return METADATA_API.to_string();
     }
 }
 
+pub fn get_register_url(region: &str) -> String {
+    let result;
+    if mock_enabled() {
+        result = INVOKE_API_MOCK.to_string();
+    } else {
+        result = format!("https://{}.invoke.tat-tc.tencent.cn", region);
+    }
+    info!("get_register_url {}", result);
+    return result;
+}
+
 #[cfg(test)]
 mod test {
     use crate::common::consts::{INVOKE_APIS, WS_URLS};
-    use crate::common::envs::find_available_url;
+    use crate::network::urls::find_available_url;
     use std::sync::atomic::AtomicU8;
     use std::sync::atomic::Ordering::SeqCst;
     use std::sync::Arc;

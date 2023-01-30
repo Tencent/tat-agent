@@ -157,7 +157,6 @@ mod tests {
 
     use log::info;
 
-    use crate::common::asserts::GracefulUnwrap;
     use crate::common::logger::init_test_log;
 
     #[test]
@@ -176,7 +175,7 @@ mod tests {
     fn test_several_task() {
         {
             let timer = Timer::get_instance();
-            let mut timer = timer.lock().unwrap_or_exit("");
+            let mut timer = timer.lock().unwrap();
             timer.add_task(3, || {
                 info!("running task of after 3");
             });
@@ -192,7 +191,7 @@ mod tests {
         }
         {
             let timer = Timer::get_instance();
-            let mut timer = timer.lock().unwrap_or_exit("");
+            let mut timer = timer.lock().unwrap();
             info!("timer:{:?}", timer);
             let mut cnt = 0;
             while cnt < 4 {
@@ -211,14 +210,14 @@ mod tests {
     fn test_timer_singleton_inc_cur_id() {
         {
             let timer = Timer::get_instance();
-            let mut timer = timer.lock().unwrap_or_exit("");
+            let mut timer = timer.lock().unwrap();
             let cur = timer.inc_fetch_cur_id();
             assert_eq!(3, cur);
             info!("timer:{:?}", timer);
         }
         {
             let timer = Timer::get_instance();
-            let mut timer = timer.lock().unwrap_or_exit("");
+            let mut timer = timer.lock().unwrap();
             let cur = timer.inc_fetch_cur_id();
             assert_eq!(4, cur);
             info!("timer:{:?}", timer);
@@ -228,7 +227,7 @@ mod tests {
     fn test_timer_task_add_del_schedule() {
         {
             let timer = Timer::get_instance();
-            let mut timer = timer.lock().unwrap_or_exit("");
+            let mut timer = timer.lock().unwrap();
 
             timer.add_task(3, || {
                 info!("task after 3");
@@ -253,7 +252,7 @@ mod tests {
         }
         {
             let timer = Timer::get_instance();
-            let mut timer = timer.lock().unwrap_or_exit("");
+            let mut timer = timer.lock().unwrap();
 
             let tasks = timer.tasks_to_schedule();
             assert_eq!(0, tasks.len());
@@ -261,7 +260,7 @@ mod tests {
         thread::sleep(Duration::new(3, 0));
         {
             let timer = Timer::get_instance();
-            let mut timer = timer.lock().unwrap_or_exit("");
+            let mut timer = timer.lock().unwrap();
 
             let tasks = timer.tasks_to_schedule();
             assert_eq!(1, tasks.len());
