@@ -1,6 +1,6 @@
 [package]
 name = "tat_agent"
-version = "0.1.32"
+version = "0.1.33"
 edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -17,8 +17,8 @@ url = "2.1.1"
 clap = { version = "3.1.6", features = ["derive"] }
 async-attributes = "1.0.0"
 tokio-test = "*"
-log = "0.4.11"
-log4rs = "0.13.0"
+log = "0.4.17"
+log4rs = "1.2.0"
 websocket = "0.26.2"
 libc = "0.2.77"
 rand = "0.7.3"

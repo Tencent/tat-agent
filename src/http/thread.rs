@@ -65,7 +65,7 @@ impl HttpWorker {
                         && resp.invocation_normal_task_set.is_empty()
                         && resp.invocation_cancel_task_set.is_empty()
                     {
-                        tokio::time::delay_for(Duration::from_millis(100)).await;
+                        tokio::time::delay_for(Duration::from_millis(500)).await;
                         continue;
                     }
                     for task in resp.invocation_normal_task_set.iter() {
@@ -200,8 +200,15 @@ impl HttpWorker {
         let finish_time = cmd.finish_time();
         let output_url = cmd.output_url();
         let output_err_info = cmd.output_err_info();
+
         //remove lock, important
         std::mem::drop(cmd);
+
+        //remove script after finished
+        match std::fs::remove_file(&task_file) {
+            Ok(_) => info!("delete {} sucess", task_file),
+            Err(e) => error!("delete {} fail {}", task_file, e),
+        };
 
         self.adapter
             .report_task_finish(

@@ -1,3 +1,4 @@
+use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -81,7 +82,7 @@ impl HttpRequester {
         self
     }
 
-    pub async fn send_request<T: Serialize>(
+    pub async fn send_request<T: Serialize + fmt::Debug>(
         &self,
         method: HttpMethod,
         path: &str,
@@ -133,7 +134,7 @@ impl HttpRequester {
         }
     }
 
-    async fn call_post<T: Serialize>(
+    async fn call_post<T: Serialize + fmt::Debug>(
         &self,
         path: &str,
         body: T,
@@ -141,11 +142,8 @@ impl HttpRequester {
         if self.client.is_some() {
             let cli = self.client.as_ref().unwrap();
             let url = format!("{}{}", self.url, path);
-            info!(
-                "send request to {}, request body: {}",
-                url,
-                to_string(&body).unwrap()
-            );
+            info!("send request to {}, request body: {:?},", url, body);
+
             let time_out = self.time_out.load(Ordering::SeqCst);
             let mut have_retries = 0;
             let max_retries = self.retries.load(Ordering::SeqCst);

@@ -565,13 +565,13 @@ pub fn get_user_token(user_name: &str) -> Result<File, String> {
                 .output()
                 .unwrap();
             let version = String::from_utf8_lossy(&output.stdout);
-            info!("version is {}", version);
             let result = version.contains("2008");
             result
         })
     };
 
     if get_current_user().eq_ignore_ascii_case(user_name) || *is_2008 {
+        info!("use current token user:{} is_2008:{}", user_name, *is_2008);
         let mut token: HANDLE = 0 as HANDLE;
         unsafe {
             if 0 == OpenProcessToken(GetCurrentProcess(), TOKEN_ALL_ACCESS, &mut token) {

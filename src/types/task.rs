@@ -3,6 +3,7 @@ use crate::types::AgentErrorCode;
 use crate::uname::common::UnameExt;
 use crate::uname::Uname;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 #[cfg(windows)]
 use std::io::Write;
 
@@ -117,7 +118,7 @@ pub struct Empty {}
 
 //==============================================================================
 // DescribeTasks API
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "PascalCase")]
 pub struct InvocationNormalTask {
     #[serde(default)]
@@ -140,6 +141,21 @@ pub struct InvocationNormalTask {
     #[serde(alias = "OutputCOSKeyPrefix")]
     #[serde(default)]
     pub cos_bucket_prefix: String,
+}
+
+impl fmt::Debug for InvocationNormalTask {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("InvocationNormalTask")
+            .field("invocation_task_id", &self.invocation_task_id)
+            .field("time_out", &self.time_out)
+            .field("command_len", &self.command.len())
+            .field("command_type", &self.command_type)
+            .field("username", &self.username)
+            .field("working_directory", &self.working_directory)
+            .field("cos_bucket_url", &self.cos_bucket_url)
+            .field("cos_bucket_prefix", &self.cos_bucket_prefix)
+            .finish()
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -222,7 +238,7 @@ pub type ReportTaskFinishResponse = Empty;
 
 //==============================================================================
 // UploadTaskLog API
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "PascalCase")]
 pub struct UploadTaskLogRequest {
     #[serde(default)]
@@ -243,6 +259,17 @@ impl UploadTaskLogRequest {
             output: base64::encode(&output),
             dropped: dropped,
         }
+    }
+}
+
+impl fmt::Debug for UploadTaskLogRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UploadTaskLogRequest")
+            .field("invocation_task_id", &self.invocation_task_id)
+            .field("index", &self.index)
+            .field("output_len", &self.output.len())
+            .field("dropped", &self.dropped)
+            .finish()
     }
 }
 

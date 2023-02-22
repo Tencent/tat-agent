@@ -99,7 +99,7 @@ impl InvokeAPIAdapter {
     }
 
     // parse standard formatted response to custom type
-    async fn send<T: Serialize, R: DeserializeOwned>(
+    async fn send<T: Serialize + std::fmt::Debug, R: DeserializeOwned>(
         &self,
         action: &str,
         request: T,
