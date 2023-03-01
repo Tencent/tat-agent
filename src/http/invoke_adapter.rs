@@ -106,53 +106,46 @@ impl InvokeAPIAdapter {
         retries: u64,
     ) -> Result<R, AgentError<String>> {
         let body = AgentRequest::new(action, request);
-        let reqwest_resp_result = self
+        let reqwest_resp = self
             .requester
             .with_time_out(10)
             .with_retrying(retries)
             .send_request::<AgentRequest<T>>(HttpMethod::POST, "/", Some(body))
-            .await;
-        match reqwest_resp_result {
-            Ok(reqwest_resp) => {
-                let txt = match reqwest_resp.text().await {
-                    Ok(txt) => txt,
-                    Err(e) => {
-                        error!("failed to read response {:?}", e);
-                        return Err(AgentError::new(
-                            AgentErrorCode::ResponseReadError,
-                            &format!("failed to read response {:?}", e),
-                        ));
-                    }
-                };
-                info!("response text {:?}", txt);
-                let raw_resp_result: Result<ServerRawResponse<R>, _> = from_str(&txt);
-                match raw_resp_result {
-                    Ok(raw_resp) => match raw_resp.into_response() {
-                        Ok(resp_content) => Ok(resp_content),
-                        Err(resp_err) => {
-                            let agent_err = AgentError::wrap(
-                                AgentErrorCode::ResponseEmptyError,
-                                "empty response content",
-                                format!("response error {:?}", resp_err),
-                            );
-                            error!("{:?}", agent_err);
-                            return Err(agent_err);
-                        }
-                    },
-                    Err(e) => {
-                        let agent_err = AgentError::new(
-                            AgentErrorCode::JsonDecodeError,
-                            &format!("failed to parse json response {:?}", e),
-                        );
-                        error!("{:?}", agent_err);
-                        return Err(agent_err);
-                    }
-                }
-            }
-            Err(e) => {
+            .await
+            .map_err(|e| {
                 error!("request error: {:?}", e);
-                Err(e)
-            }
-        }
+                e
+            })?;
+
+        let txt = reqwest_resp.text().await.map_err(|e| {
+            error!("failed to read response {:?}", e);
+            AgentError::new(
+                AgentErrorCode::ResponseReadError,
+                &format!("failed to read response {:?}", e),
+            )
+        })?;
+
+        info!("response text {:?}", txt);
+
+        let raw_resp = from_str::<'_, ServerRawResponse<R>>(&txt).map_err(|e| {
+            let agent_err = AgentError::new(
+                AgentErrorCode::JsonDecodeError,
+                &format!("failed to parse json response {:?}", e),
+            );
+            error!("{:?}", agent_err);
+            agent_err
+        })?;
+
+        let resp_content = raw_resp.into_response().map_err(|resp_err| {
+            let agent_err = AgentError::wrap(
+                AgentErrorCode::ResponseEmptyError,
+                "empty response content",
+                format!("response error {:?}", resp_err),
+            );
+            error!("{:?}", agent_err);
+            agent_err
+        })?;
+
+        Ok(resp_content)
     }
 }

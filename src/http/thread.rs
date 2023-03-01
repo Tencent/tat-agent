@@ -104,7 +104,7 @@ impl HttpWorker {
         let mut finished = cmd_arc.lock().await.is_finished();
         loop {
             // total sleep max 20 * 50 ms, i.e. 1s
-            for _n in 0..20 {
+            for _ in 0..20 {
                 if finished {
                     break;
                 } else {
@@ -215,14 +215,16 @@ impl HttpWorker {
                 &output_err_info,
             )
             .await
-            .map(|_| info!("task_execute report_task_finish {} success", task_id))
-            .map_err(|e| {
-                error!(
-                    "report task {} finish error: {:?}",
-                    &task.invocation_task_id, e
-                );
-            })
-            .ok();
+            .map_or_else(
+                |e| {
+                    error!(
+                        "report task {} finish error: {:?}",
+                        &task.invocation_task_id, e
+                    )
+                },
+                |_| info!("task_execute report_task_finish {} success", task_id),
+            );
+
         // process finish ,remove
         self.running_tasks
             .lock()
@@ -241,14 +243,10 @@ impl HttpWorker {
             //drop lock
             std::mem::drop(tasks);
             let cmd = cmd_arc.lock().await;
-            cmd.cancel()
-                .map(|_| {
-                    info!("cancel task {} success", &cancel_task_id);
-                })
-                .map_err(|e| {
-                    error!("task {} cancel fail, error: {}", &cancel_task_id, e);
-                })
-                .ok();
+            cmd.cancel().map_or_else(
+                |e| error!("task {} cancel fail, error: {}", &cancel_task_id, e),
+                |_| info!("cancel task {} success", &cancel_task_id),
+            );
             return;
         } else {
             info!(
@@ -274,36 +272,28 @@ impl HttpWorker {
                 "",
             )
             .await
-            .map(|_| info!("task_cancel report_task_finish {} success", cancel_task_id))
-            .map_err(|e| {
-                error!("report task {} terminate error: {:?}", cancel_task_id, e);
-            })
-            .ok();
+            .map_or_else(
+                |e| error!("report task {} terminate error: {:?}", cancel_task_id, e),
+                |_| info!("task_cancel report_task_finish {} success", cancel_task_id),
+            );
     }
 
     async fn report_task_start(&self, task_id: &str, timestamp: u64) -> bool {
-        return match self.adapter.report_task_start(task_id, timestamp).await {
-            Err(e) => {
-                error!("report start error: {:?}", e);
-                false
-            }
-            Ok(_) => true,
-        };
+        self.adapter
+            .report_task_start(task_id, timestamp)
+            .await
+            .map_err(|e| error!("report start error: {:?}", e))
+            .is_ok()
     }
 
     async fn upload_task_log(&self, task_id: &str, idx: u32, out: Vec<u8>, dropped: u64) {
-        match self
-            .adapter
+        self.adapter
             .upload_task_log(task_id, idx, out, dropped)
             .await
-        {
-            Ok(_) => {
-                info!("success upload task {} log index: {}", task_id, idx);
-            }
-            Err(e) => {
-                error!("fail to upload task {} log: {:?}", task_id, e);
-            }
-        }
+            .map_or_else(
+                |e| error!("fail to upload task {} log: {:?}", task_id, e),
+                |_| info!("success upload task {} log index: {}", task_id, idx),
+            )
     }
 
     async fn create_proc(
@@ -338,7 +328,7 @@ impl HttpWorker {
         } else {
             &task.cos_bucket_prefix
         };
-        let proc_result = proc::new(
+        let mut proc_res = proc::new(
             task_file,
             &task.username,
             &task.command_type,
@@ -349,16 +339,13 @@ impl HttpWorker {
             &task.cos_bucket_url,
             cos_bucket_prefix,
             &task_id,
-        );
-        if proc_result.is_err() {
-            return None;
-        }
-        let mut proc_res = proc_result.unwrap();
+        )
+        .ok()?;
+
         proc_res
             .run()
             .await
-            .map_err(|e| error!("start process fail {}", e))
-            .ok();
+            .map_or_else(|e| error!("start process fail {}", e), |_| ());
         let cmd_arc = Arc::new(Mutex::new(proc_res));
 
         tasks.insert(task_id, cmd_arc.clone());

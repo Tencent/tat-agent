@@ -114,7 +114,10 @@ fn check_ontime_kick(instant_kick: &mut SystemTime, dispatcher: Arc<EventBus>) {
     if !check_interval_elapsed(instant_kick, ONTIME_KICK_INTERVAL) {
         return;
     }
-    dispatcher.dispatch(WS_MSG_TYPE_KICK, ONTIME_KICK_SOURCE.to_string().into_bytes());
+    dispatcher.dispatch(
+        WS_MSG_TYPE_KICK,
+        ONTIME_KICK_SOURCE.to_string().into_bytes(),
+    );
 }
 
 fn check_ontime_update(

@@ -25,53 +25,46 @@ impl MetadataAPIAdapter {
     }
 
     pub async fn instance_id(&self) -> String {
-        let res = self
-            .requester
-            .with_time_out(3)
-            .with_retrying(2)
-            .send_request::<String>(HttpMethod::GET, INSTANCE_ID_URI, None)
-            .await;
-        match res {
-            Ok(resp) => match resp.text().await {
-                Ok(txt) => {
-                    info!("response text {:?}", txt);
-                    txt
-                }
-                Err(e) => {
-                    error!("failed to read response {:?}", e);
-                    format!("")
-                }
-            },
-            Err(e) => {
-                error!("request error: {:?}", e);
-                format!("")
-            }
+        async fn get_instance_id(self_0: &MetadataAPIAdapter) -> Result<String, ()> {
+            let resp = self_0
+                .requester
+                .with_time_out(3)
+                .with_retrying(2)
+                .send_request::<String>(HttpMethod::GET, INSTANCE_ID_URI, None)
+                .await
+                .map_err(|e| error!("request error: {:?}", e))?;
+
+            let txt = resp
+                .text()
+                .await
+                .map_err(|e| error!("failed to read response {:?}", e))?;
+
+            info!("response text {:?}", txt);
+            Ok(txt)
         }
+
+        get_instance_id(self).await.unwrap_or_default()
     }
 
     async fn get_role_name(&self) -> Result<String, String> {
-        let res = self
+        let resp = self
             .requester
             .with_time_out(3)
             .with_retrying(2)
             .send_request::<String>(HttpMethod::GET, CREDENTIAL_URI, None)
-            .await;
-        match res {
-            Ok(resp) => match resp.text().await {
-                Ok(txt) => {
-                    info!("response text {:?}", txt);
-                    Ok(txt)
-                }
-                Err(e) => {
-                    error!("failed to read response {:?}", e);
-                    Err(format!("Get CAM role of instance failed."))
-                }
-            },
-            Err(e) => {
+            .await
+            .map_err(|e| {
                 error!("request error: {:?}", e);
-                Err(format!("Get CAM role of instance failed."))
-            }
-        }
+                format!("Get CAM role of instance failed.")
+            })?;
+
+        let txt = resp.text().await.map_err(|e| {
+            error!("failed to read response {:?}", e);
+            format!("Get CAM role of instance failed.")
+        })?;
+
+        info!("response text {:?}", txt);
+        Ok(txt)
     }
 
     async fn get_tmp_credential(
@@ -79,36 +72,27 @@ impl MetadataAPIAdapter {
         role_name: String,
     ) -> Result<GetTmpCredentialResponse, String> {
         let url = format!("{}/{}", CREDENTIAL_URI, role_name);
-        let res = self
+        let resp = self
             .requester
             .with_time_out(3)
             .with_retrying(2)
             .send_request::<String>(HttpMethod::GET, &*url, None)
-            .await;
-        match res {
-            Ok(resp) => {
-                // let txt = resp.text().await;
-                match resp.text().await {
-                    Ok(txt) => {
-                        let raw_resp_result: Result<GetTmpCredentialResponse, _> = from_str(&txt);
-                        match raw_resp_result {
-                            Ok(raw_resp) => Ok(raw_resp),
-                            Err(e) => {
-                                error!("failed to parse json response {:?}", e);
-                                Err(format!("Get credential of CAM role failed."))
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        error!("failed to read response {:?}", e);
-                        Err(format!("Get credential of CAM role failed."))
-                    }
-                }
-            }
-            Err(e) => {
+            .await
+            .map_err(|e| {
                 error!("request error: {:?}", e);
-                Err(format!("Get credential of CAM role failed."))
-            }
-        }
+                format!("Get credential of CAM role failed.")
+            })?;
+
+        let txt = resp.text().await.map_err(|e| {
+            error!("failed to read response {:?}", e);
+            format!("Get credential of CAM role failed.")
+        })?;
+
+        let raw_resp = from_str::<'_, GetTmpCredentialResponse>(&txt).map_err(|e| {
+            error!("failed to parse json response {:?}", e);
+            format!("Get credential of CAM role failed.")
+        })?;
+
+        Ok(raw_resp)
     }
 }

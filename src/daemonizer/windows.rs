@@ -77,12 +77,10 @@ fn try_start_service(entry: fn()) {
             ptr::null(),
         ];
 
-        match StartServiceCtrlDispatcherW(*service_table.as_ptr()) {
-            0 => {
-                TAT_ENTRY();
-            }
-            _ => {}
+        if StartServiceCtrlDispatcherW(*service_table.as_ptr()) == 0 {
+            TAT_ENTRY();
         };
+
         return;
     }
 }
@@ -99,8 +97,7 @@ fn clean_update_files() {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-            .map_err(|_| error!("clean_update_files fail"))
-            .ok();
+            .map_or_else(|_| error!("clean_update_files fail"), |_| ());
     })
 }
 
@@ -111,11 +108,9 @@ where
     let result: T;
     let mut old: PVOID = NULL;
     unsafe {
+        result = func();
         if Wow64DisableWow64FsRedirection(&mut old) != 0 {
-            result = func();
             Wow64RevertWow64FsRedirection(old);
-        } else {
-            result = func();
         };
     }
     result

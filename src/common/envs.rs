@@ -27,7 +27,6 @@ pub fn test_vip() -> String {
     return env::var("MOCK_VIP").unwrap_or("192.168.0.1".to_string());
 }
 
-
 fn dns_resolve(url: &str) -> Result<(), ()> {
     let url = Url::parse(url).unwrap();
     let host = url.host().unwrap().to_string();
@@ -36,7 +35,6 @@ fn dns_resolve(url: &str) -> Result<(), ()> {
         Err(_) => Err(()),
     };
 }
-
 
 fn find_available_url<F>(urls: Vec<&str>, resolver: F) -> String
 where
@@ -47,7 +45,7 @@ where
     let mut cur = idx;
     for _ in 0..urls.len() {
         if resolver(urls[cur]).is_ok() {
-            if cur != idx && cur != IDX.swap(cur,SeqCst){
+            if cur != idx && cur != IDX.swap(cur, SeqCst) {
                 info!("cache index was changed to {}", cur);
             }
             return urls[cur].to_string();
@@ -58,33 +56,30 @@ where
 }
 
 pub fn get_ws_url() -> String {
-    let result;
-    if enable_test() {
-        result = WS_URL_DEBUG.to_string();
+    let result = if enable_test() {
+        WS_URL_DEBUG.to_string()
     } else {
-        result = find_available_url(Vec::from(WS_URLS), dns_resolve);
-    }
+        find_available_url(Vec::from(WS_URLS), dns_resolve)
+    };
     info!("get_ws_url {}", result);
-    return result;
+    result
 }
 
 pub fn get_invoke_url() -> String {
-    let result;
-    if enable_test() {
-        result = INVOKE_API_DEBUG.to_string();
+    let result = if enable_test() {
+        INVOKE_API_DEBUG.to_string()
     } else {
-        result = find_available_url(Vec::from(INVOKE_APIS), dns_resolve);
-    }
+        find_available_url(Vec::from(INVOKE_APIS), dns_resolve)
+    };
     info!("get_invoke_url {}", result);
-    return result;
+    result
 }
 
-
-pub fn get_meta_url()->String {
+pub fn get_meta_url() -> String {
     if enable_test() {
-       return METADATA_API_DEBUG.to_string();
+        METADATA_API_DEBUG.to_string()
     } else {
-        return METADATA_API.to_string();
+        METADATA_API.to_string()
     }
 }
 
