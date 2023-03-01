@@ -88,32 +88,72 @@ impl HttpRequester {
         body: Option<T>,
     ) -> Result<Response, AgentError<String>> {
         match method {
-            HttpMethod::POST => match body {
-                Some(b) => self.call_post(path, b).await,
-                None => Err(AgentError::new(
-                    AgentErrorCode::RequestEmptyError,
-                    "empty request body",
-                )),
-            },
+            HttpMethod::POST if body.is_none() => Err(AgentError::new(
+                AgentErrorCode::RequestEmptyError,
+                "empty request body",
+            )),
+            HttpMethod::POST => self.call_post(path, body.unwrap()).await,
             HttpMethod::GET => self.call_get(path).await,
         }
     }
 
     async fn call_get(&self, path: &str) -> Result<Response, AgentError<String>> {
-        if self.client.is_some() {
-            let cli = self.client.as_ref().unwrap();
-            let url = format!("{}{}", self.url, path);
-            info!("send request to :{}", url);
-            let time_out = self.time_out.load(Ordering::SeqCst);
+        let cli = self.client.as_ref().ok_or(AgentError::new(
+            AgentErrorCode::ClientNotInitialized,
+            "empty client",
+        ))?;
+
+        let url = format!("{}{}", self.url, path);
+        info!("send request to :{}", url);
+        let time_out = self.time_out.load(Ordering::SeqCst);
+        let request_builder = cli
+            .get(&url)
+            .header(header::CONNECTION, "close")
+            .timeout(std::time::Duration::from_secs(time_out));
+
+        let resp = request_builder.send().await.map_err(|err| {
+            let agent_err = AgentError::wrap(
+                AgentErrorCode::ResponseEmptyError,
+                &format!("request error: {}", err),
+                format!("{:?}", err),
+            );
+            error!("{:?}", agent_err);
+            agent_err
+        })?;
+
+        debug!("recv response: {:?}", resp);
+        Ok(resp)
+    }
+
+    async fn call_post<T: Serialize>(
+        &self,
+        path: &str,
+        body: T,
+    ) -> Result<Response, AgentError<String>> {
+        let cli = self.client.as_ref().ok_or(AgentError::new(
+            AgentErrorCode::ClientNotInitialized,
+            "empty client",
+        ))?;
+
+        let url = format!("{}{}", self.url, path);
+        info!(
+            "send request to {}, request body: {}",
+            url,
+            to_string(&body).unwrap()
+        );
+        let time_out = self.time_out.load(Ordering::SeqCst);
+        let max_retries = self.retries.load(Ordering::SeqCst);
+
+        for have_retries in 1..=max_retries {
             let request_builder = cli
-                .get(&url)
+                .post(&url)
                 .header(header::CONNECTION, "close")
                 .timeout(std::time::Duration::from_secs(time_out));
-            let resp_res = request_builder.send().await;
+            let resp_res = request_builder.body(to_string(&body).unwrap()).send().await;
             match resp_res {
                 Ok(resp) => {
                     debug!("recv response: {:?}", resp);
-                    Ok(resp)
+                    return Ok(resp);
                 }
                 Err(err) => {
                     let agent_err = AgentError::wrap(
@@ -122,74 +162,19 @@ impl HttpRequester {
                         format!("{:?}", err),
                     );
                     error!("{:?}", agent_err);
-                    Err(agent_err)
                 }
-            }
-        } else {
-            Err(AgentError::new(
-                AgentErrorCode::ClientNotInitialized,
-                "empty client",
-            ))
-        }
-    }
+            };
 
-    async fn call_post<T: Serialize>(
-        &self,
-        path: &str,
-        body: T,
-    ) -> Result<Response, AgentError<String>> {
-        if self.client.is_some() {
-            let cli = self.client.as_ref().unwrap();
-            let url = format!("{}{}", self.url, path);
-            info!(
-                "send request to {}, request body: {}",
-                url,
-                to_string(&body).unwrap()
+            debug!(
+                "have tried for {} times, max retry {} times",
+                have_retries, max_retries
             );
-            let time_out = self.time_out.load(Ordering::SeqCst);
-            let mut have_retries = 0;
-            let max_retries = self.retries.load(Ordering::SeqCst);
-            while have_retries < max_retries {
-                have_retries += 1;
-                let request_builder = cli
-                    .post(&url)
-                    .header(header::CONNECTION, "close")
-                    .timeout(std::time::Duration::from_secs(time_out));
-                let resp_res = request_builder.body(to_string(&body).unwrap()).send().await;
-                let res = match resp_res {
-                    Ok(resp) => {
-                        debug!("recv response: {:?}", resp);
-                        Ok(resp)
-                    }
-                    Err(err) => {
-                        let agent_err = AgentError::wrap(
-                            AgentErrorCode::ResponseEmptyError,
-                            &format!("request error: {}", err),
-                            format!("{:?}", err),
-                        );
-                        error!("{:?}", agent_err);
-                        Err(agent_err)
-                    }
-                };
-                if res.is_ok() {
-                    return res;
-                } else {
-                    debug!(
-                        "have tried for {} times, max retry {} times",
-                        have_retries, max_retries
-                    );
-                    task::sleep(Duration::from_secs(HTTP_REQUEST_RETRY_INTERVAL)).await;
-                }
-            }
-            return Err(AgentError::new(
-                AgentErrorCode::MaxRetryFailures,
-                "retry times exceeded",
-            ));
-        } else {
-            return Err(AgentError::new(
-                AgentErrorCode::ClientNotInitialized,
-                "empty client",
-            ));
+            task::sleep(Duration::from_secs(HTTP_REQUEST_RETRY_INTERVAL)).await;
         }
+
+        Err(AgentError::new(
+            AgentErrorCode::MaxRetryFailures,
+            "retry times exceeded",
+        ))
     }
 }

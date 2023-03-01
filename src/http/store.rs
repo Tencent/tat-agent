@@ -29,12 +29,11 @@ pub struct TaskFileStore {
 
 impl TaskFileStore {
     pub fn new() -> TaskFileStore {
-        let t = TaskFileStore {
+        TaskFileStore {
             store_path: Path::new(consts::TASK_STORE_PATH).to_path_buf(),
             prefix: String::from(consts::TASK_STORE_PREFIX),
             log_path: Path::new(consts::TASK_LOG_PATH).to_path_buf(),
-        };
-        t
+        }
     }
 
     pub fn get_store_path(&self) -> PathBuf {
@@ -46,12 +45,12 @@ impl TaskFileStore {
     }
 
     fn get_suffix(&self, command_type: &String) -> &str {
-        return match command_type.as_str() {
+        match command_type.as_str() {
             consts::CMD_TYPE_SHELL => consts::SUFFIX_SHELL,
             consts::CMD_TYPE_BAT => consts::SUFFIX_BAT,
             consts::CMD_TYPE_POWERSHELL => consts::SUFFIX_PS1,
             _ => consts::SUFFIX_SHELL,
-        };
+        }
     }
 
     fn gen_task_file_path(&self, t: &InvocationNormalTask) -> PathBuf {
@@ -87,48 +86,37 @@ impl TaskFileStore {
         let file_path = Path::new(path);
         if file_path.exists() {
             if ignore_exists {
-                match remove_file(path) {
-                    Err(e) => {
-                        info!("failed to remove exist file {}: {}", path, e);
-                        return Err(format!("failed to remove exist file {}: {}", path, e));
-                    }
-                    _ => {}
-                }
+                remove_file(path).map_err(|e| {
+                    info!("failed to remove exist file {}: {}", path, e);
+                    format!("failed to remove exist file {}: {}", path, e)
+                })?;
             } else {
                 return Err(format!("file {} already exists", path));
             }
         }
-        let dir = match Path::parent(file_path) {
-            Some(p) => p,
-            None => return Err(format!("cannot find parent directory for {:?}", file_path)),
-        };
-        let ret = match File::create(path) {
-            Err(why) => {
-                info!(
-                    "couldn't create file {}, try to create directory {:?}",
-                    why, dir
-                );
-                match create_dir_all(dir) {
-                    Err(why) => Err(format!("couldn't create directory: {}", why)),
-                    Ok(_) => match File::create(path) {
-                        Err(why) => Err(format!("couldn't create file: {}", why)),
-                        Ok(file) => Ok(file),
-                    },
-                }
-            }
-            Ok(file) => Ok(file),
-        };
+
+        let ret = File::create(path).or_else(|why| {
+            let dir = Path::parent(file_path)
+                .ok_or(format!("cannot find parent directory for {:?}", file_path))?;
+            info!(
+                "couldn't create file {}, try to create directory {:?}",
+                why, dir
+            );
+            create_dir_all(dir)
+                .map_err(|why| format!("couldn't create directory: {}", why))
+                .and_then(|_| {
+                    File::create(path).map_err(|why| format!("couldn't create file: {}", why))
+                })
+        });
 
         #[cfg(unix)]
         if executable {
             // set permissions for path recursively, to make task-xxx.sh available for non-root user.
-            match self.set_permissions_recursively(path.as_ref()) {
-                Err(e) => {
+            self.set_permissions_recursively(path.as_ref())
+                .map_err(|e| {
                     info!("failed to chmod path recursively {}: {}", path, e);
-                    return Err(format!("failed to chmod path recursively {}: {}", path, e));
-                }
-                _ => {}
-            };
+                    format!("failed to chmod path recursively {}: {}", path, e);
+                })?;
         }
 
         ret
@@ -138,18 +126,18 @@ impl TaskFileStore {
     fn set_permissions_recursively(&self, path: &Path) -> io::Result<()> {
         let mut path = path.clone();
         while path.to_str() != Some("/tmp") {
-            match set_permissions(
+            set_permissions(
                 path,
                 Permissions::from_mode(consts::FILE_EXECUTE_PERMISSION_MODE),
-            ) {
-                Err(e) => {
-                    info!("failed to chmod path {:?}: {}", path, e);
-                    return Err(e);
-                }
-                _ => match path.parent() {
-                    Some(parent) => path = parent,
-                    None => Err("").unwrap_or_exit("should never come here"),
-                },
+            )
+            .map_err(|e| {
+                info!("failed to chmod path {:?}: {}", path, e);
+                e
+            })?;
+
+            match path.parent() {
+                Some(parent) => path = parent,
+                None => Err("").unwrap_or_exit("should never come here"),
             };
         }
         Ok(())
@@ -172,11 +160,8 @@ impl TaskFileStore {
             #[cfg(unix)]
             true,
         )?;
-        let s = t.decode_command()?;
-        let res = file.write_all(&s);
-        if res.is_err() {
-            return Err("fail to store command in task file".to_string());
-        }
+        file.write_all(&t.decode_command()?)
+            .map_err(|_| "fail to store command in task file".to_string())?;
 
         Ok((task_file_path, task_log_path))
     }

@@ -48,13 +48,7 @@ impl Timer {
     }
 
     fn inc_fetch_cur_id(&mut self) -> u64 {
-        self.cur_id = {
-            if self.cur_id == std::u64::MAX {
-                0
-            } else {
-                self.cur_id + 1
-            }
-        };
+        self.cur_id = self.cur_id.wrapping_add(1);
         self.cur_id
     }
 
@@ -89,14 +83,13 @@ impl Timer {
     // Delete a pre-added task, if no need to run it.
     // Return whether the task existed && removed
     pub fn del_task(&mut self, key: u128, task_id: u64) -> bool {
-        let item = self.task_map.get(&key);
-        if let Some(task) = item {
-            if task_id == task.task_id() {
+        match self.task_map.get(&key) {
+            Some(task) if task_id == task.task_id() => {
                 self.task_map.remove(&key);
-                return true;
+                true
             }
+            _ => false,
         }
-        false
     }
 
     // Move the arrived timer task out to run at somewhere else.

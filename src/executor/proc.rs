@@ -284,10 +284,7 @@ impl BaseCommand {
     }
 
     pub fn is_started(&self) -> bool {
-        return match *self.pid.lock().unwrap() {
-            None => false,
-            _ => true,
-        };
+        self.pid.lock().unwrap().is_some()
     }
 
     pub fn is_finished(&self) -> bool {
@@ -296,17 +293,14 @@ impl BaseCommand {
 
     pub fn exit_code(&self) -> i32 {
         let pid = *self.pid.lock().unwrap();
-        if let None = pid {
+        if pid.is_none() {
             return 0;
         }
         let exit_code = self
             .exit_code
             .lock()
             .unwrap_or_exit("exit_code get lock fail");
-        match *exit_code {
-            Some(code) => code,
-            None => -1,
-        }
+        exit_code.unwrap_or(-1)
     }
 
     pub fn cmd_path(&self) -> &String {
@@ -314,11 +308,7 @@ impl BaseCommand {
     }
 
     pub fn pid(&self) -> u32 {
-        let pid = *self.pid.lock().unwrap();
-        match pid {
-            Some(pid) => pid,
-            None => 0,
-        }
+        self.pid.lock().unwrap().unwrap_or(0)
     }
 
     pub fn is_timeout(&self) -> bool {
@@ -327,7 +317,7 @@ impl BaseCommand {
 
     pub fn finish_result(&self) -> String {
         let pid = *self.pid.lock().unwrap();
-        if let None = pid {
+        if pid.is_none() {
             return FINISH_RESULT_START_FAILED.to_string();
         }
         if self.is_timeout() {
@@ -346,8 +336,7 @@ impl BaseCommand {
     }
 
     pub fn err_info(&self) -> String {
-        let err_info = self.err_info.lock().unwrap();
-        return String::from(err_info.as_str());
+        self.err_info.lock().unwrap().to_string()
     }
 
     pub fn finish_time(&self) -> u64 {
@@ -355,13 +344,11 @@ impl BaseCommand {
     }
 
     pub fn output_url(&self) -> String {
-        let output_url = self.output_url.lock().unwrap();
-        return String::from(output_url.as_str());
+        self.output_url.lock().unwrap().to_string()
     }
 
     pub fn output_err_info(&self) -> String {
-        let err_info = self.output_err_info.lock().unwrap();
-        return String::from(err_info.as_str());
+        self.output_err_info.lock().unwrap().to_string()
     }
 
     pub fn add_timeout_timer(&self) {
@@ -432,22 +419,21 @@ impl BaseCommand {
     }
 
     pub fn cancel(&self) -> Result<(), String> {
-        let pid = *self.pid.lock().unwrap();
-        match pid {
-            Some(pid) => {
-                let ret =
-                    self.killed
-                        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst);
-                if ret.is_err() {
-                    info!("pid:{} already killed, ignore cancel request", pid);
-                } else {
+        let pid = self
+            .pid
+            .lock()
+            .unwrap()
+            .ok_or("Process not running, no pid to kill".to_string())?;
+        self.killed
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .map_or_else(
+                |_| info!("pid:{} already killed, ignore cancel request", pid),
+                |_| {
                     BaseCommand::kill_process_group(pid);
                     info!("pid:{} killed because of cancel", pid);
-                }
-                Ok(())
-            }
-            None => Err("Process not running, no pid to kill".to_string()),
-        }
+                },
+            );
+        Ok(())
     }
 
     fn store_path_check(&self) -> Result<(), String> {
@@ -464,14 +450,14 @@ impl BaseCommand {
         let parent = Path::new(self.log_file_path.as_str()).parent();
         match parent {
             Some(parent) => {
-                if let Err(e) = create_dir_all(parent) {
-                    return Err(format!(
+                create_dir_all(parent).map_err(|e| {
+                    format!(
                         "fail to open task log file {}: create parent dir fail {}: {:?}",
                         self.log_file_path,
                         parent.display(),
                         e
-                    ));
-                }
+                    )
+                })?;
             }
             None => {
                 warn!(
@@ -481,17 +467,11 @@ impl BaseCommand {
             }
         }
 
-        let res = OpenOptions::new()
+        OpenOptions::new()
             .create(true)
             .write(true)
-            .open(self.log_file_path.clone());
-        match res {
-            Ok(file) => Ok(file),
-            Err(e) => Err(format!(
-                "fail to open task log file {}: {:?}",
-                self.log_file_path, e
-            )),
-        }
+            .open(self.log_file_path.clone())
+            .map_err(|e| format!("fail to open task log file {}: {:?}", self.log_file_path, e))
     }
 
     pub async fn finish_logging(&self) {
