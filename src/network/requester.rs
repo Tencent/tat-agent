@@ -1,21 +1,23 @@
-use crate::common::consts::{HTTP_REQUEST_TIME_OUT};
 use crate::network::types::{AgentError, AgentErrorCode, HttpMethod};
-use log::{debug, error, info};
-use once_cell::sync::Lazy;
-use reqwest::header::{HeaderMap, HeaderValue};
-use reqwest::{header, Client, ClientBuilder, Response};
-use serde::Serialize;
-use serde_json::to_string;
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+
+use log::{debug, error, info};
+use once_cell::sync::Lazy;
+use reqwest::header::{self, HeaderMap, HeaderValue};
+use reqwest::{Client, ClientBuilder, Response};
+use serde::Serialize;
+use serde_json::to_string;
+
+const HTTP_REQUEST_TIME_OUT: u64 = 5;
 
 static HTTP_CLIENT: Lazy<Arc<Client>> = Lazy::new(|| {
     Arc::new({
         ClientBuilder::new()
             .pool_max_idle_per_host(1)
             .build()
-            .expect("fail to create http client")
+            .expect("failed to create http client")
     })
 });
 
@@ -48,15 +50,13 @@ impl HttpRequester {
             Some(headers) => headers,
             None => HeaderMap::new(),
         };
-        match method {
-            HttpMethod::POST => match body {
-                Some(b) => self.call_post(path, b, extra_headers).await,
-                None => Err(AgentError::new(
-                    AgentErrorCode::RequestEmptyError,
-                    "empty request body",
-                )),
-            },
-            HttpMethod::GET => self.call_get(path, extra_headers).await,
+        match (method, body) {
+            (HttpMethod::POST, Some(b)) => self.call_post(path, b, extra_headers).await,
+            (HttpMethod::POST, None) => Err(AgentError::new(
+                AgentErrorCode::RequestEmptyError,
+                "empty request body",
+            )),
+            (HttpMethod::GET, _) => self.call_get(path, extra_headers).await,
         }
     }
 
@@ -66,7 +66,7 @@ impl HttpRequester {
         extra_headers: HeaderMap<HeaderValue>,
     ) -> Result<Response, AgentError<String>> {
         let url = format!("{}{}", self.url, path);
-        info!("send request to :{}", url);
+        info!("send request to: {}", url);
         let time_out = self.time_out.load(Ordering::SeqCst);
         let request_builder = HTTP_CLIENT
             .get(&url)
@@ -98,7 +98,7 @@ impl HttpRequester {
         extra_headers: HeaderMap<HeaderValue>,
     ) -> Result<Response, AgentError<String>> {
         let url = format!("{}{}", self.url, path);
-        info!("send request to {}, request body: {:?},", url, body);
+        info!("send request to {}, request body: {:?}", url, body);
 
         let time_out = self.time_out.load(Ordering::SeqCst);
         let request_builder = HTTP_CLIENT

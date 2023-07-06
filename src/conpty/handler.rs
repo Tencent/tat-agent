@@ -1,92 +1,72 @@
+use super::{gather::PtyGather, pty::PtySession};
+use super::{PtyBase, WS_MSG_TYPE_PTY_ERROR, WS_TXT_MSG};
+use crate::common::utils::get_now_secs;
+use crate::network::types::ws_msg::{PtyBinBase, PtyBinErrMsg, PtyError, WsMsg};
+use std::io::Cursor;
+use std::sync::{atomic::Ordering, Arc};
+
 use bson::Document;
 use log::error;
 use serde::{de::DeserializeOwned, Serialize};
-use std::{
-    io::Cursor,
-    sync::{atomic::Ordering, Arc},
-};
-
-use crate::{
-    common::{
-        consts::{WS_MSG_TYPE_PTY_ERROR, WS_TXT_MSG},
-        utils::get_now_secs,
-    },
-    network::types::ws_msg::{PtyBinBase, PtyBinErrMsg, PtyError, WsMsg},
-};
-
-use super::{gather::PtyGather, pty::PtySession, PtyBase};
 
 pub trait Handler {
     fn process(self);
 }
 
 #[derive(Clone)]
-pub(crate) struct BsonHandler<T> {
-    pub(crate) associate_pty: Arc<dyn PtyBase + Send + Sync>,
-    pub(crate) request: Arc<PtyBinBase<T>>,
-    pub(crate) op_type: String,
+pub struct BsonHandler<T> {
+    pub associate_pty: Arc<dyn PtyBase + Send + Sync>,
+    pub request: Arc<PtyBinBase<T>>,
+    pub op_type: String,
 }
 
 impl<T> BsonHandler<T>
 where
     T: DeserializeOwned + Default + Sync + Send + 'static,
 {
-    pub(crate) fn dispatch(msg: Vec<u8>)
+    pub fn dispatch(msg: Vec<u8>)
     where
         BsonHandler<T>: Handler,
     {
-        match Document::from_reader(&mut Cursor::new(&msg[..])) {
-            Ok(doc) => {
-                let msg = match bson::from_document::<WsMsg<PtyBinBase<T>>>(doc) {
-                    Ok(msg) => msg,
-                    Err(e) => {
-                        log::error!("dispatch_operation from_document fail {}", e.to_string());
-                        return;
-                    }
-                };
+        let Ok(doc) = Document::from_reader(&mut Cursor::new(&msg[..]))
+            .map_err(|e| error!("dispatch_operation from_reader failed: {}", e ))
+        else { return; };
 
-                let req = match msg.data {
-                    Some(req) => req,
-                    None => {
-                        log::error!("{} msg.data is None", msg.r#type);
-                        return;
-                    }
-                };
+        let msg = match bson::from_document::<WsMsg<PtyBinBase<T>>>(doc) {
+            Ok(msg) => msg,
+            Err(e) => return error!("dispatch_operation from_document failed: {}", e),
+        };
 
-                let op = msg.r#type.to_string();
-                if let Some(session) = PtyGather::get_session(&req.session_id) {
-                    //update last input time
-                    session.last_time.store(get_now_secs(), Ordering::SeqCst);
-                    let handle = BsonHandler::<T> {
-                        associate_pty: session.pty_base.clone(),
-                        request: Arc::new(req),
-                        op_type: op,
-                    };
-                    handle.process();
-                } else {
-                    error!("Session {} not find", req.session_id);
-                    let session_id = req.session_id;
-                    let custom = req.custom_data;
-                    let msg = PtyBinBase::<PtyBinErrMsg> {
-                        session_id: session_id.clone(),
-                        custom_data: custom.clone(),
-                        data: PtyBinErrMsg {
-                            error: "Session not find".to_owned(),
-                        },
-                    };
-                    return PtyGather::reply_bson_msg(&op, msg);
+        let req = match msg.data {
+            Some(req) => req,
+            None => return error!("{} msg.data is None", msg.r#type),
+        };
+
+        let op = msg.r#type.to_string();
+        match PtyGather::get_session(&req.session_id) {
+            Some(session) => {
+                //update last input time
+                session.last_time.store(get_now_secs(), Ordering::SeqCst);
+                let handle = BsonHandler::<T> {
+                    associate_pty: session.pty_base.clone(),
+                    request: Arc::new(req),
+                    op_type: op,
                 };
+                handle.process();
             }
-            Err(e) => {
-                log::error!("dispatch_operation from_reader fail {}", e.to_string())
+            None => {
+                error!("Session {} not found", req.session_id);
+                let msg = PtyBinBase::<PtyBinErrMsg> {
+                    session_id: req.session_id,
+                    custom_data: req.custom_data,
+                    data: PtyBinErrMsg::new("Session not found"),
+                };
+                return PtyGather::reply_bson_msg(&op, msg);
             }
         };
     }
 
-    pub(crate) fn reply<M>(&self, msg: M)
-    where
-        M: Serialize,
-    {
+    pub fn reply<M: Serialize>(&self, msg: M) {
         let session_id = self.request.session_id.clone();
         let custom = self.request.custom_data.clone();
         let msg = PtyBinBase::<M> {
@@ -99,51 +79,43 @@ where
 }
 
 #[derive(Clone)]
-pub(crate) struct JsonHandler<T> {
-    pub(crate) associate_session: Option<Arc<PtySession>>,
-    pub(crate) request: T,
-    pub(crate) _op_type: String,
+pub struct JsonHandler<T> {
+    pub associate_session: Option<Arc<PtySession>>,
+    pub request: T,
+    pub _op_type: String,
 }
 
 impl<T> JsonHandler<T>
 where
     T: DeserializeOwned + Default + Sync + Send + 'static,
 {
-    pub(crate) fn dispatch(msg: Vec<u8>, session_required: bool)
+    pub fn dispatch(msg: Vec<u8>, session_required: bool)
     where
         JsonHandler<T>: Handler,
     {
         let msg = String::from_utf8_lossy(&msg[..]);
-        let get_session_id = |msg: &str| -> Option<String> {
-            Some(
-                serde_json::from_str::<serde_json::Value>(msg)
-                    .ok()?
-                    .get("Data")?
-                    .get("SessionId")?
-                    .as_str()?
-                    .to_owned(),
-            )
+        let get_session_id = |msg: &str| {
+            let id = serde_json::from_str::<serde_json::Value>(msg)
+                .ok()?
+                .get("Data")?
+                .get("SessionId")?
+                .as_str()?
+                .to_owned();
+            Some(id)
         };
 
         let session_id = match get_session_id(&msg) {
             Some(session_id) => session_id,
-            None => {
-                error!("parse session_id fail {}", msg);
-                return;
-            }
+            None => return error!("parse session_id failed: {}", msg),
         };
 
         let ws_msg: WsMsg<T> = match serde_json::from_str(&msg) {
             Ok(ws_msg) => ws_msg,
-            Err(_) => {
-                error!("parse WsMsg fail {}", msg);
-                return;
-            }
+            Err(_) => return error!("parse WsMsg failed: {}", msg),
         };
 
         if ws_msg.data.is_none() {
-            error!("no request data {}", msg);
-            return;
+            return error!("no request data: {}", msg);
         };
 
         let op = ws_msg.r#type.to_string();
@@ -166,7 +138,7 @@ where
             };
             handle.process();
         } else {
-            error!("Session {} not find", session_id);
+            error!("Session {} not found", session_id);
             let pty_error = PtyError {
                 session_id: session_id.to_owned(),
                 reason: format!("Session {} not exist", session_id),
@@ -175,10 +147,7 @@ where
         }
     }
 
-    pub fn reply<M>(&self, msg_type: &str, msg_body: M)
-    where
-        M: Serialize,
-    {
+    pub fn reply<M: Serialize>(&self, msg_type: &str, msg_body: M) {
         let self_0 = PtyGather::instance();
         let msg = WsMsg {
             r#type: msg_type.to_string(),
@@ -189,7 +158,7 @@ where
         PtyGather::instance().event_bus.dispatch(
             WS_TXT_MSG,
             serde_json::to_string(&msg)
-                .expect("serialize fail")
+                .expect("serialize failed")
                 .into_bytes(),
         )
     }

@@ -1,35 +1,26 @@
+use super::file::register_file_handlers;
+use super::proxy::{register_proxy_handlers, PtyProxy};
+use super::pty::{register_pty_handlers, PtySession};
+use super::{WS_BIN_MSG, WS_TXT_MSG};
+use crate::common::evbus::EventBus;
+use crate::network::types::ws_msg::{PtyBinBase, WsMsg};
+
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, RwLock};
+
 use log::info;
 use once_cell::sync::OnceCell;
 use serde::Serialize;
-use std::{
-    collections::HashMap,
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc, RwLock,
-    },
-};
 use tokio::runtime::{Builder, Runtime};
 
-use crate::common::evbus::EventBus;
-use crate::network::types::ws_msg::WsMsg;
-use crate::{
-    common::consts::{WS_BIN_MSG, WS_TXT_MSG},
-    network::types::ws_msg::PtyBinBase,
-};
-
-use super::{
-    file::register_file_handlers,
-    proxy::{register_proxy_handlers, PtyProxy},
-    pty::{register_pty_handlers, PtySession},
-};
-
 #[derive(Clone)]
-pub(crate) struct PtyGather {
-    pub(crate) ws_seq_num: Arc<AtomicU64>,
-    pub(crate) stop_counter: Arc<AtomicU64>,
-    pub(crate) sessions: Arc<RwLock<HashMap<String, Arc<PtySession>>>>,
-    pub(crate) proxies: Arc<RwLock<HashMap<String, Arc<PtyProxy>>>>,
-    pub(crate) event_bus: Arc<EventBus>,
+pub struct PtyGather {
+    pub ws_seq_num: Arc<AtomicU64>,
+    pub stop_counter: Arc<AtomicU64>,
+    pub sessions: Arc<RwLock<HashMap<String, Arc<PtySession>>>>,
+    pub proxies: Arc<RwLock<HashMap<String, Arc<PtyProxy>>>>,
+    pub event_bus: Arc<EventBus>,
     runtime: Arc<Runtime>,
 }
 
@@ -44,11 +35,10 @@ pub fn run(event_bus: &Arc<EventBus>, running_task_num: &Arc<AtomicU64>) {
             stop_counter: running_task_num.clone(),
             ws_seq_num: Arc::new(AtomicU64::new(0)),
             runtime: Arc::new(
-                Builder::new()
-                    .threaded_scheduler()
+                Builder::new_multi_thread()
                     .enable_all()
                     .build()
-                    .expect("build pty runtime fail"),
+                    .expect("build pty runtime failed"),
             ),
         });
 
@@ -69,88 +59,74 @@ impl PtyGather {
     }
 
     pub fn add_session(session_id: &str, session: Arc<PtySession>) {
-        if let Some(_) = PtyGather::instance()
+        let _ = PtyGather::instance()
             .sessions
             .write()
-            .expect("proxy lock fail")
+            .expect("proxy lock failed")
             .insert(session_id.to_owned(), session)
-        {
-            info!("old session removed {}", session_id)
-        } else {
-            info!("session {} inserted", { session_id });
-            PtyGather::instance()
-                .stop_counter
-                .fetch_add(1, Ordering::SeqCst);
-        }
+            .map(|_| info!("old session {} removed", session_id))
+            .ok_or_else(|| {
+                info!("session {} inserted", session_id);
+                PtyGather::instance()
+                    .stop_counter
+                    .fetch_add(1, Ordering::SeqCst);
+            });
     }
 
     pub fn remove_session(session_id: &str) {
-        if let Some(_session) = PtyGather::instance()
+        let _ = PtyGather::instance()
             .sessions
             .write()
-            .expect("proxy lock fail")
+            .expect("proxy lock failed")
             .remove(session_id)
-        {
-            info!("remove_session  {} removed", session_id);
-            PtyGather::instance()
-                .stop_counter
-                .fetch_sub(1, Ordering::SeqCst);
-        }
+            .map(|_| {
+                info!("remove_session: {} removed", session_id);
+                PtyGather::instance()
+                    .stop_counter
+                    .fetch_sub(1, Ordering::SeqCst);
+            });
     }
 
-    pub(crate) fn get_session(session_id: &str) -> Option<Arc<PtySession>> {
-        if let Some(session) = PtyGather::instance()
+    pub fn get_session(session_id: &str) -> Option<Arc<PtySession>> {
+        PtyGather::instance()
             .sessions
             .read()
-            .expect("session read lock fail")
+            .expect("session read lock failed")
             .get(session_id)
-        {
-            return Some(session.clone());
-        } else {
-            None
-        }
+            .map(|s| s.clone())
     }
 
     pub fn add_proxy(proxy_id: &str, proxy: Arc<PtyProxy>) {
-        info!("add_proxy  {}", proxy_id);
+        info!("add_proxy: {}", proxy_id);
         let _ = PtyGather::instance()
             .proxies
             .write()
-            .expect("proxy lock fail")
+            .expect("proxy lock failed")
             .insert(proxy_id.to_owned(), proxy);
     }
 
     pub fn remove_proxy(proxy_id: &str) -> Option<Arc<PtyProxy>> {
-        if let Some(proxy) = PtyGather::instance()
+        PtyGather::instance()
             .proxies
             .write()
-            .expect("proxy lock fail")
+            .expect("proxy lock failed")
             .remove(proxy_id)
-        {
-            info!("remove_proxy  {} removed", proxy_id);
-            return Some(proxy.clone());
-        } else {
-            None
-        }
+            .map(|proxy| {
+                info!("remove_proxy: {} removed", proxy_id);
+                proxy.clone()
+            })
     }
 
-    pub(crate) fn get_proxy(proxy_id: &str) -> Option<Arc<PtyProxy>> {
-        if let Some(proxy) = PtyGather::instance()
+    pub fn get_proxy(proxy_id: &str) -> Option<Arc<PtyProxy>> {
+        PtyGather::instance()
             .proxies
             .read()
-            .expect("proxy lock fail")
+            .expect("proxy lock failed")
             .get(proxy_id)
-        {
-            return Some(proxy.clone());
-        } else {
-            None
-        }
+            .map(|p| p.clone())
     }
 
-    pub fn reply_json_msg<T>(msg_type: &str, msg_body: T)
-    where
-        T: Serialize,
-    {
+    pub fn reply_json_msg<T: Serialize>(msg_type: &str, msg_body: T) {
         let self_0 = PtyGather::instance();
         let msg = WsMsg {
             r#type: msg_type.to_string(),
@@ -161,15 +137,12 @@ impl PtyGather {
         PtyGather::instance().event_bus.dispatch(
             WS_TXT_MSG,
             serde_json::to_string(&msg)
-                .expect("json serialize fail")
+                .expect("json serialize failed")
                 .into_bytes(),
         )
     }
 
-    pub fn reply_bson_msg<Rep>(msg_type: &str, data: PtyBinBase<Rep>)
-    where
-        Rep: Serialize,
-    {
+    pub fn reply_bson_msg<Rep: Serialize>(msg_type: &str, data: PtyBinBase<Rep>) {
         let self_0 = PtyGather::instance();
         let ws_msg = WsMsg::<PtyBinBase<Rep>> {
             r#type: msg_type.to_string(),
@@ -178,8 +151,8 @@ impl PtyGather {
         };
 
         let mut result = Vec::new();
-        let obj = bson::to_bson(&ws_msg).expect("to_bson fail");
-        let doc = obj.as_document().expect("as_document fail");
+        let obj = bson::to_bson(&ws_msg).expect("to_bson failed");
+        let doc = obj.as_document().expect("as_document failed");
         let _ = doc.to_writer(&mut result);
         PtyGather::instance().event_bus.dispatch(WS_BIN_MSG, result)
     }

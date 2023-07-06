@@ -1,6 +1,6 @@
-use crate::common::consts::PTY_FLAG_ENABLE_BLOCK;
-use crate::conpty::PTY_INSPECT_WRITE;
-
+use super::gather::PtyGather;
+use super::parser::{do_parse, AnsiItem, EscapeItem};
+use super::{PtyAdapter, PtyBase, PTY_FLAG_ENABLE_BLOCK, PTY_INSPECT_WRITE};
 use crate::common::utils::{str2wsz, wsz2string};
 use crate::conpty::bind::{
     winpty_agent_process, winpty_config_free, winpty_config_new, winpty_config_set_initial_size,
@@ -8,13 +8,9 @@ use crate::conpty::bind::{
     winpty_free, winpty_open, winpty_set_size, winpty_spawn, winpty_spawn_config_free,
     winpty_spawn_config_new, winpty_t,
 };
-
-use crate::executor::powershell_command::{anon_pipe, load_environment, get_user_token};
 use crate::executor::proc::BaseCommand;
-use log::{error, info};
-use ntapi::ntpsapi::{
-    NtResumeProcess, NtSetInformationProcess, ProcessAccessToken, PROCESS_ACCESS_TOKEN,
-};
+use crate::executor::windows::{anon_pipe, get_user_token, load_environment};
+
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs::File;
@@ -27,6 +23,11 @@ use std::ptr::null_mut;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::{mem, ptr};
+
+use log::{error, info};
+use ntapi::ntpsapi::{
+    NtResumeProcess, NtSetInformationProcess, ProcessAccessToken, PROCESS_ACCESS_TOKEN,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::timeout;
 use winapi::shared::minwindef::{DWORD, LPDWORD};
@@ -41,11 +42,6 @@ use winapi::um::winnt::{
     FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_DELETE,
     FILE_SHARE_READ, FILE_SHARE_WRITE, LPWSTR, PVOID,
 };
-
-use super::gather::PtyGather;
-use super::parser::EscapeItem;
-use super::parser::{do_parse, AnsiItem};
-use super::{PtyAdapter, PtyBase};
 
 struct Inner {
     pty_ptr: Arc<Mutex<Box<winpty_t>>>,
@@ -74,14 +70,13 @@ fn build_envp(token: HANDLE) -> Vec<u16> {
 }
 
 fn get_cwd(token: HANDLE) -> Vec<u16> {
+    let mut len: DWORD = 1024;
+    let mut cwd = vec![0u16; len as usize];
     unsafe {
-        let mut len: DWORD = 1024;
-        let mut cwd: Vec<u16> = Vec::new();
-        cwd.resize(len as usize, 0);
         GetUserProfileDirectoryW(token, cwd.as_ptr() as LPWSTR, &mut len as LPDWORD);
         cwd.set_len(len as usize);
-        cwd
     }
+    cwd
 }
 
 fn openpty(user_name: &str, cols: u16, rows: u16) -> Result<Inner, String> {
@@ -177,11 +172,7 @@ impl PtyAdapter for ConPtyAdapter {
         let inner = openpty(user_name, cols, rows)?;
         let session = Arc::new(WinPtySession {
             inner: Arc::new(Mutex::new(inner)),
-            enable_block: if flag & PTY_FLAG_ENABLE_BLOCK != 0 {
-                true
-            } else {
-                false
-            },
+            enable_block: flag & PTY_FLAG_ENABLE_BLOCK != 0,
         });
         Ok(session)
     }
@@ -194,8 +185,8 @@ pub struct WinPtySession {
 
 impl PtyBase for WinPtySession {
     fn resize(&self, cols: u16, rows: u16) -> Result<(), String> {
+        let err_ptr: *mut winpty_error_ptr_t = ptr::null_mut();
         unsafe {
-            let err_ptr: *mut winpty_error_ptr_t = ptr::null_mut();
             winpty_set_size(
                 self.inner.lock().unwrap().pty_ptr.lock().unwrap().as_mut(),
                 cols as i32,
@@ -273,9 +264,9 @@ impl PtyBase for WinPtySession {
                 FILE_GENERIC_READ
             };
 
-            let mut file_name = str2wsz(path);
+            let file_name = str2wsz(path);
             let handle = CreateFileW(
-                file_name.as_mut_ptr() as LPCWSTR,
+                file_name.as_ptr() as LPCWSTR,
                 desired_access,
                 FILE_SHARE_DELETE | FILE_SHARE_WRITE | FILE_SHARE_READ,
                 null_mut(),
@@ -351,29 +342,22 @@ impl BlockMarker {
             }
 
             match timeout_read.unwrap() {
+                Ok(0) => break info!("pty session plain2block read size is 0 close"),
                 Ok(size) => {
-                    if size > 0 {
-                        let read_data = String::from_utf8_lossy(&buffer[0..size]);
-                        let sequences = do_parse(&read_data);
-                        let mut output: Vec<u8> = Vec::new();
-                        for it in sequences {
-                            info!("item:{}", it.to_string());
-                            match self.state.as_str() {
-                                PS_STATE_INPUT => self.input_handler(it, &mut output).await,
-                                PS_STATE_EXEC => self.exec_handler(it, &mut output).await,
-                                _ => continue,
-                            }
+                    let read_data = String::from_utf8_lossy(&buffer[0..size]);
+                    let sequences = do_parse(&read_data);
+                    let mut output: Vec<u8> = Vec::new();
+                    for it in sequences {
+                        info!("item: {}", it.to_string());
+                        match self.state.as_str() {
+                            PS_STATE_INPUT => self.input_handler(it, &mut output).await,
+                            PS_STATE_EXEC => self.exec_handler(it, &mut output).await,
+                            _ => continue,
                         }
-                        let _ = self.writef.write(&output).await;
-                    } else {
-                        info!("pty session plain2block read size is 0 close");
-                        break;
                     }
+                    let _ = self.writef.write(&output).await;
                 }
-                Err(e) => {
-                    error!("pty session  plain2block  err, {}", e.to_string());
-                    break;
-                }
+                Err(e) => break error!("pty session plain2block error: {}", e),
             }
         }
     }

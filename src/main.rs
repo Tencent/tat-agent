@@ -1,3 +1,17 @@
+use crate::common::evbus::EventBus;
+use crate::common::logger;
+use crate::common::option::EnumCommands;
+use crate::common::Opts;
+use crate::network::AGENT_VERSION;
+
+use std::env;
+use std::process::exit;
+use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
+
+use log::{error, info};
+use network::register;
+
 mod common;
 mod conpty;
 mod daemonizer;
@@ -5,17 +19,6 @@ mod executor;
 mod network;
 mod ontime;
 mod sysinfo;
-use crate::common::consts::AGENT_VERSION;
-use crate::common::evbus::EventBus;
-use crate::common::logger;
-use crate::common::option::EnumCommands;
-use crate::common::Opts;
-use log::{error, info};
-use network::register;
-use std::env;
-use std::process::exit;
-use std::sync::atomic::AtomicU64;
-use std::sync::Arc;
 
 fn main() {
     init_agent();
@@ -28,7 +31,7 @@ fn main() {
 
         let eventbus = Arc::new(EventBus::new());
         let stop_counter = Arc::new(AtomicU64::new(0));
-        
+
         executor::thread::run(&eventbus, &stop_counter);
         ontime::thread::run(&eventbus, &stop_counter);
         conpty::gather::run(&eventbus, &stop_counter);
@@ -37,27 +40,23 @@ fn main() {
 }
 
 fn init_agent() {
-    let current_bin = env::current_exe().expect("current path fail");
-    let current_path = current_bin.parent().expect("parent path fail");
-    env::set_current_dir(current_path).expect("set dir fail");
+    let current_bin = env::current_exe().expect("current path failed");
+    let current_path = current_bin.parent().expect("parent path failed");
+    env::set_current_dir(current_path).expect("set dir failed");
     logger::init();
-    info!("agent initialized,version:[{}]", AGENT_VERSION);
+    info!("agent initialized, version:[{}]", AGENT_VERSION);
 }
 
 fn check_args() {
-    if let Some(commands) = Opts::get_opts().command.as_ref() {
-        match commands {
-            EnumCommands::Register(opt) => {
-                match register(&opt.region, &opt.register_code_id, &opt.register_code_value) {
-                    Ok(_) => {
-                        print!("register success");
-                        exit(0)
-                    }
-                    Err(err) => {
-                        print!("register failed {}", err);
-                        exit(-1)
-                    }
-                }
+    if let Some(EnumCommands::Register { region, id, value }) = Opts::get_opts().command.as_ref() {
+        match register(region, id, value) {
+            Ok(_) => {
+                print!("register success");
+                exit(0)
+            }
+            Err(err) => {
+                print!("register failed: {}", err);
+                exit(-1)
             }
         }
     }
@@ -66,6 +65,6 @@ fn check_args() {
 fn set_panic_handler() {
     std::panic::set_hook(Box::new(|pi| {
         error!("panic {}", pi.to_string());
-        std::process::exit(-1);
+        exit(-1);
     }));
 }

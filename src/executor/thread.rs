@@ -1,23 +1,26 @@
-use crate::common::consts::WS_MSG_TYPE_KICK;
-use crate::common::consts::{DEFAULT_OUTPUT_BYTE, FINISH_RESULT_TERMINATED};
 use crate::common::evbus::EventBus;
-use crate::executor::proc;
-use crate::executor::proc::MyCommand;
+use crate::common::utils::get_now_secs;
+use crate::executor::proc::{self, MyCommand};
 use crate::executor::store::TaskFileStore;
+use crate::network::types::ws_msg::WS_MSG_TYPE_KICK;
 use crate::network::types::{InvocationCancelTask, InvocationNormalTask};
 use crate::network::InvokeAPIAdapter;
-use log::{error, info};
+
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use std::time::SystemTime;
+
+use log::{error, info};
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
-use tokio::time::delay_for;
+use tokio::time::sleep;
+
+use super::FINISH_RESULT_TERMINATED;
+const DEFAULT_OUTPUT_BYTE: u64 = 24 * 1024;
 
 pub fn run(dispatcher: &Arc<EventBus>, running_task_num: &Arc<AtomicU64>) {
-    let runtime = Runtime::new().expect("executor-runime build fail");
+    let runtime = Runtime::new().expect("executor-runime build failed");
 
     let running_task_num = running_task_num.clone();
     dispatcher.register(WS_MSG_TYPE_KICK, move |source| {
@@ -42,7 +45,7 @@ impl HttpWorker {
     pub fn new(adapter: InvokeAPIAdapter, running_task_num: Arc<AtomicU64>) -> Self {
         let task_store = TaskFileStore::new();
         info!(
-            "http worker create success, save tasks to {}",
+            "http worker create success, save tasks to `{}`",
             task_store.get_store_path().as_path().display().to_string()
         );
         HttpWorker {
@@ -56,43 +59,29 @@ impl HttpWorker {
     pub async fn process(&self, source: String) {
         info!("http thread processing message from: {}", source);
         for _ in 0..3 {
-            match self.adapter.describe_tasks().await {
-                Ok(resp) => {
-                    info!("describe task success: {:?}", resp);
-                    if source == "ws"
-                        && resp.invocation_normal_task_set.is_empty()
-                        && resp.invocation_cancel_task_set.is_empty()
-                    {
-                        tokio::time::delay_for(Duration::from_millis(500)).await;
-                        continue;
-                    }
-                    for task in resp.invocation_normal_task_set.iter() {
-                        self.running_task_num.fetch_add(1, Ordering::SeqCst);
-                        match self.task_store.store(&task) {
-                            Ok((task_file, log_file)) => {
-                                self.task_execute(task, &task_file, &log_file).await;
-                                //remove script after finished
-                                match std::fs::remove_file(&task_file) {
-                                    Ok(_) => info!("delete {} success", task_file),
-                                    Err(e) => error!("delete {} fail {}", task_file, e),
-                                };
-                            }
-                            Err(_) => {
-                                self.task_execute(task, "", "").await;
-                            }
-                        }
-                        self.running_task_num.fetch_sub(1, Ordering::SeqCst);
-                    }
-                    for task in resp.invocation_cancel_task_set.iter() {
-                        self.task_cancel(&task).await;
-                    }
-                    return;
-                }
-                Err(why) => {
-                    error!("describe task failed: {:?}", why);
-                    return;
-                }
+            let resp = match self.adapter.describe_tasks().await {
+                Ok(resp) => resp,
+                Err(why) => return error!("describe task failed: {:?}", why),
+            };
+
+            info!("describe task success: {:?}", resp);
+            if source == "ws"
+                && resp.invocation_normal_task_set.is_empty()
+                && resp.invocation_cancel_task_set.is_empty()
+            {
+                sleep(Duration::from_millis(500)).await;
+                continue;
             }
+            for task in resp.invocation_normal_task_set.iter() {
+                self.running_task_num.fetch_add(1, Ordering::SeqCst);
+                let (task_file, log_file) = self.task_store.store(&task).unwrap_or_default();
+                self.task_execute(task, &task_file, &log_file).await;
+                self.running_task_num.fetch_sub(1, Ordering::SeqCst);
+            }
+            for task in resp.invocation_cancel_task_set.iter() {
+                self.task_cancel(&task).await;
+            }
+            return;
         }
     }
 
@@ -107,13 +96,12 @@ impl HttpWorker {
         let mut finished = cmd_arc.lock().await.is_finished();
         loop {
             // total sleep max 20 * 50 ms, i.e. 1s
-            for _n in 0..20 {
+            for _ in 0..20 {
                 if finished {
                     break;
-                } else {
-                    delay_for(Duration::from_millis(50)).await;
-                    finished = cmd_arc.lock().await.is_finished();
                 }
+                sleep(Duration::from_millis(50)).await;
+                finished = cmd_arc.lock().await.is_finished();
             }
             let mut cmd = cmd_arc.lock().await;
             if cmd.cur_output_len() != 0 && !stop_upload {
@@ -209,11 +197,12 @@ impl HttpWorker {
 
         //remove script after finished
         match std::fs::remove_file(&task_file) {
-            Ok(_) => info!("delete {} sucess", task_file),
-            Err(e) => error!("delete {} fail {}", task_file, e),
+            Ok(_) => info!("delete `{}` success", task_file),
+            Err(e) => error!("delete `{}` failed: {}", task_file, e),
         };
 
-        self.adapter
+        let _ = self
+            .adapter
             .report_task_finish(
                 &task_id,
                 &finish_result,
@@ -226,19 +215,10 @@ impl HttpWorker {
             )
             .await
             .map(|_| info!("task_execute report_task_finish {} success", task_id))
-            .map_err(|e| {
-                error!(
-                    "report task {} finish error: {:?}",
-                    &task.invocation_task_id, e
-                );
-            })
-            .ok();
+            .map_err(|e| error!("report task {task_id} finish error: {e:?}"));
 
-        // process finish ,remove
-        self.running_tasks
-            .lock()
-            .await
-            .remove(task.invocation_task_id.as_str());
+        // process finish, remove
+        self.running_tasks.lock().await.remove(task_id.as_str());
     }
 
     async fn task_cancel(&self, task: &InvocationCancelTask) {
@@ -251,28 +231,19 @@ impl HttpWorker {
             let cmd_arc = cmd_arc.clone();
             //drop lock
             std::mem::drop(tasks);
-            let cmd = cmd_arc.lock().await;
-            cmd.cancel()
-                .map(|_| {
-                    info!("cancel task {} success", &cancel_task_id);
-                })
-                .map_err(|e| {
-                    error!("task {} cancel fail, error: {}", &cancel_task_id, e);
-                })
-                .ok();
+            let _ = cmd_arc
+                .lock()
+                .await
+                .cancel()
+                .map(|_| info!("cancel task {} success", &cancel_task_id))
+                .map_err(|e| error!("task {} cancel failed, error: {}", &cancel_task_id, e));
             return;
         } else {
-            info!(
-                "task {} not find, may be not start or finished",
-                &cancel_task_id
-            );
+            info!("task {cancel_task_id} not found, may be not start or finished",);
         }
 
         // report terminated
-        let finish_time = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .expect("sys time may before 1970")
-            .as_secs();
+        let finish_time = get_now_secs();
         self.adapter
             .report_task_finish(
                 &cancel_task_id,
@@ -293,13 +264,11 @@ impl HttpWorker {
     }
 
     async fn report_task_start(&self, task_id: &str, timestamp: u64) -> bool {
-        return match self.adapter.report_task_start(task_id, timestamp).await {
-            Err(e) => {
-                error!("report start error: {:?}", e);
-                false
-            }
-            Ok(_) => true,
-        };
+        self.adapter
+            .report_task_start(task_id, timestamp)
+            .await
+            .map_err(|e| error!("report start error: {:?}", e))
+            .is_ok()
     }
 
     async fn upload_task_log(&self, task_id: &str, idx: u32, out: Vec<u8>, dropped: u64) {
@@ -308,12 +277,8 @@ impl HttpWorker {
             .upload_task_log(task_id, idx, out, dropped)
             .await
         {
-            Ok(_) => {
-                info!("success upload task {} log index: {}", task_id, idx);
-            }
-            Err(e) => {
-                error!("fail to upload task {} log: {:?}", task_id, e);
-            }
+            Ok(_) => info!("success upload task {}, log index: {}", task_id, idx),
+            Err(e) => error!("failed to upload task {} log: {:?}", task_id, e),
         }
     }
 
@@ -327,14 +292,11 @@ impl HttpWorker {
         //mutex with task_cancel
         let mut tasks = self.running_tasks.lock().await;
         if tasks.contains_key(&task_id) {
-            info!("fetch duplicate task,task id {}", task_id);
+            info!("fetch duplicate task, task id {}", task_id);
             return None;
         }
 
-        let start_timestamp = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .expect("sys time may before 1970")
-            .as_secs();
+        let start_timestamp = get_now_secs();
 
         let result = self
             .report_task_start(task.invocation_task_id.as_str(), start_timestamp)
@@ -368,7 +330,7 @@ impl HttpWorker {
         proc_res
             .run()
             .await
-            .map_err(|e| error!("start process fail {}", e))
+            .map_err(|e| error!("start process failed: {}", e))
             .ok();
         let cmd_arc = Arc::new(Mutex::new(proc_res));
 
@@ -379,20 +341,17 @@ impl HttpWorker {
 
 #[cfg(test)]
 mod tests {
-    use crate::common::consts::FINISH_RESULT_TERMINATED;
     use crate::common::logger;
-    use crate::common::utils::get_current_username;
-    use crate::executor::proc;
-    use crate::executor::proc::MyCommand;
+    use crate::common::utils::{gen_rand_str_with, get_current_username};
+    use crate::executor::proc::{self, MyCommand};
     use crate::executor::store::TaskFileStore;
     use crate::executor::thread::HttpWorker;
+    use crate::executor::FINISH_RESULT_TERMINATED;
     use crate::network::types::{
         AgentError, AgentErrorCode, InvocationCancelTask, InvocationNormalTask,
         ReportTaskFinishResponse, ReportTaskStartResponse,
     };
     use crate::network::InvokeAPIAdapter;
-    use rand::distributions::Alphanumeric;
-    use rand::{thread_rng, Rng};
     use std::fs;
     use std::fs::File;
     use std::io::Write;
@@ -402,11 +361,7 @@ mod tests {
     use tokio::time::timeout;
 
     fn gen_rand_str() -> String {
-        thread_rng()
-            .sample_iter(&Alphanumeric)
-            .take(10)
-            .map(char::from)
-            .collect()
+        gen_rand_str_with(10)
     }
 
     fn create_file(content: &str, filename: &str) {
@@ -474,7 +429,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_report_start_fail() {
+    async fn test_report_start_failed() {
         #[cfg(unix)]
         let cmd_type = "SHELL";
         #[cfg(windows)]
@@ -496,7 +451,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_report_start_sucess() {
+    async fn test_report_start_success() {
         cfg_if::cfg_if! {
             if #[cfg(unix)] {
                 let filename = format!("./.{}.sh", gen_rand_str());
@@ -602,7 +557,7 @@ mod tests {
             invocation_task_id: "invt-test_cancel".to_string(),
         };
         http_worker2.task_cancel(&task).await;
-        tokio::time::delay_for(Duration::from_secs(1)).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
         fs::remove_file(filename.as_str()).unwrap();
         let finis_result = cmd.lock().await.finish_result();
         assert_eq!(finis_result, FINISH_RESULT_TERMINATED); //need read twice

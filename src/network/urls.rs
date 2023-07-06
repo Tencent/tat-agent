@@ -1,16 +1,28 @@
-use log::info;
-
+use super::RegisterInfo;
+use crate::network::mock_enabled;
 use std::net::ToSocketAddrs;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::SeqCst;
+
+use log::info;
 use url::Url;
 
-use crate::common::consts::{
-    INVOKE_APIS, INVOKE_API_MOCK, METADATA_API, METADATA_API_MOCK, WS_URLS, WS_URL_MOCK,
-};
-
-use super::RegisterInfo;
-use crate::network::mock_enabled;
+const METADATA_API_MOCK: &str = "http://mock-server:8000";
+const METADATA_API: &str = "http://metadata.tencentyun.com";
+const WS_URL_MOCK: &str = "ws://proxy:8086/ws";
+const WS_URLS: [&'static str; 4] = [
+    "wss://notify.tat-tc.tencent.cn:8186/ws",
+    "wss://notify.tat-tc.tencent.com.cn:8186/ws",
+    "wss://notify.tat-tc.tencentyun.com:8186/ws",
+    "wss://notify.tat.tencent-cloud.com:8186/ws",
+];
+const INVOKE_API_MOCK: &str = "http://proxy-invoke";
+const INVOKE_APIS: [&'static str; 4] = [
+    "https://invoke.tat-tc.tencent.cn",
+    "https://invoke.tat-tc.tencent.com.cn",
+    "https://invoke.tat-tc.tencentyun.com",
+    "https://invoke.tat.tencent-cloud.com",
+];
 
 fn dns_resolve(url: &str) -> Result<(), ()> {
     let url = Url::parse(url).unwrap();
@@ -63,14 +75,13 @@ fn get_register_region() -> Option<String> {
 }
 
 pub fn get_invoke_url() -> String {
-    let result;
-    if mock_enabled() {
-        result = INVOKE_API_MOCK.to_string();
+    let result = if mock_enabled() {
+        INVOKE_API_MOCK.to_string()
     } else if let Some(region) = get_register_region() {
-        result = format!("https://{}.invoke.tat-tc.tencent.cn", region);
+        format!("https://{}.invoke.tat-tc.tencent.cn", region)
     } else {
-        result = find_available_url(Vec::from(INVOKE_APIS), dns_resolve);
-    }
+        find_available_url(Vec::from(INVOKE_APIS), dns_resolve)
+    };
     info!("get_invoke_url {}", result);
     return result;
 }
@@ -84,19 +95,18 @@ pub fn get_meta_url() -> String {
 }
 
 pub fn get_register_url(region: &str) -> String {
-    let result;
-    if mock_enabled() {
-        result = INVOKE_API_MOCK.to_string();
+    let result = if mock_enabled() {
+        INVOKE_API_MOCK.to_string()
     } else {
-        result = format!("https://{}.invoke.tat-tc.tencent.cn", region);
-    }
+        format!("https://{}.invoke.tat-tc.tencent.cn", region)
+    };
     info!("get_register_url {}", result);
     return result;
 }
 
 #[cfg(test)]
 mod test {
-    use crate::common::consts::{INVOKE_APIS, WS_URLS};
+    use super::{INVOKE_APIS, WS_URLS};
     use crate::network::urls::find_available_url;
     use std::sync::atomic::AtomicU8;
     use std::sync::atomic::Ordering::SeqCst;
@@ -141,7 +151,7 @@ mod test {
         assert_eq!(url, "https://invoke.tat-tc.tencent.com.cn");
         assert_eq!(resolve_2_cnt.load(SeqCst), 4);
 
-        //use last ok,count eq urls len
+        //use last ok, count eq urls len
         let url = find_available_url(Vec::from(INVOKE_APIS), resolve_3);
         assert_eq!(url, "https://invoke.tat-tc.tencent.com.cn");
         assert_eq!(resolve_3_cnt.load(SeqCst), 4);

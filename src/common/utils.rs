@@ -2,14 +2,13 @@
 use std::ffi::{OsStr, OsString};
 #[cfg(windows)]
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
+use std::time::UNIX_EPOCH;
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
-use rsa::{
-    pkcs1::{EncodeRsaPrivateKey, EncodeRsaPublicKey},
-    pkcs8::LineEnding,
-    RsaPrivateKey, RsaPublicKey,
-};
+use rand::distributions::Alphanumeric;
+use rand::{thread_rng, Rng};
+use rsa::pkcs1::{EncodeRsaPrivateKey, EncodeRsaPublicKey};
+use rsa::pkcs8::LineEnding;
+use rsa::{RsaPrivateKey, RsaPublicKey};
 
 #[cfg(windows)]
 pub fn wsz2string(ptr: *const u16) -> String {
@@ -22,17 +21,11 @@ pub fn wsz2string(ptr: *const u16) -> String {
 
 #[cfg(windows)]
 pub fn str2wsz(s: &str) -> Vec<u16> {
-    OsStr::new(s)
-        .encode_wide()
-        .chain(Some(0).into_iter())
-        .collect::<Vec<_>>()
+    OsStr::new(s).encode_wide().chain(Some(0)).collect()
 }
 
 pub fn get_now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("get_now_secs fail")
-        .as_secs()
+    UNIX_EPOCH.elapsed().expect("get_now_secs failed").as_secs()
 }
 
 #[cfg(windows)]
@@ -57,8 +50,8 @@ pub fn get_current_username() -> String {
 
 #[cfg(unix)]
 pub fn get_current_username() -> String {
-    let name = users::get_current_username().expect("get_current_username fail");
-    String::from(name.to_str().expect("get_current_username fail"))
+    let name = users::get_current_username().expect("get_current_username failed");
+    String::from(name.to_str().expect("get_current_username failed"))
 }
 
 pub fn generate_rsa_key() -> Option<(String, String)> {
@@ -68,4 +61,12 @@ pub fn generate_rsa_key() -> Option<(String, String)> {
     let public_pem = public_key.to_pkcs1_pem(LineEnding::LF).ok()?.to_string();
     let private_pem = private_key.to_pkcs1_pem(LineEnding::LF).ok()?.to_string();
     Some((public_pem, private_pem))
+}
+
+pub fn gen_rand_str_with(len: usize) -> String {
+    thread_rng()
+        .sample_iter(&Alphanumeric)
+        .take(len)
+        .map(char::from)
+        .collect()
 }

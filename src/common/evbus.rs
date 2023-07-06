@@ -1,11 +1,12 @@
-use log::debug;
-
-use crate::common::consts::SLOT_DEFAULT;
 use std::collections::{HashMap, LinkedList};
 use std::sync::atomic::AtomicU64;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::atomic::Ordering::SeqCst;
+use std::sync::{Arc, Condvar, Mutex, RwLock};
+
+use log::debug;
+
+const SLOT_DEFAULT: &str = "event_slot_default";
 type Handler = Box<dyn Fn(Vec<u8>) + Sync + Send + 'static>;
-use std::sync::Condvar;
 
 #[derive(Clone)]
 pub struct EventBus {
@@ -18,7 +19,7 @@ pub struct EventBus {
 
 struct Event {
     name: String,
-    value: Vec<u8>,
+    msg: Vec<u8>,
 }
 
 struct EventQueue {
@@ -37,19 +38,19 @@ impl EventQueue {
     fn queue_event(&self, event: Event) {
         self.queue
             .lock()
-            .expect("queue event fail")
+            .expect("queue event failed")
             .push_back(event);
         self.signal.notify_one();
     }
 
     fn pull_event(&self) -> Event {
-        let mut guard = self.queue.lock().expect("pull event fail");
+        let mut guard = self.queue.lock().expect("pull event failed");
         if let Some(event) = guard.pop_front() {
             return event;
         }
 
         loop {
-            guard = self.signal.wait(guard).expect("wait sigal fail");
+            guard = self.signal.wait(guard).expect("wait signal failed");
             if let Some(event) = guard.pop_front() {
                 return event;
             }
@@ -82,7 +83,7 @@ impl EventBus {
             .unwrap()
             .insert(event.to_string(), Box::new(func));
 
-        let mut slot_queues = self.slot_queues.write().expect("slot_queues lock fail");
+        let mut slot_queues = self.slot_queues.write().expect("slot_queues lock failed");
         if slot_queues.get(slot).is_some() {
             return self;
         };
@@ -102,12 +103,12 @@ impl EventBus {
                 if let Some(handler) = self_0
                     .event_handlers
                     .read()
-                    .expect("event_handlers lock fail")
+                    .expect("event_handlers lock failed")
                     .get(event.name.as_str())
                 {
-                    let count = receive_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    debug!("receive_count:{}", count);
-                    handler(event.value);
+                    let count = receive_count.fetch_add(1, SeqCst);
+                    debug!("receive_count: {}", count);
+                    handler(event.msg);
                 }
             });
         self
@@ -121,18 +122,13 @@ impl EventBus {
     }
 
     pub fn dispatch(&self, event: &str, msg: Vec<u8>) {
-        let count = self
-            .dispatch_count
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-
-        debug!("dispatch_count:{}", count);
-        if let Some(slot) = self.event_slots.read().expect("lock fail").get(event) {
-            //find  queues from slot
-            if let Some(slot_queues) = self.slot_queues.read().expect("lock fail").get(slot) {
-                slot_queues.queue_event(Event {
-                    name: event.to_string(),
-                    value: msg,
-                });
+        let count = self.dispatch_count.fetch_add(1, SeqCst);
+        debug!("dispatch_count: {}", count);
+        if let Some(slot) = self.event_slots.read().expect("lock failed").get(event) {
+            //find queues from slot
+            if let Some(slot_queues) = self.slot_queues.read().expect("lock failed").get(slot) {
+                let name = event.to_string();
+                slot_queues.queue_event(Event { name, msg });
             }
         }
     }

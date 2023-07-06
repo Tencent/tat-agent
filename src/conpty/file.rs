@@ -1,10 +1,3 @@
-use crate::common::consts::{
-    FS_TYPE_DIR, FS_TYPE_FILE, FS_TYPE_LINK, SLOT_PTY_BIN, WS_MSG_TYPE_PTY_CREATE_FILE,
-    WS_MSG_TYPE_PTY_DELETE_FILE, WS_MSG_TYPE_PTY_FILE_EXIST, WS_MSG_TYPE_PTY_FILE_INFO,
-    WS_MSG_TYPE_PTY_LIST_PATH, WS_MSG_TYPE_PTY_READ_FILE, WS_MSG_TYPE_PTY_WRITE_FILE,
-};
-use crate::conpty::{PTY_INSPECT_READ, PTY_INSPECT_WRITE};
-
 use super::gather::PtyGather;
 use super::handler::{BsonHandler, Handler};
 use crate::common::evbus::EventBus;
@@ -13,26 +6,26 @@ use crate::network::types::ws_msg::{
     FileInfoReq, FileInfoResp, ListPathReq, ListPathResp, PtyBinErrMsg, ReadFileReq, ReadFileResp,
     WriteFileReq, WriteFileResp,
 };
-use glob::Pattern;
-use log::info;
-use std::fs::File;
-use std::fs::Metadata;
-use std::fs::{self, create_dir_all};
-use std::io::SeekFrom::Start;
-use std::io::{Seek, Write};
+
+use std::fs::{self, create_dir_all, File, Metadata};
+use std::io::{Seek, SeekFrom::Start, Write};
+use std::iter::{once, repeat};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::SystemTime;
+
+use glob::Pattern;
+use log::info;
 use tokio::io::AsyncReadExt;
 
 cfg_if::cfg_if! {
     if #[cfg(windows)] {
-        use winapi::um::winnt::FILE_ATTRIBUTE_HIDDEN;
         use crate::common::utils::str2wsz;
+        use std::os::windows::fs::MetadataExt;
+        use winapi::um::winnt::FILE_ATTRIBUTE_HIDDEN;
         use winapi::um::fileapi::{GetDriveTypeW, GetLogicalDrives};
         use winapi::um::winbase::DRIVE_FIXED;
-        use crate::common::consts::FS_TYPE_PARTITION;
-        use std::os::windows::fs::MetadataExt;
+        const FS_TYPE_PARTITION: &str = "p";
     }
     else if #[cfg(unix)] {
         use std::os::linux::fs::MetadataExt;
@@ -44,7 +37,19 @@ cfg_if::cfg_if! {
     }
 }
 
-pub(crate) fn register_file_handlers(event_bus: &Arc<EventBus>) {
+use super::{PTY_INSPECT_READ, PTY_INSPECT_WRITE, SLOT_PTY_BIN};
+const FS_TYPE_FILE: &str = "-";
+const FS_TYPE_DIR: &str = "d";
+const FS_TYPE_LINK: &str = "l";
+const WS_MSG_TYPE_PTY_LIST_PATH: &str = "PtyListPath";
+const WS_MSG_TYPE_PTY_FILE_EXIST: &str = "PtyFileExist";
+const WS_MSG_TYPE_PTY_CREATE_FILE: &str = "PtyCreateFile";
+const WS_MSG_TYPE_PTY_DELETE_FILE: &str = "PtyDeleteFile";
+const WS_MSG_TYPE_PTY_READ_FILE: &str = "PtyReadFile";
+const WS_MSG_TYPE_PTY_WRITE_FILE: &str = "PtyWriteFile";
+const WS_MSG_TYPE_PTY_FILE_INFO: &str = "PtyFileInfo";
+
+pub fn register_file_handlers(event_bus: &Arc<EventBus>) {
     event_bus
         .slot_register(SLOT_PTY_BIN, WS_MSG_TYPE_PTY_CREATE_FILE, move |msg| {
             BsonHandler::<CreateFileReq>::dispatch(msg)
@@ -59,7 +64,7 @@ pub(crate) fn register_file_handlers(event_bus: &Arc<EventBus>) {
             BsonHandler::<FileExistsReq>::dispatch(msg)
         })
         .slot_register(SLOT_PTY_BIN, WS_MSG_TYPE_PTY_FILE_INFO, move |msg| {
-            BsonHandler::<FileExistsReq>::dispatch(msg)
+            BsonHandler::<FileInfoReq>::dispatch(msg)
         })
         .slot_register(SLOT_PTY_BIN, WS_MSG_TYPE_PTY_WRITE_FILE, move |msg| {
             BsonHandler::<WriteFileReq>::dispatch(msg)
@@ -76,44 +81,28 @@ impl Handler for BsonHandler<CreateFileReq> {
 
         info!("=>{} pty_create_file", session_id);
         if Path::new(&req_data.path).exists() && !req_data.overwrite {
-            return self.reply(PtyBinErrMsg {
-                error: "file exists".to_owned(),
-            });
+            return self.reply(PtyBinErrMsg::new("file exists"));
         }
 
         let parent_path = Path::new(&req_data.path).parent();
         if parent_path.is_none() {
-            return self.reply(PtyBinErrMsg {
-                error: "invalid path".to_owned(),
-            });
+            return self.reply(PtyBinErrMsg::new("invalid path"));
         }
 
         //create file as user
         let create_result = self.associate_pty.execute(&|| -> Result<Vec<u8>, String> {
-            match create_dir_all(parent_path.expect("get parent path fail")) {
-                Ok(_) => match File::create(&req_data.path) {
-                    Ok(_file) => {
-                        #[cfg(unix)]
-                        if let Ok(meta) = _file.metadata() {
-                            meta.permissions().set_mode(req_data.mode);
-                        }
-                        Ok(Vec::new())
-                    }
-                    Err(e) => Err(e.to_string()),
-                },
-                Err(e) => Err(e.to_string()),
+            create_dir_all(parent_path.unwrap()).map_err(|e| e.to_string())?;
+            let _file = File::create(&req_data.path).map_err(|e| e.to_string())?;
+            #[cfg(unix)]
+            if let Ok(meta) = _file.metadata() {
+                meta.permissions().set_mode(req_data.mode);
             }
+            Ok(Vec::new())
         });
 
         match create_result {
-            Ok(_) => {
-                return self.reply(CreateFileResp { created: true });
-            }
-            Err(e) => {
-                return self.reply(PtyBinErrMsg {
-                    error: e.to_string(),
-                })
-            }
+            Ok(_) => self.reply(CreateFileResp { created: true }),
+            Err(e) => self.reply(PtyBinErrMsg::new(e)),
         }
     }
 }
@@ -127,22 +116,13 @@ impl Handler for BsonHandler<DeleteFileReq> {
             .associate_pty
             .inspect_access(&req_data.path, PTY_INSPECT_WRITE)
         {
-            return self.reply(PtyBinErrMsg {
-                error: e.to_string(),
-            });
+            return self.reply(PtyBinErrMsg::new(e));
         }
 
         info!("=>{} pty_delete_file", session_id);
         match fs::remove_file(req_data.path.clone()) {
-            Ok(_) => {
-                self.reply(DeleteFileResp { deleted: true });
-            }
-
-            Err(e) => {
-                self.reply(PtyBinErrMsg {
-                    error: e.to_string(),
-                });
-            }
+            Ok(_) => self.reply(DeleteFileResp { deleted: true }),
+            Err(e) => self.reply(PtyBinErrMsg::new(e)),
         };
     }
 }
@@ -159,43 +139,26 @@ impl Handler for BsonHandler<ListPathReq> {
 
         let pattern = match Pattern::new(&req_data.filter) {
             Ok(pattern) => pattern,
-            Err(e) => {
-                return self.reply(PtyBinErrMsg {
-                    error: e.to_string(),
-                });
-            }
+            Err(e) => return self.reply(PtyBinErrMsg::new(e)),
         };
 
         let files = match list_path(&req_data.path, pattern.clone()) {
             Ok(files) => files,
-            Err(e) => {
-                return self.reply(PtyBinErrMsg {
-                    error: e.to_string(),
-                });
-            }
+            Err(e) => return self.reply(PtyBinErrMsg::new(e)),
         };
 
-        let mut remain = &files[..];
-        let mut index = 0;
-        let mut is_last = false;
-        loop {
-            let items;
-            if remain.len() > 10 {
-                (items, remain) = remain.split_at(10);
-            } else {
-                items = remain;
-                is_last = true;
-            }
-            self.reply(ListPathResp {
-                index,
-                is_last,
-                files: items.to_vec(),
+        files
+            .chunks(10)
+            .zip(repeat(false))
+            .chain(once((vec![].as_slice(), true)))
+            .zip(0u32..)
+            .for_each(|((items, is_last), index)| {
+                self.reply(ListPathResp {
+                    index,
+                    is_last,
+                    files: items.to_vec(),
+                })
             });
-            index = index + 1;
-            if is_last {
-                break;
-            }
-        }
     }
 }
 
@@ -215,15 +178,8 @@ impl Handler for BsonHandler<FileInfoReq> {
         let req_data = &self.request.data;
         info!("=>{} pty_file_info", session_id);
         match fs::metadata(&req_data.path) {
-            Ok(meta_data) => {
-                let info = file_info_data(req_data.path.clone(), &meta_data);
-                return self.reply(info);
-            }
-            Err(e) => {
-                return self.reply(PtyBinErrMsg {
-                    error: e.to_string(),
-                });
-            }
+            Ok(meta_data) => self.reply(file_info_data(req_data.path.clone(), &meta_data)),
+            Err(e) => self.reply(PtyBinErrMsg::new(e)),
         };
     }
 }
@@ -236,7 +192,7 @@ impl Handler for BsonHandler<WriteFileReq> {
             .associate_pty
             .inspect_access(&req_data.path, PTY_INSPECT_WRITE)
         {
-            return self.reply(PtyBinErrMsg { error: err_msg });
+            return self.reply(PtyBinErrMsg::new(err_msg));
         };
 
         let mut file = match fs::OpenOptions::new()
@@ -245,26 +201,18 @@ impl Handler for BsonHandler<WriteFileReq> {
             .open(&req_data.path)
         {
             Ok(file) => file,
-            Err(e) => {
-                return self.reply(PtyBinErrMsg {
-                    error: e.to_string(),
-                });
-            }
+            Err(e) => return self.reply(PtyBinErrMsg::new(e)),
         };
 
         if req_data.offset != usize::MAX {
             if let Err(e) = file.seek(Start(req_data.offset as u64)) {
-                return self.reply(PtyBinErrMsg {
-                    error: e.to_string(),
-                });
+                return self.reply(PtyBinErrMsg::new(e));
             };
         }
 
         match file.write(&req_data.data) {
             Ok(length) => self.reply(WriteFileResp { length }),
-            Err(e) => self.reply(PtyBinErrMsg {
-                error: e.to_string(),
-            }),
+            Err(e) => self.reply(PtyBinErrMsg::new(e)),
         };
     }
 }
@@ -280,71 +228,43 @@ impl BsonHandler<ReadFileReq> {
             .associate_pty
             .inspect_access(&param.path, PTY_INSPECT_READ)
         {
-            info!("=>{} inspect_access fail", session_id);
-            return self_.reply(PtyBinErrMsg { error: err_msg });
+            info!("=>{} inspect_access failed", session_id);
+            return self_.reply(PtyBinErrMsg::new(err_msg));
         };
 
         //open file read only
         let mut file = match File::open(&param.path) {
             Ok(file) => file,
-            Err(e) => {
-                return self_.reply(PtyBinErrMsg {
-                    error: e.to_string(),
-                });
-            }
+            Err(e) => return self_.reply(PtyBinErrMsg::new(e)),
         };
 
         if let Err(e) = file.seek(Start(param.offset as u64)) {
-            return self_.reply(PtyBinErrMsg {
-                error: e.to_string(),
-            });
+            return self_.reply(PtyBinErrMsg::new(e));
         };
 
         //use async file
         let mut file = tokio::fs::File::from_std(file);
-        let mut left = param.size;
-        let mut buffer: [u8; 3072] = [0; 3072];
+        let mut remainder = param.size;
         let mut offset = param.offset;
+        let mut buffer: [u8; 3072] = [0; 3072];
         loop {
-            let len = std::cmp::min(left, 3072);
-            if len == 0 {
-                break;
-            }
-
-            let size_r = file.read(&mut buffer[0..len]).await;
-            match size_r {
+            let upper_limit = std::cmp::min(remainder, 3072);
+            match file.read(&mut buffer[..upper_limit]).await {
                 Ok(size) => {
-                    if size > 0 {
-                        left = left - size;
-                        let is_last = left == 0 || size < len;
-                        let rsp = ReadFileResp {
-                            data: buffer[0..size].to_owned(),
-                            offset,
-                            length: size,
-                            is_last,
-                        };
-                        self_.reply(rsp);
-                        offset = offset + size;
-                        if is_last {
-                            break;
-                        }
-                    } else {
-                        let rsp = ReadFileResp {
-                            data: vec![],
-                            offset,
-                            length: 0,
-                            is_last: true,
-                        };
-                        self_.reply(rsp);
+                    remainder -= size;
+                    let is_last = remainder == 0 || size < upper_limit;
+                    self_.reply(ReadFileResp {
+                        data: buffer[..size].to_owned(),
+                        offset,
+                        length: size,
+                        is_last,
+                    });
+                    if is_last {
                         break;
                     }
+                    offset += size;
                 }
-                Err(e) => {
-                    self_.reply(PtyBinErrMsg {
-                        error: e.to_string(),
-                    });
-                    break;
-                }
+                Err(e) => break self_.reply(PtyBinErrMsg::new(e)),
             };
         }
     }
@@ -361,44 +281,40 @@ impl Handler for BsonHandler<ReadFileReq> {
 
 #[cfg(windows)]
 fn get_win32_ready_drives() -> Vec<String> {
-    unsafe {
-        let mut logical_drives = Vec::new();
-        let mut driver_bit = GetLogicalDrives();
-        let mut label_base = 'A';
-        while driver_bit != 0 {
-            if driver_bit & 1 == 1 {
-                let disk_label = label_base.to_string() + ":/";
-                let disk_type = GetDriveTypeW(str2wsz(&disk_label).as_ptr());
-                if disk_type == DRIVE_FIXED {
-                    logical_drives.push(disk_label);
-                }
+    let mut logical_drives = Vec::new();
+    let mut driver_bit = unsafe { GetLogicalDrives() };
+    let mut label_base = 'A';
+    while driver_bit != 0 {
+        if driver_bit & 1 == 1 {
+            let disk_label = label_base.to_string() + ":/";
+            let disk_type = unsafe { GetDriveTypeW(str2wsz(&disk_label).as_ptr()) };
+            if disk_type == DRIVE_FIXED {
+                logical_drives.push(disk_label);
             }
-            label_base = std::char::from_u32((label_base as u32) + 1).unwrap();
-            driver_bit >>= 1;
         }
-        logical_drives
+        label_base = std::char::from_u32((label_base as u32) + 1).expect("invalid char");
+        driver_bit >>= 1;
     }
+    logical_drives
 }
 
 //windows path format:  /d:/work
 fn list_path(path: &str, filter: Pattern) -> Result<Vec<FileInfoResp>, String> {
     let mut files = Vec::<FileInfoResp>::new();
     let mut path = path.to_string();
+
     #[cfg(windows)]
-    {
-        if path == "/" {
-            let disks = get_win32_ready_drives();
-            for disk in disks {
-                files.push(FileInfoResp {
-                    r#type: FS_TYPE_PARTITION.to_string(),
-                    name: disk,
-                    size: 0,
-                    modify_time: 0,
-                    access_time: 0,
-                })
-            }
-            return Ok(files);
+    if path == "/" {
+        for name in get_win32_ready_drives() {
+            files.push(FileInfoResp {
+                r#type: FS_TYPE_PARTITION.to_string(),
+                name,
+                size: 0,
+                modify_time: 0,
+                access_time: 0,
+            })
         }
+        return Ok(files);
     }
 
     if std::env::consts::OS == "windows" && path.starts_with("/") {
@@ -407,21 +323,17 @@ fn list_path(path: &str, filter: Pattern) -> Result<Vec<FileInfoResp>, String> {
 
     let items = fs::read_dir(path).map_err(|e| e.to_string())?;
     for item in items {
-        if let Ok(entry) = item {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if !filter.matches(&name) {
+        let Ok(entry) = item else { continue; };
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !filter.matches(&name) {
+            continue;
+        }
+        if let Ok(meta_data) = entry.metadata() {
+            #[cfg(windows)]
+            if meta_data.file_attributes() & FILE_ATTRIBUTE_HIDDEN != 0 {
                 continue;
             }
-            if let Ok(meta_data) = entry.metadata() {
-                #[cfg(windows)]
-                {
-                    let attr = meta_data.file_attributes();
-                    if attr & FILE_ATTRIBUTE_HIDDEN != 0 {
-                        continue;
-                    }
-                }
-                files.push(file_info_data(name, &meta_data))
-            }
+            files.push(file_info_data(name, &meta_data))
         }
     }
     files.sort_by(|a, b| a.name.cmp(&b.name));
@@ -469,16 +381,13 @@ fn get_long_name(name: String, meta_data: &Metadata) -> String {
     let rights = unix_mode::to_string(meta_data.permissions().mode());
     let link_count = meta_data.st_nlink();
 
-    let owner_name = if let Some(user) = get_user_by_uid(meta_data.st_uid()) {
-        user.name().to_string_lossy().to_string()
-    } else {
-        "unknown".to_string()
+    let owner_name = match get_user_by_uid(meta_data.st_uid()) {
+        Some(user) => user.name().to_string_lossy().to_string(),
+        None => "unknown".to_string(),
     };
-
-    let group_name = if let Some(group) = get_group_by_gid(meta_data.st_gid()) {
-        group.name().to_string_lossy().to_string()
-    } else {
-        "unknown".to_string()
+    let group_name = match get_group_by_gid(meta_data.st_gid()) {
+        Some(group) => group.name().to_string_lossy().to_string(),
+        None => "unknown".to_string(),
     };
     let size = meta_data.st_size();
 

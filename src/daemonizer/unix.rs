@@ -1,9 +1,9 @@
+use crate::common::Opts;
+
 use daemonize::Daemonize;
-use daemonize::DaemonizeError;
 use log::info;
 
-use crate::common::consts::PID_FILE;
-use crate::common::Opts;
+const PID_FILE: &str = "/var/run/tat_agent.pid";
 
 pub fn daemonize(entry: fn()) {
     if Opts::get_opts().no_daemon {
@@ -16,7 +16,7 @@ pub fn daemonize(entry: fn()) {
         Ok(_) => info!("daemonize success"),
         Err(e) => {
             let mut reason = format!("Daemonize failed because: {}.", e);
-            if let DaemonizeError::LockPidfile(_errno) = e {
+            if reason.contains("unable to lock pid file") {
                 reason.push_str(" Another daemon agent may be already running.");
             }
             panic!("{}", reason);

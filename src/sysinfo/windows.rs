@@ -1,7 +1,7 @@
-use winapi::um::sysinfoapi::{ComputerNamePhysicalDnsHostname, GetComputerNameExW};
-
-use crate::{sysinfo::Uname, common::utils::wsz2string};
+use crate::{common::utils::wsz2string, sysinfo::Uname};
 use std::{io, ptr};
+
+use winapi::um::sysinfoapi::{ComputerNamePhysicalDnsHostname, GetComputerNameExW};
 
 impl Uname {
     pub fn new() -> io::Result<Uname> {

@@ -1,6 +1,27 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+
+## [1.0.3] - 2023-07-03
+
+### Changed
+- Add installer packager.
+- Add consistent global snapshot support.
+- Fix init script bugs.
+- Update dependencies versions
+
+## [1.0.2] - 2023-05-26
+
+### Changed
+- Fix PtyInfoFile bugs.
+
+## [1.0.1] - 2023-05-09
+
+### Changed
+- Add register instance.
+- Add vscode proxy support.
+- Optimize some logic.
+
 ## [0.1.33] - 2023-02-23
 
 ### Changed
@@ -40,7 +61,7 @@ All notable changes to this project will be documented in this file.
 ## [0.1.25] - 2022-06-24
 
 ### Changed
-- Dispath error msg when pty bash terminated.
+- Dispatch error msg when pty bash terminated.
 
 ## [0.1.24] - 2022-06-23
 

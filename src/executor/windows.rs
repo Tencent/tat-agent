@@ -1,34 +1,33 @@
+use crate::common::utils::{gen_rand_str_with, get_current_username, str2wsz, wsz2string};
 use crate::daemonizer::wow64_disable_exc;
 use crate::executor::proc::{BaseCommand, MyCommand};
-use crate::start_failed_err_info;
+use crate::network::types::UTF8_BOM_HEADER;
+use std::collections::HashMap;
+use std::fmt::{Debug, Formatter};
+use std::fs::{remove_file, File, OpenOptions};
+use std::io::Write;
+use std::mem;
+use std::os::windows::prelude::{AsRawHandle, FromRawHandle};
+use std::path::Path;
+use std::process::Stdio;
+use std::ptr::null_mut;
+use std::sync::{Arc, OnceLock};
+use std::{fmt, slice};
+
 use async_trait::async_trait;
-use core::mem;
 use libc::{c_void, free, malloc, memcpy};
 use log::{debug, error, info, warn};
 use ntapi::ntpsapi::{
     NtResumeProcess, NtSetInformationProcess, ProcessAccessToken, PROCESS_ACCESS_TOKEN,
 };
-use rand::distributions::Alphanumeric;
-use rand::{thread_rng, Rng};
-use std::collections::HashMap;
-use std::fmt::{Debug, Formatter};
-use std::fs::{remove_file, File, OpenOptions};
-use std::io::Write;
-use std::os::windows::prelude::{AsRawHandle, FromRawHandle};
-use std::path::Path;
-use std::process::Stdio;
-use std::ptr::null_mut;
-use std::sync::Arc;
-use std::{fmt, slice};
 use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
+
 use winapi::shared::minwindef::{DWORD, FALSE, LPVOID, ULONG, USHORT};
 use winapi::shared::ntdef::{LUID, NTSTATUS, NULL, PCHAR, PVOID};
-
 use winapi::shared::winerror::ERROR_ACCESS_DENIED;
 use winapi::um::errhandlingapi::GetLastError;
 use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
-
 use winapi::um::lsalookup::{LSA_STRING, PLSA_STRING};
 use winapi::um::minwinbase::LPSECURITY_ATTRIBUTES;
 use winapi::um::namedpipeapi::CreateNamedPipeW;
@@ -51,19 +50,17 @@ use winapi::um::winbase::{
     CREATE_SUSPENDED, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, PIPE_ACCESS_INBOUND,
     PIPE_ACCESS_OUTBOUND, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT,
 };
-
-use crate::common::utils::{get_current_username, str2wsz, wsz2string};
 use winapi::um::winnt::{
     RtlZeroMemory, SecurityImpersonation, TokenPrimary, HANDLE, PROCESS_ALL_ACCESS,
     PROCESS_TERMINATE, PTOKEN_GROUPS, QUOTA_LIMITS, TOKEN_ALL_ACCESS, TOKEN_SOURCE,
 };
 
-pub struct PowerShellCommand {
+pub struct WindowsCommand {
     base: Arc<BaseCommand>,
     token: File,
 }
 
-impl PowerShellCommand {
+impl WindowsCommand {
     pub fn new(
         cmd_path: &str,
         username: &str,
@@ -74,9 +71,13 @@ impl PowerShellCommand {
         cos_bucket: &str,
         cos_prefix: &str,
         task_id: &str,
-    ) -> PowerShellCommand {
-        let cmd_path = String::from(cmd_path).replace(" ", "` ");
-        PowerShellCommand {
+    ) -> WindowsCommand {
+        let cmd_path = if cmd_path.ends_with(".ps1") {
+            String::from(cmd_path).replace(" ", "` ")
+        } else {
+            cmd_path.to_string()
+        };
+        WindowsCommand {
             base: Arc::new(BaseCommand::new(
                 cmd_path.as_str(),
                 username,
@@ -95,46 +96,61 @@ impl PowerShellCommand {
     fn work_dir_check(&self) -> Result<(), String> {
         if !wow64_disable_exc(|| Path::new(self.base.work_dir.as_str()).exists()) {
             let ret = format!(
-                "PowerShellCommand {} start fail, working_directory:{}, username: {}: working directory not exists",
+                "WindowsCommand {} start failed, working_directory:{}, username: {}: working directory not exists",
                 self.base.cmd_path, self.base.work_dir, self.base.username
             );
-            *self.base.err_info.lock().unwrap() =
-                start_failed_err_info!(ERR_WORKING_DIRECTORY_NOT_EXISTS, self.base.work_dir);
+            *self.base.err_info.lock().unwrap() = format!(
+                "DirectoryNotExists: working_directory `{}` not exists",
+                self.base.work_dir
+            );
             return Err(ret);
         };
         Ok(())
     }
 
     fn prepare_cmd(&mut self, theirs: File) -> Result<Command, String> {
+        info!("=>prepare_cmd");
         let std_out = theirs.try_clone().map_err(|e| {
             *self.base.err_info.lock().unwrap() = e.to_string();
-            error!("prepare_cmd,clone pipe  std_out fail {}", e);
+            error!("prepare_cmd, clone pipe std_out failed: {}", e);
             e.to_string()
         })?;
 
         let std_err = theirs.try_clone().map_err(|e| {
             *self.base.err_info.lock().unwrap() = e.to_string();
-            error!("prepare_cmd,clone pipe  std_err fail {}", e);
+            error!("prepare_cmd, clone pipe std_err failed: {}", e);
             e.to_string()
         })?;
 
         let mut command = Command::new("cmd.exe");
-        command
-            .args(&[
-                "/C",
-                "powershell",
-                "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8",
-                "&",
-                "powershell",
-                "-ExecutionPolicy",
-                "Bypass",
-                self.base.cmd_path.as_str(),
-            ])
-            .stdin(Stdio::null())
-            .stdout(std_out)
-            .stderr(std_err)
-            .current_dir(self.base.work_dir.as_str())
-            .creation_flags(CREATE_SUSPENDED); //create as suspend
+        if self.base.cmd_path.ends_with(".ps1") {
+            info!("execute powershell command {}", self.base.cmd_path);
+            command
+                .args(&[
+                    "/C",
+                    "powershell",
+                    "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8",
+                    "&",
+                    "powershell",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    self.base.cmd_path.as_str(),
+                ])
+                .stdin(Stdio::null())
+                .stdout(std_out)
+                .stderr(std_err)
+                .current_dir(self.base.work_dir.as_str())
+                .creation_flags(CREATE_SUSPENDED); //create as suspende
+        } else {
+            info!("execute bat command {}", self.base.cmd_path);
+            command
+                .args(&["/C", self.base.cmd_path.as_str()])
+                .stdin(Stdio::null())
+                .stdout(std_out)
+                .stderr(std_err)
+                .current_dir(self.base.work_dir.as_str())
+                .creation_flags(CREATE_SUSPENDED); //create as suspend
+        }
 
         self.token = get_user_token(&self.base.username).map_err(|err| {
             *self.base.err_info.lock().unwrap() = err.clone();
@@ -183,20 +199,20 @@ impl PowerShellCommand {
                 warn!("remove log file failed: {:?}", e)
             }
             format!(
-                "PowerShellCommand {}, working_directory:{}, start fail: {}",
+                "WindowsCommand {}, working_directory:{}, start failed: {}",
                 self.base.cmd_path, self.base.work_dir, e
             )
         })?;
-        *self.base.pid.lock().unwrap() = Some(child.id());
+        *self.base.pid.lock().unwrap() = Some(child.id().unwrap());
         self.resume_as_user();
         Ok(child)
     }
 }
 
 #[async_trait]
-impl MyCommand for PowerShellCommand {
+impl MyCommand for WindowsCommand {
     async fn run(&mut self) -> Result<(), String> {
-        info!("=>PowerShellCommand::run()");
+        info!("=>WindowsCommand::run()");
         // store path check
         self.store_path_check()?;
 
@@ -211,11 +227,11 @@ impl MyCommand for PowerShellCommand {
         let mut child = self.spawn_cmd(their_pipe)?;
 
         let base = self.base.clone();
-        info!("=>PowerShellCommand::tokio::spawn");
+        info!("=>WindowsCommand::tokio::spawn");
         // async read output.
         tokio::spawn(async move {
             base.add_timeout_timer();
-            base.read_ps1_output(our_pipe, log_file).await;
+            base.read_output(our_pipe, log_file).await;
             base.del_timeout_timer();
             base.process_finish(&mut child).await;
         });
@@ -231,46 +247,49 @@ impl MyCommand for PowerShellCommand {
 }
 
 impl BaseCommand {
-    async fn read_ps1_output(&self, file: File, mut log_file: File) {
-        let mut utf8_bom_checked = false;
-        let pid = self.pid.lock().unwrap().unwrap();
+    async fn read_output(&self, file: File, mut log_file: File) {
         const BUF_SIZE: usize = 1024;
+
+        let pid = self.pid.lock().unwrap().unwrap();
+        let mut utf8_bom_checked = false;
         let mut buffer: [u8; BUF_SIZE] = [0; BUF_SIZE];
         let mut file = tokio::fs::File::from_std(file);
-        loop {
-            let size = file.read(&mut buffer[..]).await;
-            if size.is_err() {
-                error!("read output err:{}, pid:{}", size.unwrap_err(), pid);
-                break;
-            }
-            let mut len = size.unwrap();
-            if len > 0 {
-                //win2008 check utf8 bom header, start with 0xEE,0xBB,0xBF,
-                if utf8_bom_checked == false {
-                    utf8_bom_checked = true;
-                    let utf8_bom_header: [u8; 3] = [0xEF, 0xBB, 0xBF];
-                    if buffer.starts_with(&utf8_bom_header[..]) {
-                        buffer.rotate_left(3);
-                        len = len - 3;
-                    }
-                }
-                let output_string = String::from_utf8_lossy(&buffer[..len]);
-                debug!("output:[{}], pid:{}, len:{}", output_string, pid, len);
+        let need_cos = !(self.cos_bucket.is_empty() || self.cos_prefix.is_empty());
 
-                if let Err(e) = log_file.write(&buffer[..len]) {
-                    error!("write output file fail: {:?}", e)
+        loop {
+            let mut len = match file.read(&mut buffer[..]).await {
+                Err(err) => break error!("read output error:{}, pid:{}", err, pid),
+                Ok(0) => break info!("read output finished normally, pid:{}", pid),
+                Ok(len) => len,
+            };
+
+            //win2008 check utf8 bom header, start with 0xEE, 0xBB, 0xBF,
+            if utf8_bom_checked == false {
+                utf8_bom_checked = true;
+                if buffer.starts_with(&UTF8_BOM_HEADER) {
+                    buffer.rotate_left(3);
+                    len = len - 3;
                 }
-                self.append_output(&buffer[..len]);
-            } else {
-                info!("read output finished normally, pid:{}", pid);
-                break;
+            }
+
+            let output_string = decode_windows_output(&buffer[..len]);
+            debug!("output:[{}], pid:{}, len:{}", output_string, pid, len);
+
+            self.append_output(output_string.as_bytes());
+
+            if need_cos {
+                if let Err(e) = log_file.write(output_string.as_bytes()) {
+                    error!("write output file failed: {:?}", e)
+                }
             }
         }
-        self.upload_log_cos().await;
+        if need_cos {
+            self.upload_log_cos().await;
+        }
     }
 
     pub fn kill_process_group(pid: u32) {
-        info!("=>kill_process_group, pid{}", pid);
+        info!("=>kill_process_group, pid:{}", pid);
         unsafe {
             let mut proc_list: Vec<(u32, u32)> = Vec::new();
             let mut child_pids: Vec<u32> = Vec::new();
@@ -307,20 +326,20 @@ impl BaseCommand {
 
             //kill process
             for (_, pid) in child_pids.iter().enumerate() {
-                info!("pid need to kill is {}", pid);
+                info!("pid need to kill: {}", pid);
                 let handle = OpenProcess(PROCESS_TERMINATE, FALSE, *pid);
                 if handle != NULL {
                     TerminateProcess(handle, 0xffffffff as u32);
                     CloseHandle(handle);
                 } else {
-                    error!("open pid err, {}", GetLastError());
+                    error!("open pid error: {}", GetLastError());
                 }
             }
         }
     }
 }
 
-impl Debug for PowerShellCommand {
+impl Debug for WindowsCommand {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         self.base.fmt(f)
     }
@@ -336,11 +355,7 @@ pub fn anon_pipe(ours_readable: bool) -> Result<(File, File), String> {
             name = format!(
                 r"\\.\pipe\__tat_anon_pipe__.{}.{}",
                 GetCurrentProcessId(),
-                thread_rng()
-                    .sample_iter(&Alphanumeric)
-                    .take(10)
-                    .map(char::from)
-                    .collect::<String>(),
+                gen_rand_str_with(10)
             );
 
             let wide_name = str2wsz(&name);
@@ -369,8 +384,8 @@ pub fn anon_pipe(ours_readable: bool) -> Result<(File, File), String> {
                         continue;
                     }
                 }
-                error!("create namepipe fail,{}", err);
-                return Err(format!("create namepipe fail,{}", err));
+                error!("create namepipe failed: {}", err);
+                return Err(format!("create namepipe failed: {}", err));
             }
             ours = File::from_raw_handle(handle);
             break;
@@ -423,7 +438,7 @@ fn create_user_token(user_name: &str) -> Result<File, String> {
         let mut status =
             LsaRegisterLogonProcess(&mut tat_lsa as PLSA_STRING, &mut lsa_handle, &mut mode);
         if status != 0 {
-            return Err(format!("RegisterLogonProcess Fail {}", status));
+            return Err(format!("RegisterLogonProcess Failed: {}", status));
         }
 
         let mut pkg_name = "MICROSOFT_AUTHENTICATION_PACKAGE_V1_0".to_string();
@@ -461,7 +476,7 @@ fn create_user_token(user_name: &str) -> Result<File, String> {
         let wdomain = str2wsz(".");
         let wdomain_size = (wdomain.len() - 1) * 2;
 
-        let domain_buffer = name_buffer.add((wname.len() - 1) * 2);
+        let domain_buffer = name_buffer.add(wname_size);
         memcpy(
             domain_buffer as *mut c_void,
             wdomain.as_ptr() as *const c_void,
@@ -477,7 +492,7 @@ fn create_user_token(user_name: &str) -> Result<File, String> {
         memcpy(
             source_context.SourceName.as_mut_ptr() as *mut c_void,
             tat_name.as_ptr() as *const c_void,
-            (wdomain.len() - 1) * 2,
+            wdomain_size,
         );
         AllocateLocallyUniqueId(&mut source_context.SourceIdentifier);
 
@@ -516,7 +531,7 @@ fn create_user_token(user_name: &str) -> Result<File, String> {
             LsaFreeReturnBuffer(profile);
         }
         if status != 0 {
-            return Err(format!("LsaLogonUser Fail,{}", status));
+            return Err(format!("LsaLogonUser Failed, {}", status));
         }
 
         let _token = File::from_raw_handle(token); // for auto close
@@ -532,32 +547,31 @@ fn create_user_token(user_name: &str) -> Result<File, String> {
         return if primary_token != null_mut() {
             Ok(File::from_raw_handle(primary_token))
         } else {
-            Err(format!("DuplicateTokenEx Fail,{}", GetLastError()))
+            Err(format!("DuplicateTokenEx Failed, {}", GetLastError()))
         };
     }
 }
 
 pub fn get_user_token(user_name: &str) -> Result<File, String> {
-    static mut IS_2008: Option<bool> = None;
-    let is_2008 = unsafe {
-        IS_2008.get_or_insert_with(|| {
-            let output = std::process::Command::new("wmic")
-                .args(&["os", "get", "Caption"])
-                .stdout(Stdio::piped())
-                .output()
-                .unwrap();
-            let version = String::from_utf8_lossy(&output.stdout);
-            let result = version.contains("2008");
-            result
-        })
-    };
+    static IS_2008: OnceLock<bool> = OnceLock::new();
+    let is_2008 = IS_2008.get_or_init(|| {
+        let output = std::process::Command::new("wmic")
+            .args(&["os", "get", "Caption"])
+            .stdout(Stdio::piped())
+            .output()
+            .unwrap();
+        let version = String::from_utf8_lossy(&output.stdout);
+        info!("version is {}", version);
+        let result = version.contains("2008");
+        result
+    });
 
     if get_current_username().eq_ignore_ascii_case(user_name) || *is_2008 {
-        info!("use current token user:{} is_2008:{}", user_name, *is_2008);
+        info!("use current token user:{}, is_2008:{}", user_name, *is_2008);
         let mut token: HANDLE = 0 as HANDLE;
         unsafe {
             if 0 == OpenProcessToken(GetCurrentProcess(), TOKEN_ALL_ACCESS, &mut token) {
-                return Err(format!("OpenProcessToken Fail {}", GetLastError()));
+                return Err(format!("OpenProcessToken Failed: {}", GetLastError()));
             }
             return Ok(File::from_raw_handle(token));
         }
@@ -565,9 +579,25 @@ pub fn get_user_token(user_name: &str) -> Result<File, String> {
     return create_user_token(user_name);
 }
 
+fn decode_windows_output(v: &[u8]) -> String {
+    use winapi::um::winnls::GetOEMCP;
+
+    static CODEPAGE: OnceLock<u16> = OnceLock::new();
+    let codepage = *CODEPAGE.get_or_init(|| unsafe { GetOEMCP() } as u16);
+
+    match std::str::from_utf8(&v) {
+        Ok(output) => output.to_string(),
+        Err(_) => codepage_strings::Coding::new(codepage)
+            .expect("create decoder failed")
+            .decode(&v)
+            .expect("output_string decode failed")
+            .to_string(),
+    }
+}
+
 #[cfg(test)]
 mod test {
-    use crate::executor::powershell_command::anon_pipe;
+    use crate::executor::windows::anon_pipe;
     use std::io::{Read, Write};
     #[test]
     fn test() {

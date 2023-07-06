@@ -1,31 +1,33 @@
+use crate::network::InvokeAPIAdapter;
+use crate::ontime::self_update::try_restart_agent;
+use std::sync::atomic::Ordering::SeqCst;
+use std::sync::{atomic::AtomicU64, Mutex};
+
 use log::{error, info, warn};
 use once_cell::sync::Lazy;
 use ringbuffer::{AllocRingBuffer, RingBufferExt, RingBufferWrite};
-use std::sync::atomic::Ordering::SeqCst;
-use std::sync::{atomic::AtomicU64, Mutex};
 use tokio::runtime::Builder;
-
-use crate::common::consts::{ONTIME_MAX_FD_COUNT, ONTIME_MAX_MEM_RES_BYTES};
-use crate::ontime::self_update::try_restart_agent;
-use crate::{common::consts::ONTIME_LEAK_REPORT_FREQUENCY, network::InvokeAPIAdapter};
 
 cfg_if::cfg_if! {
     if #[cfg(unix)] {
-        use std::{
-            fs::{self, File},
-            io::BufRead,
-            path::Path,
-            process,
-        };
+        use std::fs::{self, File};
+        use std::io::BufRead;
+        use std::path::Path;
+        use std::process;
         use procfs::process::Process;
+        const ONTIME_MAX_FD_COUNT: u64 = 1000;
     } else if #[cfg(windows)] {
         use winapi::um::processthreadsapi::{GetProcessHandleCount, GetCurrentProcess};
-        use winapi::um::psapi::{GetProcessMemoryInfo,PROCESS_MEMORY_COUNTERS};
+        use winapi::um::psapi::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
         use std::mem;
+        const ONTIME_MAX_FD_COUNT: u64 = 2000;
     }
 }
 
-pub(crate) fn check_resource_leak() {
+const ONTIME_MAX_MEM_RES_BYTES: u64 = 200 * 1024 * 1024;
+const ONTIME_LEAK_REPORT_FREQUENCY: u64 = 360;
+
+pub fn check_resource_leak() {
     static CHECK_CNT: AtomicU64 = AtomicU64::new(0);
     static FD_CNT: AtomicU64 = AtomicU64::new(0);
     static MEM_CNT: AtomicU64 = AtomicU64::new(0);
@@ -52,7 +54,7 @@ pub(crate) fn check_resource_leak() {
             mem_res_rf.to_vec()
         );
         if let Err(e) = try_restart_agent() {
-            error!("try restart agent fail: {:?}", e)
+            error!("try restart agent failed: {:?}", e)
         }
 
         // should not comes here, because agent should has been killed when called `try_restart_agent`.
@@ -79,8 +81,7 @@ pub(crate) fn check_resource_leak() {
             "ReportResource mem {} handle {} zp_cnt {}",
             mem_avg, fd_avg, zp_cnt
         );
-        let _ = Builder::new()
-            .basic_scheduler()
+        let _ = Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap()
@@ -114,7 +115,7 @@ fn get_handle_cnt() -> u64 {
     if let Ok(proc) = Process::new(pid as i32) {
         match proc.fd_count() {
             Ok(fd) => return fd as u64,
-            Err(err) => error!("get_handle_cnt {}", err.to_string()),
+            Err(err) => error!("get_handle_cnt {}", err),
         }
     }
     return 0;
@@ -126,10 +127,8 @@ fn get_mem_size() -> u64 {
     let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
     if let Ok(proc) = Process::new(pid as i32) {
         match proc.statm() {
-            Ok(statm) => {
-                return statm.resident * page_size as u64;
-            }
-            Err(err) => error!("get_mem_size {}", err.to_string()),
+            Ok(statm) => return statm.resident * page_size as u64,
+            Err(err) => error!("get_mem_size {}", err),
         }
     }
     return 0;
@@ -141,53 +140,43 @@ fn get_zoom_process() -> u32 {
     let mut nz: u32 = 0;
     let items = fs::read_dir(Path::new("/proc")).unwrap();
     for item in items {
-        if let Ok(entry) = item {
-            let entry_path = entry.path();
-            if let Ok(meta) = entry.metadata() {
-                if !meta.is_dir() {
-                    continue;
-                }
-            } else {
-                continue;
-            }
+        let Ok(entry) = item else { continue };
+        if !matches!(entry.metadata(), Ok(meta) if meta.is_dir() ) {
+            continue;
+        }
 
-            let status_path = entry_path.join("status");
-            if let Ok(metadata) = fs::metadata(status_path.as_path()) {
-                if !metadata.is_file() {
-                    continue;
-                }
-            }
+        let status_path = entry.path().join("status");
+        if matches!(fs::metadata(status_path.as_path()), Ok(metadata) if !metadata.is_file()) {
+            continue;
+        }
 
-            let mut ppid: Option<i32> = None;
-            let mut state: String = "".to_string();
-            if let Ok(file) = File::open(status_path) {
-                let mut reader = std::io::BufReader::new(file);
-                loop {
-                    let mut linebuf = String::new();
-                    match reader.read_line(&mut linebuf) {
-                        Ok(_) => {
-                            if linebuf.is_empty() {
-                                break;
-                            }
-                            let parts: Vec<&str> = linebuf[..].splitn(2, ':').collect();
-                            if parts.len() == 2 {
-                                let key = parts[0].trim();
-                                let value = parts[1].trim();
-                                match key {
-                                    "PPid" => ppid = value.parse().ok(),
-                                    "State" => state = value.to_string(),
-                                    _ => (),
-                                }
-                            }
-                        }
-                        Err(_) => break,
+        let mut ppid: Option<i32> = None;
+        let mut state: String = "".to_string();
+        if let Ok(file) = File::open(status_path) {
+            let mut reader = std::io::BufReader::new(file);
+            loop {
+                let mut linebuf = String::new();
+                if reader.read_line(&mut linebuf).is_err() {
+                    break;
+                }
+                if linebuf.is_empty() {
+                    break;
+                }
+                let parts: Vec<&str> = linebuf[..].splitn(2, ':').collect();
+                if parts.len() == 2 {
+                    let key = parts[0].trim();
+                    let value = parts[1].trim();
+                    match key {
+                        "PPid" => ppid = value.parse().ok(),
+                        "State" => state = value.to_string(),
+                        _ => (),
                     }
                 }
             }
+        }
 
-            if ppid.is_some() && ppid.unwrap() == pid && state.contains("Z") {
-                nz = nz + 1;
-            }
+        if ppid.is_some() && ppid.unwrap() == pid && state.contains("Z") {
+            nz = nz + 1;
         }
     }
     nz

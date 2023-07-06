@@ -1,13 +1,14 @@
 use crate::network::cos::errors::Error;
-use reqwest::header::{HeaderMap, HeaderName};
-use reqwest::Body;
 use std::collections::HashMap;
-use tokio::fs::File;
+use std::pin::{pin, Pin};
 
-pub fn to_headers<S>(hashmap: HashMap<S, S>) -> Result<HeaderMap, Error>
-where
-    S: AsRef<str>,
-{
+use futures::task::{Context, Poll};
+use futures::{io, Future, Stream};
+use reqwest::header::{HeaderMap, HeaderName};
+use tokio::fs::File;
+use tokio::io::AsyncReadExt;
+
+pub fn to_headers<S: AsRef<str>>(hashmap: HashMap<S, S>) -> Result<HeaderMap, Error> {
     let mut headers = HeaderMap::new();
     for (key, val) in hashmap.iter() {
         let key = key.as_ref();
@@ -17,7 +18,19 @@ where
     Ok(headers)
 }
 
-pub fn file_to_body(file: File) -> Body {
-    let stream = tokio::io::reader_stream(file);
-    Body::wrap_stream(stream)
+pub struct FileStream(pub File);
+
+impl Stream for FileStream {
+    type Item = io::Result<Vec<u8>>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut buf = [0u8; 1204];
+        let read = pin!(self.0.read(&mut buf));
+        match read.poll(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Ok(0)) => Poll::Ready(None),
+            Poll::Ready(Ok(n)) => Poll::Ready(Some(Ok(buf[..n].to_vec()))),
+            Poll::Ready(Err(e)) => Poll::Ready(Some(Err(e))),
+        }
+    }
 }

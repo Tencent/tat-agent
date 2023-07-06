@@ -1,8 +1,9 @@
+use std::io::Error as IoError;
+use std::string::FromUtf8Error;
+
 use reqwest::header::InvalidHeaderName as HttpInvalidHeaderNameError;
 use reqwest::header::InvalidHeaderValue as HttpInvalidHeaderValueError;
 use reqwest::Error as ReqwestError;
-use std::io::Error as IoError;
-use std::string::FromUtf8Error;
 
 #[derive(Debug)]
 pub enum Error {

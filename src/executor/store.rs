@@ -1,24 +1,18 @@
-use log::info;
+use crate::common::utils::gen_rand_str_with;
+use crate::network::types::InvocationNormalTask;
 use std::fs::{create_dir_all, remove_file, File};
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Local};
-use rand::distributions::Alphanumeric;
-use rand::{thread_rng, Rng};
+use chrono::Local;
+use log::info;
 
-use crate::common::consts;
-#[cfg(test)]
-use crate::common::logger;
-use crate::network::types::InvocationNormalTask;
-
-cfg_if::cfg_if! {
-    if #[cfg(unix)] {
-        use std::fs::{set_permissions, Permissions};
-        use std::os::unix::fs::PermissionsExt;
-        use std::io;
-    }
-}
+use super::{CMD_TYPE_BAT, CMD_TYPE_POWERSHELL, CMD_TYPE_SHELL};
+use super::{TASK_LOG_PATH, TASK_STORE_PATH};
+const TASK_STORE_PREFIX: &str = "task";
+const SUFFIX_BAT: &str = ".bat";
+const SUFFIX_PS1: &str = ".ps1";
+const SUFFIX_SHELL: &str = ".sh";
 
 pub struct TaskFileStore {
     store_path: PathBuf,
@@ -29,9 +23,9 @@ pub struct TaskFileStore {
 impl TaskFileStore {
     pub fn new() -> TaskFileStore {
         let t = TaskFileStore {
-            store_path: Path::new(consts::TASK_STORE_PATH).to_path_buf(),
-            prefix: String::from(consts::TASK_STORE_PREFIX),
-            log_path: Path::new(consts::TASK_LOG_PATH).to_path_buf(),
+            store_path: Path::new(TASK_STORE_PATH).to_path_buf(),
+            prefix: String::from(TASK_STORE_PREFIX),
+            log_path: Path::new(TASK_LOG_PATH).to_path_buf(),
         };
         t
     }
@@ -46,22 +40,18 @@ impl TaskFileStore {
 
     fn get_suffix(&self, command_type: &String) -> &str {
         return match command_type.as_str() {
-            consts::CMD_TYPE_SHELL => consts::SUFFIX_SHELL,
-            consts::CMD_TYPE_BAT => consts::SUFFIX_BAT,
-            consts::CMD_TYPE_POWERSHELL => consts::SUFFIX_PS1,
-            _ => consts::SUFFIX_SHELL,
+            CMD_TYPE_SHELL => SUFFIX_SHELL,
+            CMD_TYPE_BAT => SUFFIX_BAT,
+            CMD_TYPE_POWERSHELL => SUFFIX_PS1,
+            _ => SUFFIX_SHELL,
         };
     }
 
     fn gen_task_file_path(&self, t: &InvocationNormalTask) -> PathBuf {
         // use YYYYmm as task directory name
         // use random string as postfix
-        let now: DateTime<Local> = Local::now();
-        let rand_str: String = thread_rng()
-            .sample_iter(&Alphanumeric)
-            .take(10)
-            .map(char::from)
-            .collect();
+        let now = Local::now();
+        let rand_str = gen_rand_str_with(10);
 
         let suffix = self.get_suffix(&t.command_type);
         let file_name = format!(
@@ -89,48 +79,28 @@ impl TaskFileStore {
     ) -> Result<File, String> {
         let file_path = Path::new(path);
         if file_path.exists() {
-            if ignore_exists {
-                match remove_file(path) {
-                    Err(e) => {
-                        info!("failed to remove exist file {}: {}", path, e);
-                        return Err(format!("failed to remove exist file {}: {}", path, e));
-                    }
-                    _ => {}
-                }
-            } else {
-                return Err(format!("file {} already exists", path));
+            if !ignore_exists {
+                return Err(format!("file `{}` already exists", path));
+            } else if let Err(e) = remove_file(path) {
+                info!("failed to remove exist file `{}`: {}", path, e);
+                return Err(format!("failed to remove exist file `{}`: {}", path, e));
             }
         }
-        let dir = match Path::parent(file_path) {
-            Some(p) => p,
-            None => return Err(format!("cannot find parent directory for {:?}", file_path)),
-        };
-        let ret = match File::create(path) {
-            Err(why) => {
-                info!(
-                    "couldn't create file {}, try to create directory {:?}",
-                    why, dir
-                );
-                match create_dir_all(dir) {
-                    Err(why) => Err(format!("couldn't create directory: {}", why)),
-                    Ok(_) => match File::create(path) {
-                        Err(why) => Err(format!("couldn't create file: {}", why)),
-                        Ok(file) => Ok(file),
-                    },
-                }
-            }
-            Ok(file) => Ok(file),
-        };
+
+        let dir = Path::parent(file_path)
+            .ok_or(format!("cannot find parent directory for `{file_path:?}`"))?;
+        let ret = File::create(path).or_else(|why| {
+            info!("couldn't create file: {why}, try to create directory `{dir:?}`");
+            create_dir_all(dir).map_err(|why| format!("couldn't create directory: {why}"))?;
+            Ok(File::create(path).map_err(|why| format!("couldn't create file: {why}"))?)
+        });
 
         #[cfg(unix)]
         if executable {
             // set permissions for path recursively, to make task-xxx.sh available for non-root user.
-            match self.set_permissions_recursively(path.as_ref()) {
-                Err(e) => {
-                    info!("failed to chmod path recursively {}: {}", path, e);
-                    return Err(format!("failed to chmod path recursively {}: {}", path, e));
-                }
-                _ => {}
+            if let Err(e) = self.set_permissions_recursively(path.as_ref()) {
+                info!("failed to chmod path `{}` recursively: {}", path, e);
+                return Err(format!("failed to chmod path `{path}` recursively: {e}"));
             };
         }
 
@@ -138,15 +108,16 @@ impl TaskFileStore {
     }
 
     #[cfg(unix)]
-    fn set_permissions_recursively(&self, path: &Path) -> io::Result<()> {
+    fn set_permissions_recursively(&self, path: &Path) -> std::io::Result<()> {
+        use crate::executor::FILE_EXECUTE_PERMISSION_MODE;
+        use std::fs::{set_permissions, Permissions};
+        use std::os::unix::fs::PermissionsExt;
+
         let mut path = path.clone();
         while path.to_str() != Some("/tmp") {
-            match set_permissions(
-                path,
-                Permissions::from_mode(consts::FILE_EXECUTE_PERMISSION_MODE),
-            ) {
+            match set_permissions(path, Permissions::from_mode(FILE_EXECUTE_PERMISSION_MODE)) {
                 Err(e) => {
-                    info!("failed to chmod path {:?}: {}", path, e);
+                    info!("failed to chmod path `{:?}`: {}", path, e);
                     return Err(e);
                 }
                 _ => match path.parent() {
@@ -164,7 +135,7 @@ impl TaskFileStore {
 
         let task_log_path = self.get_task_log_path(t).display().to_string();
         info!(
-            "save task {} output to {}",
+            "save task {} output to `{}`",
             &t.invocation_task_id, task_log_path
         );
 
@@ -178,7 +149,7 @@ impl TaskFileStore {
         let s = t.decode_command()?;
         let res = file.write_all(&s);
         if res.is_err() {
-            return Err("fail to store command in task file".to_string());
+            return Err("failed to store command in task file".to_string());
         }
 
         Ok((task_file_path, task_log_path))
@@ -187,7 +158,7 @@ impl TaskFileStore {
     #[cfg(test)]
     pub fn remove(&self, path: &str) {
         match remove_file(path) {
-            Ok(_) => info!("remove task from {}", path),
+            Ok(_) => info!("remove task from `{}`", path),
             Err(why) => panic!("couldn't remove task: {}", why),
         }
     }
@@ -196,6 +167,9 @@ impl TaskFileStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::logger;
+    #[cfg(windows)]
+    use crate::network::types::UTF8_BOM_HEADER;
     use std::fs::{read, read_dir, remove_dir, remove_file};
 
     #[test]
@@ -244,9 +218,7 @@ mod tests {
         #[cfg(windows)]
         {
             //check utf8 bom, start with 0xEF 0xBB 0xBF
-            assert_eq!(contents[2], 0xBF);
-            assert_eq!(contents[1], 0xBB);
-            assert_eq!(contents[0], 0xEF);
+            assert_eq!(contents[0..=2], UTF8_BOM_HEADER);
             contents = Vec::from(&contents[3..]);
         }
         let command = String::from_utf8_lossy(contents.as_slice());

@@ -1,12 +1,7 @@
 // 用于封装访问HTTP API的方法
-use log::{error, info};
-use std::fmt;
-use serde::{de::DeserializeOwned, Serialize};
-use serde_json::from_str;
 
 use super::urls::{get_invoke_url, get_register_url};
 use super::{build_extra_headers, RegisterInfo};
-use crate::common::consts::{HTTP_REQUEST_NO_RETRIES, HTTP_REQUEST_RETRIES};
 use crate::common::utils::generate_rsa_key;
 use crate::network::types::{
     AgentError, AgentErrorCode, AgentRequest, CheckUpdateRequest, CheckUpdateResponse,
@@ -19,31 +14,37 @@ use crate::network::types::{
 use crate::network::HttpRequester;
 use crate::sysinfo::{get_hostname, get_local_ip, get_machine_id};
 
+use log::{error, info};
 use reqwest::Response;
+use serde::{de::DeserializeOwned, Serialize};
+use serde_json::from_str;
+
+const HTTP_REQUEST_RETRIES: u64 = 3;
+const HTTP_REQUEST_NO_RETRIES: u64 = 1;
 
 #[cfg_attr(test, faux::create)]
-pub struct InvokeAPIAdapter {}
+pub struct InvokeAPIAdapter;
 
 #[cfg_attr(test, faux::methods)]
 impl InvokeAPIAdapter {
     pub fn new() -> InvokeAPIAdapter {
-        InvokeAPIAdapter {}
+        InvokeAPIAdapter
     }
 
     pub async fn register_instance(
         &self,
         region: &String,
-        register_code: &String,
+        register_id: &String,
         register_value: &String,
     ) -> Result<RegisterInfo, String> {
-        let machine_id = get_machine_id().ok_or("get_machine_id fail".to_string())?;
-        let local_ip = get_local_ip().ok_or("get_local_ip fail".to_string())?;
-        let hostname = get_hostname().ok_or("get_hostname fail")?;
-        let (pubkey, privkey) = generate_rsa_key().ok_or("generate_rsa_key fail")?;
+        let machine_id = get_machine_id().ok_or("get_machine_id failed")?;
+        let local_ip = get_local_ip().ok_or("get_local_ip failed")?;
+        let hostname = get_hostname().ok_or("get_hostname failed")?;
+        let (pubkey, privkey) = generate_rsa_key().ok_or("generate_rsa_key failed")?;
 
         let body = RegisterInstanceRequest::new(
             machine_id.clone(),
-            register_code.clone(),
+            register_id.clone(),
             register_value.clone(),
             pubkey,
             hostname,
@@ -58,7 +59,7 @@ impl InvokeAPIAdapter {
 
         let record = RegisterInfo {
             region: region.to_string(),
-            register_code: register_code.to_string(),
+            register_code: register_id.to_string(),
             register_value: register_value.to_string(),
             machine_id,
             private_key: privkey,
@@ -187,7 +188,7 @@ impl InvokeAPIAdapter {
     }
 
     // parse standard formatted response to custom type
-    async fn send<T: Serialize + fmt::Debug, R: DeserializeOwned>(
+    async fn send<T: Serialize + std::fmt::Debug, R: DeserializeOwned>(
         &self,
         action: &str,
         url: &str,
@@ -212,10 +213,10 @@ impl InvokeAPIAdapter {
                 Err(ref e) => {
                     if retry_cnt < retries {
                         retry_cnt = retry_cnt + 1;
-                        info!("request error: {:?} retry {}", e, retry_cnt);
+                        info!("request error: {:?}, retry {}", e, retry_cnt);
                         continue;
                     }
-                    error!("request error: {:?} already try {}", e, retry_cnt);
+                    error!("request error reached {} times", retry_cnt);
                     return Err(e.clone());
                 }
             }
@@ -226,40 +227,27 @@ impl InvokeAPIAdapter {
         &self,
         reqwest_resp: Response,
     ) -> Result<T, AgentError<String>> {
-        let txt = match reqwest_resp.text().await {
-            Ok(txt) => txt,
-            Err(e) => {
-                error!("failed to read response {:?}", e);
-                return Err(AgentError::new(
-                    AgentErrorCode::ResponseReadError,
-                    &format!("failed to read response {:?}", e),
-                ));
-            }
-        };
+        let txt = reqwest_resp.text().await.map_err(|e| {
+            AgentError::new(
+                AgentErrorCode::ResponseReadError,
+                &format!("failed to read response: {:?}", e),
+            )
+        })?;
 
         info!("response text {:?}", txt);
-        let raw_resp_result: Result<ServerRawResponse<T>, _> = from_str(&txt);
-        match raw_resp_result {
-            Ok(raw_resp) => match raw_resp.into_response() {
-                Ok(resp_content) => return Ok(resp_content),
-                Err(resp_err) => {
-                    let agent_err = AgentError::wrap(
-                        AgentErrorCode::ResponseEmptyError,
-                        "empty response content",
-                        format!("response error {:?}", resp_err),
-                    );
-                    error!("{:?}", agent_err);
-                    return Err(agent_err);
-                }
-            },
-            Err(e) => {
-                let agent_err = AgentError::new(
-                    AgentErrorCode::JsonDecodeError,
-                    &format!("failed to parse json response {:?}", e),
-                );
-                error!("{:?}", agent_err);
-                return Err(agent_err);
-            }
-        }
+        let raw_resp = from_str::<'_, ServerRawResponse<T>>(&txt).map_err(|e| {
+            AgentError::new(
+                AgentErrorCode::JsonDecodeError,
+                &format!("failed to parse json response: {:?}", e),
+            )
+        })?;
+
+        raw_resp.into_response().map_err(|e| {
+            AgentError::wrap(
+                AgentErrorCode::ResponseEmptyError,
+                "empty response content",
+                format!("response error: {:?}", e),
+            )
+        })
     }
 }

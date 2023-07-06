@@ -1,4 +1,5 @@
 use std::{fs::File, sync::Arc};
+
 mod file;
 pub mod gather;
 mod handler;
@@ -15,8 +16,13 @@ cfg_if::cfg_if! {
     }
 }
 
+pub const WS_TXT_MSG: &str = "pty_cmd_msg";
+pub const WS_BIN_MSG: &str = "pty_file_msg";
 pub const PTY_INSPECT_READ: u8 = 0x0;
 pub const PTY_INSPECT_WRITE: u8 = 0x1;
+pub const SLOT_PTY_BIN: &str = "event_slot_pty_file";
+pub const WS_MSG_TYPE_PTY_ERROR: &str = "PtyError";
+pub const PTY_FLAG_ENABLE_BLOCK: u32 = 0x00000001;
 
 pub trait PtyAdapter {
     fn openpty(

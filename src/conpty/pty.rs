@@ -1,27 +1,33 @@
-use crate::common::consts::{
-    PTY_FLAG_ENABLE_BLOCK, PTY_REMOVE_INTERVAL, SLOT_PTY_BIN, SLOT_PTY_CMD, WS_MSG_TYPE_PTY_ERROR,
-    WS_MSG_TYPE_PTY_EXEC_CMD, WS_MSG_TYPE_PTY_INPUT, WS_MSG_TYPE_PTY_OUTPUT, WS_MSG_TYPE_PTY_READY,
-    WS_MSG_TYPE_PTY_RESIZE, WS_MSG_TYPE_PTY_START, WS_MSG_TYPE_PTY_STOP,
-};
+use super::gather::PtyGather;
+use super::handler::{BsonHandler, Handler, JsonHandler};
 use crate::common::evbus::EventBus;
 use crate::common::utils::{get_current_username, get_now_secs};
 use crate::conpty::{PtyAdapter, PtyBase};
-
 use crate::network::types::ws_msg::{
     ExecCmdReq, PtyBinErrMsg, PtyError, PtyInput, PtyOutput, PtyReady, PtyResize, PtyStart, PtyStop,
 };
-use log::{error, info};
+
 use std::fs::File;
 use std::io::Write;
-
-use super::gather::PtyGather;
-use super::handler::{BsonHandler, Handler, JsonHandler};
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::SeqCst};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+use base64::{engine::general_purpose::STANDARD, Engine};
+use log::{error, info};
 use tokio::io::AsyncReadExt;
 use tokio::time::timeout;
+
+use super::{PTY_FLAG_ENABLE_BLOCK, SLOT_PTY_BIN, WS_MSG_TYPE_PTY_ERROR};
+const SLOT_PTY_CMD: &str = "event_slot_pty_cmd";
+const WS_MSG_TYPE_PTY_EXEC_CMD: &str = "PtyExecCmd";
+const WS_MSG_TYPE_PTY_START: &str = "PtyStart";
+const WS_MSG_TYPE_PTY_STOP: &str = "PtyStop";
+const WS_MSG_TYPE_PTY_RESIZE: &str = "PtyResize";
+const WS_MSG_TYPE_PTY_INPUT: &str = "PtyInput";
+const WS_MSG_TYPE_PTY_READY: &str = "PtyReady";
+const WS_MSG_TYPE_PTY_OUTPUT: &str = "PtyOutput";
+const PTY_REMOVE_INTERVAL: u64 = 3 * 60;
 
 #[cfg(unix)]
 use super::unix::ConPtyAdapter;
@@ -35,7 +41,7 @@ use std::process::{Command, Stdio};
 #[cfg(windows)]
 use super::windows::ConPtyAdapter;
 
-pub(crate) fn register_pty_handlers(event_bus: &Arc<EventBus>) {
+pub fn register_pty_handlers(event_bus: &Arc<EventBus>) {
     event_bus
         .slot_register(SLOT_PTY_CMD, WS_MSG_TYPE_PTY_START, move |value| {
             JsonHandler::<PtyStart>::dispatch(value, false);
@@ -80,7 +86,7 @@ impl Handler for JsonHandler<PtyStart> {
         ) {
             Ok(session) => session,
             Err(e) => {
-                error!("=>open pty err {}", e.to_string());
+                error!("=>open pty err: {}", e);
                 let pty_error = PtyError {
                     session_id,
                     reason: e.to_string(),
@@ -90,7 +96,7 @@ impl Handler for JsonHandler<PtyStart> {
             }
         };
 
-        let writer = pty_base.get_writer().expect("GetWriterFail");
+        let writer = pty_base.get_writer().expect("GetWriterFailed");
         let session = Arc::new(PtySession {
             session_id: session_id.clone(),
             pty_base,
@@ -126,7 +132,7 @@ impl Handler for JsonHandler<PtyResize> {
         let _ = self
             .associate_session
             .as_ref()
-            .expect("GetSessionFail")
+            .expect("GetSessionFailed")
             .pty_base
             .resize(self.request.cols, self.request.rows);
     }
@@ -134,7 +140,7 @@ impl Handler for JsonHandler<PtyResize> {
 
 impl Handler for JsonHandler<PtyInput> {
     fn process(self) {
-        let data = match base64::decode(&self.request.input) {
+        let data = match STANDARD.decode(&self.request.input) {
             Ok(data) => data,
             Err(e) => {
                 let pty_error = PtyError {
@@ -148,21 +154,21 @@ impl Handler for JsonHandler<PtyInput> {
         let _ = self
             .associate_session
             .as_ref()
-            .expect("GetSessionFail")
+            .expect("GetSessionFailed")
             .writer
             .lock()
-            .expect("LockWriterFail")
+            .expect("LockWriterFailed")
             .write(&data[..]);
     }
 }
 
 #[derive(Clone)]
-pub(crate) struct PtySession {
-    pub(crate) session_id: String,
-    pub(crate) pty_base: Arc<dyn PtyBase + Send + Sync>,
-    pub(crate) writer: Arc<Mutex<File>>,
-    pub(crate) last_time: Arc<AtomicU64>,
-    pub(crate) is_stopped: Arc<AtomicBool>,
+pub struct PtySession {
+    pub session_id: String,
+    pub pty_base: Arc<dyn PtyBase + Send + Sync>,
+    pub writer: Arc<Mutex<File>>,
+    pub last_time: Arc<AtomicU64>,
+    pub is_stopped: Arc<AtomicBool>,
 }
 
 impl PtySession {
@@ -170,51 +176,40 @@ impl PtySession {
         info!("=>process_output {}", self.session_id);
         let duration = Duration::from_millis(100);
         let mut reader =
-            tokio::fs::File::from_std(self.pty_base.get_reader().expect("get_reader Fail"));
+            tokio::fs::File::from_std(self.pty_base.get_reader().expect("get_reader Failed"));
 
         loop {
             if self.is_stopped.load(SeqCst) {
-                info!("process_output  {}  stopped;break", self.session_id);
-                break;
+                break info!("process_output {} stopped; break", self.session_id);
             }
 
             //no input about 3 minutes, break
-            if !self.check_last_time() {
-                info!("process_output {}  timeout; break", self.session_id);
-                break;
+            if self.is_timeout() {
+                break info!("process_output {} timeout; break", self.session_id);
             }
 
             let mut buffer: [u8; 1024] = [0; 1024];
 
-            let result = match timeout(duration, reader.read(&mut buffer[..])).await {
-                Ok(v) => v,
-                Err(_) => {
-                    continue;
-                }
-            };
+            let Ok(result) = timeout(duration, reader.read(&mut buffer[..])).await
+                else { continue };
 
             match result {
+                Ok(0) => break info!("process_output {} read size is 0 close", self.session_id),
                 Ok(size) => {
-                    if size > 0 {
-                        let data = base64::encode(&mut buffer[0..size]);
-                        let pty_output = PtyOutput {
-                            session_id: self.session_id.clone(),
-                            output: data,
-                        };
-                        PtyGather::reply_json_msg(WS_MSG_TYPE_PTY_OUTPUT, pty_output)
-                    } else {
-                        info!("process_output {} read size is 0 close", self.session_id);
-                        break;
-                    }
+                    let data = STANDARD.encode(&mut buffer[0..size]);
+                    let pty_output = PtyOutput {
+                        session_id: self.session_id.clone(),
+                        output: data,
+                    };
+                    PtyGather::reply_json_msg(WS_MSG_TYPE_PTY_OUTPUT, pty_output)
                 }
                 Err(e) => {
-                    info!("process_output {}  err, {}", self.session_id, e);
+                    info!("process_output {} err: {}", self.session_id, e);
                     let pty_error = PtyError {
                         session_id: self.session_id.clone(),
-                        reason: format!("session {} error {}", self.session_id, e),
+                        reason: format!("session {} error: {}", self.session_id, e),
                     };
-                    PtyGather::reply_json_msg(WS_MSG_TYPE_PTY_ERROR, pty_error);
-                    break;
+                    break PtyGather::reply_json_msg(WS_MSG_TYPE_PTY_ERROR, pty_error);
                 }
             }
         }
@@ -222,23 +217,16 @@ impl PtySession {
         info!("process_output {} finished", self.session_id);
     }
 
-    fn check_last_time(&self) -> bool {
-        let last = self.last_time.load(SeqCst);
-        let now = get_now_secs();
-        return if now - last > PTY_REMOVE_INTERVAL {
-            false //time out
-        } else {
-            true
-        };
+    fn is_timeout(&self) -> bool {
+        let elapse = get_now_secs() - self.last_time.load(SeqCst);
+        return elapse > PTY_REMOVE_INTERVAL;
     }
 }
 
 #[cfg(windows)]
 impl Handler for BsonHandler<ExecCmdReq> {
     fn process(self) {
-        return self.reply(PtyBinErrMsg {
-            error: "not support on windows".to_owned(),
-        });
+        self.reply(PtyBinErrMsg::new("not support on windows"));
     }
 }
 
@@ -261,26 +249,22 @@ impl Handler for BsonHandler<ExecCmdReq> {
                         Ok(())
                     });
             }
-            match command.output() {
-                Ok(output) => {
-                    let output = String::from_utf8_lossy(&output.stdout);
-                    Ok(output.as_bytes().to_vec())
-                }
-                Err(err) => Err(format!("err_msg:{}", err.to_string())),
-            }
+
+            command
+                .output()
+                .map(|out| String::from_utf8_lossy(&out.stdout).as_bytes().to_vec())
+                .map_err(|err| format!("err_msg: {}", err))
         });
 
         match exec_result {
             Ok(output) => {
                 let output = String::from_utf8_lossy(&output).to_string();
-                info!("{} exec success output {}", session_id, output);
+                info!("{} exec success, output: {}", session_id, output);
                 self.reply(ExecCmdResp { output })
             }
             Err(err) => {
-                error!("{} exec fail {}", session_id, err.to_string());
-                return self.reply(PtyBinErrMsg {
-                    error: err.to_string(),
-                });
+                error!("{} exec failed: {}", session_id, err);
+                return self.reply(PtyBinErrMsg::new(err));
             }
         }
     }
@@ -335,7 +319,7 @@ mod test {
         }
 
         let output = String::from_utf8_lossy(&buffer[..len]);
-        info!("output is {}", output);
+        info!("output: {}", output);
         let result = output.to_string().contains("test");
         std::mem::drop(session);
         assert!(result);

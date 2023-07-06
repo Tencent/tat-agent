@@ -1,7 +1,8 @@
-use chrono::prelude::*;
-use reqwest::Client;
 use std::borrow::Cow;
 use std::str;
+
+use chrono::prelude::*;
+use reqwest::Client;
 use url::Url;
 
 #[derive(Clone, Debug)]

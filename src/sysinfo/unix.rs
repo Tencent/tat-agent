@@ -1,7 +1,7 @@
-use std::io;
-use std::{ffi::CStr};
-
 use crate::sysinfo::Uname;
+use std::ffi::CStr;
+use std::io;
+
 use libc::{c_char, utsname};
 
 impl Uname {
@@ -45,6 +45,6 @@ pub fn get_hostname() -> Option<String> {
     let len = (0..usize::MAX)
         .position(|i| buffer[i] == 0)
         .expect("out of range");
-        
+
     Some(String::from_utf8_lossy(&buffer[0..len]).to_string())
 }

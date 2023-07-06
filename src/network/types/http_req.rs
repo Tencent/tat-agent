@@ -1,10 +1,13 @@
-use crate::common::consts::AGENT_VERSION;
-use crate::sysinfo::Uname;
+use super::UTF8_BOM_HEADER;
+use crate::executor::CMD_TYPE_POWERSHELL;
 use crate::network::types::AgentErrorCode;
-use serde::{Deserialize, Serialize};
+use crate::network::AGENT_VERSION;
+use crate::sysinfo::Uname;
+
 use std::fmt;
-#[cfg(windows)]
-use std::io::Write;
+
+use base64::{engine::general_purpose::STANDARD, Engine};
+use serde::{Deserialize, Serialize};
 
 //==============================================================================
 // Declare standard request and response format for C/S communication
@@ -142,6 +145,22 @@ pub struct InvocationNormalTask {
     pub cos_bucket_prefix: String,
 }
 
+impl InvocationNormalTask {
+    pub fn decode_command(&self) -> Result<Vec<u8>, String> {
+        let mut command = STANDARD
+            .decode(&self.command)
+            .map_err(|e| format!("decode error: {:?}", e))?;
+
+        //powershell dont support utf8, but support utf8 with bom.
+        //utf8 bom start with 0xEE, 0xBB, 0xBF,
+        if self.command_type == CMD_TYPE_POWERSHELL {
+            command.splice(0..0, UTF8_BOM_HEADER);
+        }
+
+        Ok(command)
+    }
+}
+
 impl fmt::Debug for InvocationNormalTask {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("InvocationNormalTask")
@@ -173,28 +192,6 @@ pub struct DescribeTasksResponse {
 }
 
 pub type DescribeTasksRequest = Empty;
-
-impl InvocationNormalTask {
-    pub fn decode_command(&self) -> Result<Vec<u8>, String> {
-        match base64::decode(&self.command) {
-            Ok(command) => {
-                #[cfg(windows)]
-                {
-                    //powershell dont support utf8,but support utf8 with bom.
-                    //utf8 bom start with 0xEE,0xBB,0xBF,
-                    let utf8_bom_head: [u8; 3] = [0xEF, 0xBB, 0xBF];
-                    let mut utf8_bom_cmd = Vec::new();
-                    utf8_bom_cmd.write(&utf8_bom_head).unwrap();
-                    utf8_bom_cmd.write(command.as_slice()).unwrap();
-                    Ok(utf8_bom_cmd)
-                }
-                #[cfg(unix)]
-                Ok(command)
-            }
-            Err(e) => Err(format!("decode error: {:?}", e)),
-        }
-    }
-}
 
 //==============================================================================
 // ReportTaskStart API
@@ -255,7 +252,7 @@ impl UploadTaskLogRequest {
         UploadTaskLogRequest {
             invocation_task_id: String::from(invocation_task_id),
             index: index,
-            output: base64::encode(&output),
+            output: STANDARD.encode(&output),
             dropped: dropped,
         }
     }
@@ -450,6 +447,8 @@ pub struct GetTmpCredentialResponse {
 // Unit Tests
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    use crate::network::types::UTF8_BOM_HEADER;
     use crate::network::types::{InvocationNormalTask, ServerRawResponse};
 
     #[test]
@@ -572,9 +571,7 @@ mod tests {
         #[cfg(windows)]
         {
             //check utf8 bom, start with 0xEF 0xBB 0xBF
-            assert_eq!(contents[0], 0xEF);
-            assert_eq!(contents[1], 0xBB);
-            assert_eq!(contents[2], 0xBF);
+            assert_eq!(contents[0..=2], UTF8_BOM_HEADER);
             contents = Vec::from(&contents[3..]);
         }
         assert_eq!(

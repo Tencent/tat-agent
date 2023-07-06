@@ -1,4 +1,7 @@
 use serde::{Deserialize, Serialize};
+pub const WS_MSG_TYPE_KICK: &str = "kick";
+pub const WS_MSG_TYPE_CHECK_UPDATE: &str = "CheckUpdate";
+
 #[derive(Default, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]
 pub struct WsMsg<T> {
@@ -11,7 +14,7 @@ pub struct WsMsg<T> {
     pub data: Option<T>,
 }
 
-#[derive(Default,Serialize, Deserialize, Debug)]
+#[derive(Default, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]
 pub struct PtyStart {
     #[serde(default)]
@@ -28,7 +31,7 @@ pub struct PtyStart {
     pub no_shell: bool,
 }
 
-#[derive(Default,Serialize, Deserialize, Debug)]
+#[derive(Default, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]
 pub struct PtyInput {
     #[serde(default)]
@@ -37,7 +40,7 @@ pub struct PtyInput {
     pub input: String,
 }
 
-#[derive(Default,Serialize, Deserialize, Debug)]
+#[derive(Default, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]
 pub struct PtyResize {
     #[serde(default)]
@@ -48,14 +51,14 @@ pub struct PtyResize {
     pub rows: u16,
 }
 
-#[derive(Default,Serialize, Deserialize, Debug)]
+#[derive(Default, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]
 pub struct PtyStop {
     #[serde(default)]
     pub session_id: String,
 }
 
-#[derive(Default,Serialize, Deserialize, Debug)]
+#[derive(Default, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]
 pub struct PtyOutput {
     #[serde(default)]
@@ -64,21 +67,20 @@ pub struct PtyOutput {
     pub output: String,
 }
 
-#[derive(Default,Serialize, Deserialize, Debug)]
+#[derive(Default, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]
 pub struct PtyReady {
     #[serde(default)]
     pub session_id: String,
 }
 
-#[derive(Default,Serialize, Deserialize, Debug)]
+#[derive(Default, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]
 pub struct PtyError {
     #[serde(default)]
     pub session_id: String,
     pub reason: String,
 }
-
 
 #[derive(Default, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]
@@ -97,6 +99,12 @@ pub struct PtyBinErrMsg {
     pub error: String,
 }
 
+impl PtyBinErrMsg {
+    pub fn new(error: impl ToString) -> Self {
+        let error = error.to_string();
+        PtyBinErrMsg { error }
+    }
+}
 
 //file msg
 #[derive(Default, Serialize, Deserialize, Debug)]
@@ -236,7 +244,6 @@ pub struct ListPathResp {
     pub files: Vec<FileInfoResp>,
 }
 
-
 //exec msg
 #[derive(Default, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]
@@ -253,23 +260,20 @@ pub struct ExecCmdResp {
 //proxy msg
 #[derive(Default, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]
-pub struct ProxyNew{
+pub struct ProxyNew {
     #[serde(default)]
     pub proxy_id: String,
     #[serde(default)]
     pub port: String,
 }
 
-
 //proxy msg
 #[derive(Default, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]
-pub struct ProxyReady{
+pub struct ProxyReady {
     #[serde(default)]
     pub proxy_id: String,
 }
-
-
 
 #[derive(Default, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]
@@ -282,7 +286,7 @@ pub struct ProxyData {
 
 #[derive(Default, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]
-pub struct ProxyClose{
+pub struct ProxyClose {
     #[serde(default)]
     pub proxy_id: String,
 }

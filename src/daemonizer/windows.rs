@@ -1,9 +1,10 @@
 use crate::common::utils::str2wsz;
+use std::process::{Command, Stdio};
+use std::ptr;
+
 use log::error;
 use ntapi::ntrtl::RtlAdjustPrivilege;
 use ntapi::ntseapi::{SE_ASSIGNPRIMARYTOKEN_PRIVILEGE, SE_TCB_PRIVILEGE};
-use std::process::{Command, Stdio};
-use std::ptr;
 use winapi::shared::minwindef::{DWORD, FALSE, LPVOID};
 use winapi::shared::ntdef::{NULL, TRUE};
 use winapi::shared::winerror::{ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS};
@@ -50,16 +51,13 @@ unsafe extern "system" fn service_handler(
     _: LPVOID,
     _: LPVOID,
 ) -> DWORD {
-    match dw_control {
-        SERVICE_CONTROL_STOP | SERVICE_CONTROL_SHUTDOWN => {
-            SetServiceStatus(HANDLE, &mut create_service_status(SERVICE_STOPPED));
-            // exit after this function return,avoid sc report err
-            std::thread::spawn(|| {
-                std::thread::sleep(std::time::Duration::from_millis(10));
-                std::process::exit(0);
-            });
-        }
-        _ => {}
+    if matches!(dw_control, SERVICE_CONTROL_STOP | SERVICE_CONTROL_SHUTDOWN) {
+        SetServiceStatus(HANDLE, &mut create_service_status(SERVICE_STOPPED));
+        // exit after this function return, avoid sc report err
+        std::thread::spawn(|| {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            std::process::exit(0);
+        });
     };
     return 0;
 }
@@ -76,13 +74,9 @@ fn try_start_service(entry: fn()) {
             ptr::null(),
         ];
 
-        match StartServiceCtrlDispatcherW(*service_table.as_ptr()) {
-            0 => {
-                TAT_ENTRY();
-            }
-            _ => {}
+        if 0 == StartServiceCtrlDispatcherW(*service_table.as_ptr()) {
+            TAT_ENTRY()
         };
-        return;
     }
 }
 
@@ -98,7 +92,7 @@ fn clean_update_files() {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-            .map_err(|_| error!("clean_update_files fail"))
+            .map_err(|_| error!("clean_update_files failed"))
             .ok();
     })
 }
@@ -109,13 +103,11 @@ where
 {
     let result: T;
     let mut old: PVOID = NULL;
-    unsafe {
-        if Wow64DisableWow64FsRedirection(&mut old) != 0 {
-            result = func();
-            Wow64RevertWow64FsRedirection(old);
-        } else {
-            result = func();
-        };
+    if unsafe { Wow64DisableWow64FsRedirection(&mut old) } != 0 {
+        result = func();
+        unsafe { Wow64RevertWow64FsRedirection(old) };
+    } else {
+        result = func();
     }
     result
 }

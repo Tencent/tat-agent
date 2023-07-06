@@ -1,3 +1,4 @@
+use crate::executor::proc::{BaseCommand, MyCommand};
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::fs::{remove_file, File};
@@ -7,8 +8,6 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::{env, fmt, io};
 
-use crate::executor::proc::{BaseCommand, MyCommand};
-use crate::start_failed_err_info;
 use async_trait::async_trait;
 use libc;
 use log::{debug, error, info, warn};
@@ -17,11 +16,11 @@ use tokio::process::{Child, Command};
 use users::os::unix::UserExt;
 use users::{get_user_by_name, User};
 
-pub struct ShellCommand {
+pub struct UnixCommand {
     base: Arc<BaseCommand>,
 }
 
-impl ShellCommand {
+impl UnixCommand {
     pub fn new(
         cmd_path: &str,
         username: &str,
@@ -32,8 +31,8 @@ impl ShellCommand {
         cos_bucket: &str,
         cos_prefix: &str,
         task_id: &str,
-    ) -> ShellCommand {
-        ShellCommand {
+    ) -> UnixCommand {
+        UnixCommand {
             base: Arc::new(BaseCommand::new(
                 cmd_path,
                 username,
@@ -54,11 +53,11 @@ impl ShellCommand {
             Some(user) => Ok(user),
             None => {
                 let ret = format!(
-                    "ShellCommand {} start fail, working_directory:{}, username: {}: user not exists",
+                    "UnixCommand {} start failed, working_directory: {}, username: {}, user not exists",
                     self.base.cmd_path, self.base.work_dir, self.base.username
                 );
                 *self.base.err_info.lock().unwrap() =
-                    start_failed_err_info!(ERR_USER_NOT_EXISTS, self.base.username);
+                    format!("UserNotExists: user `{}` not exists", self.base.username);
                 Err(ret)
             }
         };
@@ -67,11 +66,13 @@ impl ShellCommand {
     fn work_dir_check(&self) -> Result<(), String> {
         if !working_directory_exists(self.base.work_dir.as_str()) {
             let ret = format!(
-                "ShellCommand {} start fail, working_directory:{}, username: {}: working directory not exists",
+                "UnixCommand {} start failed, working_directory: {}, username: {}, working directory not exists",
                 self.base.cmd_path, self.base.work_dir, self.base.username
             );
-            *self.base.err_info.lock().unwrap() =
-                start_failed_err_info!(ERR_WORKING_DIRECTORY_NOT_EXISTS, self.base.work_dir);
+            *self.base.err_info.lock().unwrap() = format!(
+                "DirectoryNotExists: working_directory `{}` not exists",
+                self.base.work_dir
+            );
             return Err(ret);
         }
         Ok(())
@@ -130,17 +131,17 @@ impl ShellCommand {
                 warn!("remove log file failed: {:?}", e)
             }
             format!(
-                "ShellCommand {}, working_directory:{}, start fail: {}",
+                "UnixCommand {}, working_directory: {}, start failed: {}",
                 self.base.cmd_path, self.base.work_dir, e
             )
         })?;
-        *self.base.pid.lock().unwrap() = Some(child.id());
+        *self.base.pid.lock().unwrap() = Some(child.id().unwrap());
         Ok(child)
     }
 }
 
 #[async_trait]
-impl MyCommand for ShellCommand {
+impl MyCommand for UnixCommand {
     async fn run(&mut self) -> Result<(), String> {
         // pre check before spawn cmd
         self.store_path_check()?;
@@ -157,7 +158,7 @@ impl MyCommand for ShellCommand {
         // async read output.
         tokio::spawn(async move {
             base.add_timeout_timer();
-            base.read_shl_output(&mut child, log_file).await;
+            base.read_output(&mut child, log_file).await;
             base.del_timeout_timer();
             base.process_finish(&mut child).await;
         });
@@ -173,46 +174,48 @@ impl MyCommand for ShellCommand {
     }
 }
 
-impl Debug for ShellCommand {
+impl Debug for UnixCommand {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.base.fmt(f)
     }
 }
 
 impl BaseCommand {
-    async fn read_shl_output(&self, child: &mut Child, mut log_file: File) {
-        let pid = child.id();
+    async fn read_output(&self, child: &mut Child, mut log_file: File) {
         const BUF_SIZE: usize = 1024;
-        let mut buffer: [u8; BUF_SIZE] = [0; BUF_SIZE];
+
+        let pid = child.id().unwrap();
         let stdout = child.stdout.take();
+        let mut buffer: [u8; BUF_SIZE] = [0; BUF_SIZE];
         let mut reader = BufReader::new(stdout.unwrap());
+        let need_cos = !(self.cos_bucket.is_empty() || self.cos_prefix.is_empty());
 
         loop {
-            match reader.read(&mut buffer[..]).await {
-                Ok(len) if len > 0 => {
-                    if let Err(e) = log_file.write(&buffer[..len]) {
-                        error!("write output file fail: {:?}", e)
-                    }
-                    debug!(
-                        "output:[{}], may_contain_binary:{}, pid:{}, len:{}",
-                        String::from_utf8_lossy(&buffer[..len]),
-                        String::from_utf8(Vec::from(&buffer[..len])).is_err(),
-                        pid,
-                        len
-                    );
-                    self.append_output(&buffer[..len]);
-                }
-                Ok(_) => {
-                    info!("read output finished normally, pid:{}", pid);
-                    break;
-                }
-
-                Err(err) => {
-                    error!("read stdout fail: {:?}", err);
-                }
+            let len = match reader.read(&mut buffer[..]).await {
+                Err(err) => break error!("read stdout failed: {:?}", err),
+                Ok(0) => break info!("read output finished normally, pid:{}", pid),
+                Ok(len) => len,
             };
+
+            debug!(
+                "output:[{}], may_contain_binary:{}, pid:{}, len:{}",
+                String::from_utf8_lossy(&buffer[..len]),
+                String::from_utf8(Vec::from(&buffer[..len])).is_err(),
+                pid,
+                len
+            );
+
+            self.append_output(&buffer[..len]);
+
+            if need_cos {
+                if let Err(e) = log_file.write(&buffer[..len]) {
+                    error!("write output file failed: {:?}", e)
+                }
+            }
         }
-        self.upload_log_cos().await;
+        if need_cos {
+            self.upload_log_cos().await;
+        }
     }
 
     pub fn kill_process_group(pid: u32) {
@@ -230,26 +233,22 @@ fn working_directory_exists(path: &str) -> bool {
 }
 
 fn dup2_1_2() -> Result<(), io::Error> {
-    unsafe {
-        if libc::dup2(1, 2) != -1 {
-            Ok(())
-        } else {
-            Err(io::Error::last_os_error())
-        }
+    if unsafe { libc::dup2(1, 2) } != -1 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
     }
 }
 
 fn own_process_group() -> Result<(), io::Error> {
-    unsafe {
-        if libc::setpgid(0, 0) == 0 {
-            Ok(())
-        } else {
-            Err(io::Error::last_os_error())
-        }
+    if unsafe { libc::setpgid(0, 0) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
     }
 }
 
-pub(crate) fn cmd_path(cmd: &str) -> Option<String> {
+pub fn cmd_path(cmd: &str) -> Option<String> {
     if let Ok(path) = env::var("PATH") {
         for p in path.split(":") {
             let p_str = format!("{}/{}", p, cmd);
@@ -317,7 +316,7 @@ mod tests {
 
     #[test]
     fn test_fmt_cmd() {
-        let cmd = ShellCommand::new("./a.sh", "root", "./", 60, 10240, "", "", "", "");
+        let cmd = UnixCommand::new("./a.sh", "root", "./", 60, 10240, "", "", "", "");
         println!("fmt cmd:{:?}", cmd);
     }
 

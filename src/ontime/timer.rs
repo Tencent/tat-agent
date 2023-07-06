@@ -1,19 +1,18 @@
 use std::collections::BTreeMap;
 use std::fmt::{self, Debug};
 use std::ops::Fn;
-use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 pub struct TimerTask {
     task_id: u64,
-    task_fn: Box<dyn Fn() -> ()>,
+    task_fn: Box<dyn Fn() -> () + Send>,
 }
 
 impl TimerTask {
     fn new<F>(task_id: u64, task_fn: F) -> Box<TimerTask>
     where
-        F: 'static + Fn() -> (),
+        F: 'static + Fn() -> () + Send,
     {
         Box::new(TimerTask {
             task_id,
@@ -48,12 +47,10 @@ impl Timer {
     }
 
     fn inc_fetch_cur_id(&mut self) -> u64 {
-        self.cur_id = {
-            if self.cur_id == std::u64::MAX {
-                0
-            } else {
-                self.cur_id + 1
-            }
+        self.cur_id = if self.cur_id == std::u64::MAX {
+            0
+        } else {
+            self.cur_id + 1
         };
         self.cur_id
     }
@@ -76,7 +73,7 @@ impl Timer {
     // Return the actual inserted key and task_id.
     pub fn add_task<F>(&mut self, sec_after: u64, task_fn: F) -> (u128, u64)
     where
-        F: 'static + Fn() -> (),
+        F: 'static + Fn() -> () + Send,
     {
         let cur_id = self.inc_fetch_cur_id();
         let task = TimerTask::new(cur_id, task_fn);
@@ -90,11 +87,9 @@ impl Timer {
     // Return whether the task existed && removed
     pub fn del_task(&mut self, key: u128, task_id: u64) -> bool {
         let item = self.task_map.get(&key);
-        if let Some(task) = item {
-            if task_id == task.task_id() {
-                self.task_map.remove(&key);
-                return true;
-            }
+        if matches!(item, Some(task) if task.task_id() == task_id) {
+            self.task_map.remove(&key);
+            return true;
         }
         false
     }
@@ -122,11 +117,8 @@ impl Timer {
 
     // get the singleton, thread safe by mutex wrapped
     pub fn get_instance() -> Arc<Mutex<Timer>> {
-        static mut INS: Option<Arc<Mutex<Timer>>> = None;
-        let &mut ins;
-        unsafe {
-            ins = INS.get_or_insert_with(|| Arc::new(Mutex::new(Timer::new())));
-        }
+        static INS: OnceLock<Arc<Mutex<Timer>>> = OnceLock::new();
+        let ins = INS.get_or_init(|| Arc::new(Mutex::new(Timer::new())));
         ins.clone()
     }
 }

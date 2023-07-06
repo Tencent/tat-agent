@@ -1,5 +1,3 @@
-use std::fmt;
-
 #[derive(Debug, Clone)]
 pub enum AgentErrorCode {
     // errors in c/s communication
@@ -11,7 +9,7 @@ pub enum AgentErrorCode {
 }
 
 #[derive(Debug, Clone)]
-pub struct AgentError<T: fmt::Debug> {
+pub struct AgentError<T: std::fmt::Debug> {
     pub code: AgentErrorCode,
     pub message: String,
     pub original_error: T,

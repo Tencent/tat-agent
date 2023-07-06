@@ -1,53 +1,52 @@
+use crate::common::utils::{gen_rand_str_with, get_now_secs};
+use crate::sysinfo::{get_hostname, get_local_ip, Uname};
+use std::env;
+
+use base64::{engine::general_purpose::STANDARD, Engine};
+use log::{error, info};
+use reqwest::header::HeaderValue;
+use reqwest::header::{self, HeaderMap};
+use rsa::pkcs1v15::Pkcs1v15Sign;
+use rsa::{pkcs1::DecodeRsaPrivateKey, RsaPrivateKey};
+use serde::{Deserialize, Serialize};
+use sha1::{Digest, Sha1};
+
 pub mod cos;
-mod invoke_adapter;
-mod metadata_adapter;
-mod requester;
 pub mod types;
 pub mod urls;
 pub mod ws;
+
+mod invoke_adapter;
+mod metadata_adapter;
+mod requester;
+
 pub use invoke_adapter::InvokeAPIAdapter;
-use log::error;
-use log::info;
 pub use metadata_adapter::MetadataAPIAdapter;
 pub use requester::HttpRequester;
 
-use crate::common::consts::AGENT_VERSION;
-use crate::common::consts::REGISTER_FILE;
-use crate::common::consts::WS_KERNEL_NAME_HEADER;
-use crate::common::consts::WS_VERSION_HEADER;
-
-use crate::sysinfo::get_hostname;
-use crate::sysinfo::get_local_ip;
-use crate::sysinfo::Uname;
-use std::env;
-
-use serde::Deserialize;
-use serde::Serialize;
-
-use crate::common::consts::{VIP_HEADER, VPCID_HEADER};
-use rand::{distributions::Alphanumeric, thread_rng, Rng};
-use reqwest::header::HeaderValue;
-use reqwest::header::{self, HeaderMap};
-use rsa::{pkcs1::DecodeRsaPrivateKey, PaddingScheme, RsaPrivateKey};
-use sha1::{Digest, Sha1};
-use std::time::{SystemTime, UNIX_EPOCH};
+const VPCID_HEADER: &str = "Tat-Vpcid";
+const VIP_HEADER: &str = "Tat-Vip";
+const REGISTER_FILE: &str = "register.dat";
+const WS_VERSION_HEADER: &str = "Tat-Version";
+const WS_KERNEL_NAME_HEADER: &str = "Tat-KernelName";
+pub const AGENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub struct RegisterInfo {
     #[serde(default)]
-    pub(crate) region: String,
+    pub region: String,
     #[serde(default)]
-    pub(crate) register_code: String,
+    pub register_code: String,
     #[serde(default)]
-    pub(crate) register_value: String,
+    pub register_value: String,
     #[serde(default)]
-    pub(crate) machine_id: String,
+    pub machine_id: String,
     #[serde(default)]
-    pub(crate) private_key: String,
+    pub private_key: String,
     #[serde(default)]
-    pub(crate) instance_id: String,
+    pub instance_id: String,
     #[serde(default)]
-    pub(crate) available: bool,
+    pub available: bool,
 }
 
 fn mock_enabled() -> bool {
@@ -65,14 +64,14 @@ fn mock_vip() -> String {
 impl RegisterInfo {
     fn save(&self) -> Result<(), String> {
         let json_data = serde_json::to_string(self).map_err(|e| e.to_string())?;
-        let ba64_data = base64::encode(json_data);
+        let ba64_data = STANDARD.encode(json_data);
         std::fs::write(REGISTER_FILE, ba64_data).map_err(|e| e.to_string())?;
         Ok(())
     }
 
     fn load() -> Option<Self> {
         let b64_data = std::fs::read_to_string(REGISTER_FILE).ok()?;
-        let json_data = base64::decode(b64_data).ok()?;
+        let json_data = STANDARD.decode(b64_data).ok()?;
         let record = serde_json::from_slice::<RegisterInfo>(&json_data[..]).ok()?;
         return Some(record);
     }
@@ -82,23 +81,23 @@ fn build_extra_headers() -> HeaderMap {
     let mut headers = HeaderMap::new();
     headers.insert(
         WS_VERSION_HEADER,
-        header::HeaderValue::from_str(AGENT_VERSION).expect("build head fail"),
+        header::HeaderValue::from_str(AGENT_VERSION).expect("build head failed"),
     );
     if let Ok(uname) = Uname::new() {
         headers.insert(
             WS_KERNEL_NAME_HEADER,
-            header::HeaderValue::from_str(&uname.sys_name).expect("build head fail"),
+            header::HeaderValue::from_str(&uname.sys_name).expect("build head failed"),
         );
     }
 
     if mock_enabled() {
         headers.insert(
             VPCID_HEADER,
-            header::HeaderValue::from_str(&mock_vpcid()).expect("build head fail"),
+            header::HeaderValue::from_str(&mock_vpcid()).expect("build head failed"),
         );
         headers.insert(
             VIP_HEADER,
-            header::HeaderValue::from_str(&mock_vip()).expect("build head fail"),
+            header::HeaderValue::from_str(&mock_vip()).expect("build head failed"),
         );
     }
 
@@ -118,31 +117,23 @@ fn build_extra_headers() -> HeaderMap {
 
     headers.insert(
         "MachineId",
-        HeaderValue::from_str(&record.machine_id).expect("build head fail"),
+        HeaderValue::from_str(&record.machine_id).expect("build head failed"),
     );
     headers.insert(
         "InstanceId",
-        HeaderValue::from_str(&record.instance_id).expect("build head fail"),
+        HeaderValue::from_str(&record.instance_id).expect("build head failed"),
     );
 
-    let rand_key: String = thread_rng()
-        .sample_iter(&Alphanumeric)
-        .take(32)
-        .map(char::from)
-        .collect();
+    let rand_key: String = gen_rand_str_with(32);
     headers.insert(
         "RandomKey",
-        HeaderValue::from_str(&rand_key).expect("build head fail"),
+        HeaderValue::from_str(&rand_key).expect("build head failed"),
     );
 
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
-        .to_string();
+    let timestamp = get_now_secs().to_string();
     headers.insert(
         "Timestamp",
-        HeaderValue::from_str(&timestamp).expect("build head fail"),
+        HeaderValue::from_str(&timestamp).expect("build head failed"),
     );
 
     //signature
@@ -152,13 +143,13 @@ fn build_extra_headers() -> HeaderMap {
     );
     let digest: Vec<u8> = Sha1::digest(data.as_bytes()).to_vec();
     let sigvec = private_key
-        .sign(PaddingScheme::new_pkcs1v15_sign::<Sha1>(), &digest[..])
-        .expect("rsa sign fail");
+        .sign(Pkcs1v15Sign::new::<Sha1>(), &digest[..])
+        .expect("rsa sign failed");
 
-    let signature = base64::encode(sigvec);
+    let signature = STANDARD.encode(sigvec);
     headers.insert(
         "Signature",
-        HeaderValue::from_str(&signature).expect("build head fail"),
+        HeaderValue::from_str(&signature).expect("build head failed"),
     );
 
     headers
@@ -166,44 +157,40 @@ fn build_extra_headers() -> HeaderMap {
 
 pub fn register(
     region: &String,
-    register_code: &String,
+    register_id: &String,
     register_value: &String,
 ) -> Result<(), String> {
     //temp runtime in current thread
-    match tokio::runtime::Builder::new()
-        .basic_scheduler()
+    tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .expect("register runtime fail")
+        .expect("register runtime failed")
         .block_on(async move {
             let adapter = InvokeAPIAdapter::new();
             adapter
-                .register_instance(region, register_code, register_value)
+                .register_instance(region, register_id, register_value)
                 .await
-        }) {
-        Ok(record) => record.save(),
-        Err(err) => Err(err),
-    }
+        })
+        .and_then(|record| record.save())
 }
 
 pub fn check() {
-    tokio::runtime::Builder::new()
-        .basic_scheduler()
+    tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .expect("check runtime fail")
+        .expect("check runtime failed")
         .block_on(async move {
             if let Some(mut record) = RegisterInfo::load() {
-                info!("find register info,try validate");
+                info!("find register info, try validate");
                 let adapter = InvokeAPIAdapter::new();
-                let local_ip = get_local_ip().expect("get_local_ip fail");
-                let hostname = get_hostname().expect("get_hostname fail");
+                let local_ip = get_local_ip().expect("get_local_ip failed");
+                let hostname = get_hostname().expect("get_hostname failed");
                 if let Err(err) = adapter.validate_instance(hostname, local_ip).await {
-                    error!("validate_instance fail {:?},work as normal instance", err);
+                    error!("validate_instance failed: {err:?}, work as normal instance");
                     record.available = false;
                 } else {
                     record.available = true;
-                    info!("validate_instance success,work as register instance");
+                    info!("validate_instance success, work as register instance");
                 };
                 let _ = record.save();
             }

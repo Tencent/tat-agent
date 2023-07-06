@@ -19,3 +19,5 @@ pub enum HttpMethod {
     GET,
     POST,
 }
+
+pub const UTF8_BOM_HEADER: [u8; 3] = [0xEF, 0xBB, 0xBF];

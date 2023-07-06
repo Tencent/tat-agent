@@ -1,6 +1,5 @@
-use crate::executor::shell_command::{build_envs, cmd_path};
-use libc::{self, waitpid, winsize, SIGHUP};
-use log::error;
+use super::{PtyAdapter, PtyBase, PTY_INSPECT_READ};
+use crate::executor::unix::{build_envs, cmd_path};
 use std::fs::{metadata, File};
 use std::io::{Read, Write};
 use std::os::linux::fs::MetadataExt;
@@ -9,12 +8,12 @@ use std::process::{Child, Command};
 use std::ptr::null_mut;
 use std::sync::{Arc, Mutex};
 use std::{env, io, ptr};
-use unix_mode::{is_allowed, Access, Accessor};
-use users::get_user_by_name;
-use users::os::unix::UserExt;
-use users::User;
 
-use super::{PtyAdapter, PtyBase, PTY_INSPECT_READ};
+use libc::{self, waitpid, winsize, SIGHUP};
+use log::error;
+use unix_mode::{is_allowed, Access, Accessor};
+use users::os::unix::UserExt;
+use users::{get_user_by_name, User};
 
 struct Inner {
     master: File,
@@ -41,7 +40,7 @@ fn openpty(user: User, cols: u16, rows: u16) -> Result<(File, File), String> {
             ptr::null_mut(),
             &mut size,
         ) {
-            return Err(format!("openpty fail {}", io::Error::last_os_error()));
+            return Err(format!("openpty failed: {}", io::Error::last_os_error()));
         };
 
         libc::fchown(slave, user.uid(), user.primary_group_id());
@@ -90,7 +89,7 @@ impl PtyAdapter for ConPtyAdapter {
             .envs(envs)
             .current_dir(home_path)
             .spawn()
-            .map_err(|e| format!("spawn err {}", e))?;
+            .map_err(|e| format!("spawn error: {}", e))?;
 
         return Ok(Arc::new(UnixPtySession {
             inner: Arc::new(Mutex::new(Inner {
@@ -148,7 +147,7 @@ impl PtyBase for UnixPtySession {
 
     fn get_writer(&self) -> Result<std::fs::File, std::string::String> {
         let inner = self.inner.lock().unwrap();
-        inner.master.try_clone().map_err(|e| format!("err {}", e))
+        inner.master.try_clone().map_err(|e| format!("error: {e}"))
     }
 
     fn get_pid(&self) -> Result<u32, String> {
@@ -157,7 +156,7 @@ impl PtyBase for UnixPtySession {
     }
 
     fn execute(&self, f: &dyn Fn() -> Result<Vec<u8>, String>) -> Result<Vec<u8>, String> {
-        let user = self.inner.lock().expect("inner lock fail").user.clone();
+        let user = self.inner.lock().expect("inner lock failed").user.clone();
         let cwd_path = self.get_cwd();
         unsafe {
             let mut pipefd: [i32; 2] = [0, 0];
@@ -174,7 +173,7 @@ impl PtyBase for UnixPtySession {
                         libc::exit(0);
                     }
                     Err(err_msg) => {
-                        //error!("[child] work_as_user func exit fail {}", err_msg);
+                        //error!("[child] work_as_user func exit failed: {}", err_msg);
                         let _ = stdin.write_all(err_msg.as_bytes());
                         libc::exit(1);
                     }
@@ -190,7 +189,7 @@ impl PtyBase for UnixPtySession {
                     return Ok(output);
                 } else {
                     let err_msg = String::from_utf8_lossy(&output).to_string();
-                    error!("[parent] work_as_user func exit fail {}", err_msg);
+                    error!("[parent] work_as_user func exit failed: {}", err_msg);
                     return Err(err_msg);
                 }
             }
