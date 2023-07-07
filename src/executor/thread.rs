@@ -14,7 +14,7 @@ use std::time::Duration;
 use log::{error, info};
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
-use tokio::time::sleep;
+use tokio::time::delay_for;
 
 use super::FINISH_RESULT_TERMINATED;
 const DEFAULT_OUTPUT_BYTE: u64 = 24 * 1024;
@@ -69,7 +69,7 @@ impl HttpWorker {
                 && resp.invocation_normal_task_set.is_empty()
                 && resp.invocation_cancel_task_set.is_empty()
             {
-                sleep(Duration::from_millis(500)).await;
+                delay_for(Duration::from_millis(500)).await;
                 continue;
             }
             for task in resp.invocation_normal_task_set.iter() {
@@ -95,12 +95,12 @@ impl HttpWorker {
         let mut first_dropped: u64 = 0;
         let mut finished = cmd_arc.lock().await.is_finished();
         loop {
-            // total sleep max 20 * 50 ms, i.e. 1s
+            // total delay_for max 20 * 50 ms, i.e. 1s
             for _ in 0..20 {
                 if finished {
                     break;
                 }
-                sleep(Duration::from_millis(50)).await;
+                delay_for(Duration::from_millis(50)).await;
                 finished = cmd_arc.lock().await.is_finished();
             }
             let mut cmd = cmd_arc.lock().await;
@@ -557,7 +557,7 @@ mod tests {
             invocation_task_id: "invt-test_cancel".to_string(),
         };
         http_worker2.task_cancel(&task).await;
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        tokio::time::delay_for(Duration::from_secs(1)).await;
         fs::remove_file(filename.as_str()).unwrap();
         let finis_result = cmd.lock().await.finish_result();
         assert_eq!(finis_result, FINISH_RESULT_TERMINATED); //need read twice

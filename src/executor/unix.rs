@@ -135,7 +135,8 @@ impl UnixCommand {
                 self.base.cmd_path, self.base.work_dir, e
             )
         })?;
-        *self.base.pid.lock().unwrap() = Some(child.id().unwrap());
+        // *self.base.pid.lock().unwrap() = Some(child.id().unwrap());
+        *self.base.pid.lock().unwrap() = Some(child.id());
         Ok(child)
     }
 }
@@ -184,7 +185,8 @@ impl BaseCommand {
     async fn read_output(&self, child: &mut Child, mut log_file: File) {
         const BUF_SIZE: usize = 1024;
 
-        let pid = child.id().unwrap();
+        // let pid = child.id().unwrap();
+        let pid = child.id();
         let stdout = child.stdout.take();
         let mut buffer: [u8; BUF_SIZE] = [0; BUF_SIZE];
         let mut reader = BufReader::new(stdout.unwrap());

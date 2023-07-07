@@ -203,7 +203,8 @@ impl WindowsCommand {
                 self.base.cmd_path, self.base.work_dir, e
             )
         })?;
-        *self.base.pid.lock().unwrap() = Some(child.id().unwrap());
+        // *self.base.pid.lock().unwrap() = Some(child.id().unwrap());
+        *self.base.pid.lock().unwrap() = Some(child.id());
         self.resume_as_user();
         Ok(child)
     }

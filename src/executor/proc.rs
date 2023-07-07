@@ -385,10 +385,11 @@ impl BaseCommand {
     }
 
     pub async fn process_finish(&self, child: &mut Child) {
-        let pid = child.id().unwrap();
+        // let pid = child.id().unwrap();
+        let pid = child.id();
         info!("=>process `{}` finish", pid);
         let status = child
-            .wait()
+            // .wait()
             .await
             .expect("child process encountered an error");
         let mut exit_code = self.exit_code.lock().expect("exit_code get lock failed");
@@ -584,7 +585,7 @@ mod tests {
 
     use base64::{engine::general_purpose::STANDARD, Engine};
     use log::info;
-    use tokio::time::sleep;
+    use tokio::time::delay_for;
 
     cfg_if::cfg_if! {
         if #[cfg(unix)] {
@@ -648,7 +649,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_run_then_sleep() {
+    async fn test_run_then_delay_for() {
         init_log();
         // it doesn't matter even if ./a.sh not exist
         let log_path = format!("./{}.log", gen_rand_str());
@@ -668,10 +669,10 @@ mod tests {
         let ret = cmd.run().await;
         assert!(ret.is_ok());
         info!("cmd running, pid: {}", cmd.pid());
-        sleep(Duration::from_secs(10)).await;
+        delay_for(Duration::from_secs(10)).await;
         // now it's NOT a defunct process, cmd will be auto-waited
         assert!(!is_process_exist(cmd.pid()).await);
-        //thread::sleep(Duration::new(10, 0));
+        //thread::delay_for(Duration::new(10, 0));
     }
 
     #[tokio::test]
@@ -747,7 +748,7 @@ mod tests {
     #[cfg(unix)]
     async fn is_process_exist(pid: u32) -> bool {
         // maybe need a time to clear the dir
-        sleep(Duration::from_millis(2000)).await;
+        delay_for(Duration::from_millis(2000)).await;
         let path = format!("/proc/{}", pid);
         let ret = read_dir(path);
         let exist = ret.is_ok();
@@ -814,13 +815,13 @@ mod tests {
         assert!(ret.is_ok());
         info!("{} running, pid:{}", filename, cmd.pid());
         // now it's a still running
-        sleep(Duration::new(10, 0)).await;
+        delay_for(Duration::new(10, 0)).await;
         assert_eq!(cmd.is_started(), true);
         assert!(is_process_exist(cmd.pid()).await);
 
         let ret = cmd.cancel();
         assert!(ret.is_ok());
-        sleep(Duration::new(1, 0)).await;
+        delay_for(Duration::new(1, 0)).await;
         assert!(!is_process_exist(cmd.pid()).await);
         // cmd.cancel() called twice is OK and safe
         let ret = cmd.cancel();
@@ -829,7 +830,7 @@ mod tests {
         // Even after killed, call cmd.pid() is OK
         info!("{} killed, pid:{}", filename, cmd.pid());
         info!("cmd: {:?}", cmd);
-        sleep(Duration::new(5, 0)).await;
+        delay_for(Duration::new(5, 0)).await;
         fs::remove_file(filename.as_str()).unwrap();
     }
 
@@ -870,7 +871,7 @@ mod tests {
         let mut cur_dropped = 0 as u64;
         // usage of read output
         loop {
-            sleep(Duration::from_secs(1)).await;
+            delay_for(Duration::from_secs(1)).await;
             let len = cmd.cur_output_len();
             // is_finished() MUST be called after cur_output_len()
             let finished = cmd.is_finished();
@@ -889,9 +890,9 @@ mod tests {
                 // Do output report task here
                 // do_report(out, idx, dropped);
                 if dropped > 0 {
-                    // max report exceeds, get dropped and idx during sleep
+                    // max report exceeds, get dropped and idx during delay_for
                     let (out, idx, dropped_new) = cmd.next_output();
-                    info!("during sleep: idx: {}, drop {}, ", idx, dropped);
+                    info!("during delay_for: idx: {}, drop {}, ", idx, dropped);
                     assert_eq!(idx, 1);
                     assert_eq!(dropped_new, dropped);
                     assert_eq!(0, out.len());
@@ -903,7 +904,7 @@ mod tests {
 
             if finished {
                 let (out, idx, dropped) = cmd.next_output();
-                info!("after sleep: idx: {}, drop {}", idx, dropped);
+                info!("after delay_for: idx: {}, drop {}", idx, dropped);
                 assert_eq!(idx, 2);
                 assert_eq!(dropped, 12);
                 assert_eq!(0, out.len());
@@ -914,7 +915,7 @@ mod tests {
         }
         // will see the output bytes in cmd.output
         info!("cmd:{:?}", cmd);
-        sleep(Duration::new(1, 0)).await;
+        delay_for(Duration::new(1, 0)).await;
         assert!(!is_process_exist(cmd.pid()).await);
 
         fs::remove_file(filename.as_str()).unwrap();
@@ -953,7 +954,7 @@ mod tests {
         assert!(ret.is_ok());
 
         while !cmd.is_finished() {
-            sleep(Duration::new(1, 0)).await;
+            delay_for(Duration::new(1, 0)).await;
         }
 
         let (_, idx, dropped) = cmd.next_output();
@@ -996,7 +997,7 @@ mod tests {
         info!("{} running, pid:{}", filename, cmd.pid());
 
         while !cmd.is_finished() {
-            sleep(Duration::new(1, 0)).await;
+            delay_for(Duration::new(1, 0)).await;
         }
 
         let (out, idx, dropped) = cmd.next_output();
@@ -1007,7 +1008,7 @@ mod tests {
         assert_eq!(out, "aGVsbG8gd29ybGQ=");
         info!("out:{}", out);
         info!("cmd:{:?}", cmd);
-        sleep(Duration::new(1, 0)).await;
+        delay_for(Duration::new(1, 0)).await;
         assert!(!is_process_exist(cmd.pid()).await);
         fs::remove_file(filename.as_str()).unwrap();
     }
@@ -1061,7 +1062,7 @@ mod tests {
                 }
             }
             info!("total {} tasks run", cnt);
-            sleep(Duration::new(0, 500_000_000)).await;
+            delay_for(Duration::new(0, 500_000_000)).await;
             let finished = cmd.is_finished();
             if finished {
                 break;

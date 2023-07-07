@@ -2,13 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.4] - 2023-07-07
+
+### Changed
+- Fix performance problems.
+
 ## [1.0.3] - 2023-07-03
 
 ### Changed
 - Add installer packager.
 - Add consistent global snapshot support.
 - Fix init script bugs.
-- Update dependencies versions
+- Update dependencies versions.
 
 ## [1.0.2] - 2023-05-26
 
