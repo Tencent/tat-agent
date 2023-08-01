@@ -1,5 +1,5 @@
 use crate::common::evbus::EventBus;
-use crate::common::utils::get_now_secs;
+use crate::common::utils::{cbs_exist, get_now_secs};
 use crate::executor::proc::{self, MyCommand};
 use crate::executor::store::TaskFileStore;
 use crate::network::types::ws_msg::WS_MSG_TYPE_KICK;
@@ -196,10 +196,12 @@ impl HttpWorker {
         std::mem::drop(cmd);
 
         //remove script after finished
-        match std::fs::remove_file(&task_file) {
-            Ok(_) => info!("delete `{}` success", task_file),
-            Err(e) => error!("delete `{}` failed: {}", task_file, e),
-        };
+        if !cbs_exist() {
+            match std::fs::remove_file(&task_file) {
+                Ok(_) => info!("delete `{}` success", task_file),
+                Err(e) => error!("delete `{}` failed: {}", task_file, e),
+            };
+        }
 
         let _ = self
             .adapter

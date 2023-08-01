@@ -40,13 +40,13 @@ impl InvokeAPIAdapter {
         let machine_id = get_machine_id().ok_or("get_machine_id failed")?;
         let local_ip = get_local_ip().ok_or("get_local_ip failed")?;
         let hostname = get_hostname().ok_or("get_hostname failed")?;
-        let (pubkey, privkey) = generate_rsa_key().ok_or("generate_rsa_key failed")?;
+        let (publickey, privkey) = generate_rsa_key().ok_or("generate_rsa_key failed")?;
 
         let body = RegisterInstanceRequest::new(
             machine_id.clone(),
             register_id.clone(),
             register_value.clone(),
-            pubkey,
+            publickey,
             hostname,
             local_ip,
         );
@@ -64,7 +64,6 @@ impl InvokeAPIAdapter {
             machine_id,
             private_key: privkey,
             instance_id: resp.instance_id.clone(),
-            available: true,
         };
         Ok(record)
     }
@@ -182,7 +181,7 @@ impl InvokeAPIAdapter {
             "ValidateInstance",
             &get_invoke_url(),
             body,
-            HTTP_REQUEST_NO_RETRIES,
+            HTTP_REQUEST_RETRIES,
         )
         .await
     }

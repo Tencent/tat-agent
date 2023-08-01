@@ -45,8 +45,6 @@ pub struct RegisterInfo {
     pub private_key: String,
     #[serde(default)]
     pub instance_id: String,
-    #[serde(default)]
-    pub available: bool,
 }
 
 fn mock_enabled() -> bool {
@@ -106,9 +104,6 @@ fn build_extra_headers() -> HeaderMap {
         None => return headers,
     };
 
-    if !record.available {
-        return headers;
-    }
 
     let private_key = match RsaPrivateKey::from_pkcs1_pem(&record.private_key) {
         Ok(v) => v,
@@ -182,16 +177,14 @@ pub fn check() {
         .build()
         .expect("check runtime failed")
         .block_on(async move {
-            if let Some(mut record) = RegisterInfo::load() {
+            if let Some(record) = RegisterInfo::load() {
                 info!("find register info, try validate");
                 let adapter = InvokeAPIAdapter::new();
                 let local_ip = get_local_ip().expect("get_local_ip failed");
                 let hostname = get_hostname().expect("get_hostname failed");
                 if let Err(err) = adapter.validate_instance(hostname, local_ip).await {
                     error!("validate_instance failed: {err:?}, work as normal instance");
-                    record.available = false;
                 } else {
-                    record.available = true;
                     info!("validate_instance success, work as register instance");
                 };
                 let _ = record.save();

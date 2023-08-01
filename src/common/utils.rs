@@ -10,6 +10,24 @@ use rsa::pkcs1::{EncodeRsaPrivateKey, EncodeRsaPublicKey};
 use rsa::pkcs8::LineEnding;
 use rsa::{RsaPrivateKey, RsaPublicKey};
 
+pub fn generate_rsa_key() -> Option<(String, String)> {
+    let private_key = RsaPrivateKey::new(&mut rand::thread_rng(), 2048).ok()?;
+    let public_key = RsaPublicKey::from(&private_key);
+
+    let public_pem = public_key.to_pkcs1_pem(LineEnding::LF).ok()?.to_string();
+    let private_pem = private_key.to_pkcs1_pem(LineEnding::LF).ok()?.to_string();
+    Some((public_pem, private_pem))
+}
+
+pub fn gen_rand_str_with(len: usize) -> String {
+    thread_rng()
+        .sample_iter(&Alphanumeric)
+        .take(len)
+        .map(char::from)
+        .collect()
+}
+
+
 #[cfg(windows)]
 pub fn wsz2string(ptr: *const u16) -> String {
     unsafe {
@@ -54,19 +72,30 @@ pub fn get_current_username() -> String {
     String::from(name.to_str().expect("get_current_username failed"))
 }
 
-pub fn generate_rsa_key() -> Option<(String, String)> {
-    let private_key = RsaPrivateKey::new(&mut rand::thread_rng(), 2048).ok()?;
-    let public_key = RsaPublicKey::from(&private_key);
+#[cfg(windows)]
+pub fn cbs_exist() -> bool {
+    use winapi::{
+        shared::{minwindef::FALSE, ntdef::NULL},
+        um::{handleapi::CloseHandle, synchapi::OpenEventW, winnt::SYNCHRONIZE},
+    };
 
-    let public_pem = public_key.to_pkcs1_pem(LineEnding::LF).ok()?.to_string();
-    let private_pem = private_key.to_pkcs1_pem(LineEnding::LF).ok()?.to_string();
-    Some((public_pem, private_pem))
+    let handle = unsafe {
+        OpenEventW(
+            SYNCHRONIZE,
+            FALSE,
+            str2wsz("Global\\CBSVSS-WAIT-MODE").as_ptr(),
+        )
+    };
+    if handle != NULL {
+        unsafe { CloseHandle(handle) };
+        true
+    } else {
+        false
+    }
 }
 
-pub fn gen_rand_str_with(len: usize) -> String {
-    thread_rng()
-        .sample_iter(&Alphanumeric)
-        .take(len)
-        .map(char::from)
-        .collect()
+
+#[cfg(unix)]
+pub fn cbs_exist() -> bool {
+    false
 }

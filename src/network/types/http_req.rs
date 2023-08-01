@@ -357,13 +357,13 @@ pub struct RegisterInstanceRequest {
     #[serde(default)]
     active_value: String,
     #[serde(default)]
-    pub_key: String,
+    public_key: String,
     #[serde(default)]
     hostname: String,
     #[serde(default)]
     local_ip: String,
     #[serde(default)]
-    sys_name: String,
+    system_name: String,
 }
 
 impl RegisterInstanceRequest {
@@ -371,7 +371,7 @@ impl RegisterInstanceRequest {
         machine_id: String,
         active_code: String,
         active_value: String,
-        pub_key: String,
+        public_key: String,
         hostname: String,
         local_ip: String,
     ) -> Self {
@@ -379,13 +379,13 @@ impl RegisterInstanceRequest {
             machine_id,
             active_code,
             active_value,
-            pub_key,
+            public_key,
             hostname,
             local_ip,
             #[cfg(windows)]
-            sys_name: "Windows".to_string(),
+            system_name: "Windows".to_string(),
             #[cfg(unix)]
-            sys_name: "Linux".to_string(),
+            system_name: "Linux".to_string(),
         }
     }
 }
@@ -401,7 +401,7 @@ pub struct RegisterInstanceResponse {
 #[serde(rename_all = "PascalCase")]
 pub struct ValidateInstanceRequest {
     #[serde(default)]
-    sys_name: String,
+    system_name: String,
     #[serde(default)]
     pub hostname: String,
     #[serde(default)]
@@ -414,9 +414,9 @@ impl ValidateInstanceRequest {
             hostname,
             local_ip,
             #[cfg(windows)]
-            sys_name: "Windows".to_string(),
+            system_name: "Windows".to_string(),
             #[cfg(unix)]
-            sys_name: "Linux".to_string(),
+            system_name: "Linux".to_string(),
         }
     }
 }

@@ -67,9 +67,7 @@ pub fn get_ws_url() -> String {
 
 fn get_register_region() -> Option<String> {
     if let Some(info) = RegisterInfo::load() {
-        if info.available {
-            return Some(info.region);
-        }
+        return Some(info.region);
     }
     None
 }

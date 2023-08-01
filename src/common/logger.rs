@@ -60,29 +60,9 @@ pub fn init() {
 pub struct SnapshortFilter;
 
 impl Filter for SnapshortFilter {
-    #[cfg(unix)]
     fn filter(&self, _: &Record) -> Response {
-        Response::Neutral
-    }
-
-    #[cfg(windows)]
-    fn filter(&self, _: &Record) -> Response {
-        use crate::common::utils::str2wsz;
-        use winapi::shared::minwindef::FALSE;
-        use winapi::shared::ntdef::NULL;
-        use winapi::um::handleapi::CloseHandle;
-        use winapi::um::synchapi::OpenEventW;
-        use winapi::um::winnt::SYNCHRONIZE;
-
-        let handle = unsafe {
-            OpenEventW(
-                SYNCHRONIZE,
-                FALSE,
-                str2wsz("Global\\CBSVSS-WAIT-MODE").as_ptr(),
-            )
-        };
-        if handle != NULL {
-            unsafe { CloseHandle(handle) };
+        use super::utils::cbs_exist;
+        if cbs_exist() {
             Response::Reject
         } else {
             Response::Neutral
