@@ -1,53 +1,60 @@
-简体中文 | [English](./README.md)
-
 # 自动化助手 TAT
 
-TAT 自动化助手是由 Rust 编写，是一款可在 CVM、Lighthouse 和其他云服务器中部署的原生运维部署工具。
-它的作用是在没有 ssh 登录的情况下远程运行命令，从腾讯云控制台- API 调用。
-命令包括但不限于：shell、python、php，可以提供任何脚本解释器
-在第一行，例如：#!/bin/bash, #!/usr/bin/env python3.8。
-查看更多信息请访问https://cloud.tencent.com/product/tat
+简体中文 | [English](./README.md)
 
-## 安装环境：
+自动化助手（TencentCloud Automation Tools，TAT）是云服务器的原生运维部署工具。TAT提供自动化的远程操作方式，可直接管理实例，批量执行 Shell，Powershell，Python等命令，轻松完成运行自动化运维脚本、轮询进程、安装或卸载软件、更新应用以及安装补丁等常见管理任务。
 
-Rust：如 cargo、tustc、rustup。访问 https://www.rust-lang.org/learn/get-started 查看rust相关信息
-Docker：该工具需要在Docker中进行编译
+了解更多信息，请访问 <https://cloud.tencent.com/product/tat>
 
-## 运行
+## 环境与工具
 
-```
-make run
-```
-在调试模式下由 Docker 直接运行。
-PS：调试模式下连接的后端为测试域名。
+- Rust 语言环境
+- Docker
 
 ## 编译
 
-在Linux系统中执行：
-```
-make release # on linux
-```
-ps：请提前安装 Docker 环境依赖
-在 Windows 中执行：
-```
-.\install\build.bat # on windows
+执行以下命令编译：
+
+- Linux 系统：
+
+```shell
+cargo build --release --bin tat_agent
 ```
 
-## 停止
+- Windows 系统：
 
+注意：在 Windows 系统下，rust 的版本**必须高于 1.70**，如果版本过低，可以通过以下命令更新版本：
+
+```powershell
+rustup update
 ```
-make stop
+
+然后运行：
+
+```powershell
+cargo build --release --bin tat_agent
 ```
-通过写在 pidfile 中的 pid 停止守护进程。
 
-## 其他
+## 运行
 
-查看更多细节请查看 Makefile
-欢迎各位补充
+编译成功后，执行以下命令运行：
+
+- Linux 系统：
+
+```shell
+./target/release/tat_agent
+```
+
+- Windows 系统：
+
+```powershell
+./target/release/tat_agent.exe
+```
 
 ## 支持的操作系统
 
-可以在Linux和Windows中运行，包括但不限于
+可以在 Linux 和 Windows 中运行，包括但不限于：
+
 - TencentOS Server
 - CentOS
 - Ubuntu
@@ -55,4 +62,3 @@ make stop
 - SUSE
 - openSUSE
 - CoreOS
-- 其他系统欢迎补充

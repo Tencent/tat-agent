@@ -16,7 +16,9 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 
 TATAgent-腾讯云自动化助手客户端组件 is licensed under the MIT License except for the third-party components listed below.
-Copyright (C) 2021 THL A29 Limited, a Tencent company.  All rights reserved. The below software in this distribution may have been modified by THL A29 Limited (“Tencent Modifications”).  All Tencent Modifications are Copyright (C) 2021 THL A29 Limited.
+Copyright (C) 2021-2023 THL A29 Limited, a Tencent company.  All rights reserved. 
+The below software in this distribution may have been modified by THL A29 Limited (“Tencent Modifications”).  
+All Tencent Modifications are Copyright (C) 2021-2023 THL A29 Limited.
 
 
 Other dependencies and licenses:
@@ -127,113 +129,104 @@ Copyright (c) 2013-2016 The rust-url developers
 9. clap
 Copyright (c) 2015-2016 Kevin B. Knapp
 
-10. async-attributes
-Copyright (c) 2019 Yoshua Wuyts
-
-11. tokio-test
+10. tokio-test
 Copyright (c) 2019 Tokio Contributors
 
-12. log
+11. log
 Copyright (c) 2014 The Rust Project Developers
 
-13. log4rs
+12. log4rs
 Copyright (c) 2015-2016 Steven Fackler
 
-14. daemonize
+13. daemonize
 Copyright (c) 2016 Fedor Gogolev
 
-15. websocket
+14. websocket
 Copyright (c) 2014 Rust Websockets Developers
 
-16. libc
+15. libc
 Copyright (c) 2014-2020 The Rust Project Developers
 
-17. bytes
+16. bytes
 Copyright (c) 2018 Carl Lerche
 
-18. unzip
+17. unzip
 Copyright (c) “Ryan Leonard (http://ryanleonard.us)”
 
-19. async-std
-Copyright (c) Stjepan Glavina <stjepang@gmail.com>", "Yoshua Wuyts <yoshuawuyts@gmail.com>", "Friedel Ziegelmayer <me@dignifiedquire.com>", "Contributors to async-std"
-
-20. hyper
+18. hyper
 Copyright (c) 2014-2018 Sean McArthur
 
-21. users
+19. users
 Copyright (c) 2019 Benjamin Sago
 
-22. async-trait
-Copyright (c) David Tolnay <dtolnay@gmail.com>
-
-23. rand
+20. rand
 Copyright 2018 Developers of the Rand project
 Copyright (c) 2014 The Rust Project Developers
 
-24. base64
+21. base64
 Copyright (c) 2015 Alice Maz
 
-25. chrono
+22. chrono
 Copyright (c) 2014--2017, Kang Seonghoon and
 contributors.
 
-26. md5
+23. md5
 Copyright 2015–2019 The md5 Developers
 
-27. encoding
+24. encoding
 Copyright (c) 2013, Kang Seonghoon
 
-28. cfg-if
+25. cfg-if
 Copyright (c) 2014 Alex Crichton
 
-29. procfs
+26. procfs
 Copyright (c) 2015 The procfs Developers
 
-30. winapi
+27. winapi
 Copyright (c) 2015-2018 The winapi-rs Developers
 
-31. faux
+28. faux
 Copyright (c) 2020 Andres Medina
 
-32. rust-crypto
+29. rust-crypto
 Copyright (c) 2006-2009 Graydon Hoare
 Copyright (c) 2009-2013 Mozilla Foundation
 
-33. urlencoding
+30. urlencoding
 Copyright (c) 2016 Bertram Truong
 
-34. hex
+31. hex
 Copyright (c) 2013-2014 The Rust Project Developers
 Copyright (c) 2015-2020 The rust-hex Developers
 
-35. derive_more
+32. derive_more
 Copyright (c) 2016 Jelte Fennema
 
-36. ntapi
+33. ntapi
 Copyright (c) ntapi authors
 
-37. field-offset
+34. field-offset
 Copyright (c) field-offset authors
 
-38. winpty
+35. winpty
 Copyright (c) 2011-2016 Ryan Prichard
 
-39. bash-preexec
+36. bash-preexec
 Copyright (c) 2017 Ryan Caloras and contributors
 
-40. serde_bytes
+37. serde_bytes
 Copyright (c) 2014 The Rust Project Developers
 
-41. bson-rust
+38. bson-rust
 Copyright (c) 2015 Y. T. CHUNG <zonyitoo@gmail.com>
 
-42. glob
+39. glob
 Copyright (c) 2014 The Rust Project Developers
 
-43. nom
+40. nom
 Copyright (c) 2014-2019 Geoffroy Couprie
 
-44. ringbuffer
+41. ringbuffer
 Copyright (c) 2022 Victor Roest and Jonathan Dönszelmann
 
 Terms of the MIT License:

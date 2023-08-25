@@ -38,3 +38,29 @@ set FILE="%UNINSTALL_DIR%.tar.gz"
 del %FILE% >nul 2>&1
 %COMPRESS_PROC% a -ttar -so -an %UNINSTALL_DIR% | %COMPRESS_PROC% a -si %FILE%
 rd /s/q %UNINSTALL_DIR%
+
+
+SET DATA_DIR=".\tmpdata"
+if not exist %DATA_DIR% (
+    md %DATA_DIR%
+)
+SET WINPTY_AGENT="..\target\release\winpty-agent.exe"
+SET TAT_AGENT="..\target\release\tat_agent.exe"
+SET WINPTY_DLL="..\target\release\winpty.dll"
+COPY winutil.ps1 %DATA_DIR%
+COPY %WINPTY_AGENT% %DATA_DIR%
+COPY %TAT_AGENT% %DATA_DIR%
+COPY %WINPTY_DLL% %DATA_DIR%
+
+if exist "data.zip" (
+    DEL "data.zip"
+)
+%COMPRESS_PROC% a "data.zip" %DATA_DIR%
+
+if exist "..\target\release\tat_agent_installer.exe" (
+    DEL "..\target\release\tat_agent_installer.exe"
+)
+cargo build -r --bin packager
+REN "..\target\release\packager.exe" "tat_agent_installer.exe"
+RD /s/q %DATA_DIR%
+CD ..

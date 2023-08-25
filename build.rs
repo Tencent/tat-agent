@@ -19,7 +19,6 @@ fn main() {
         let target_dir = get_output_path();
 
         let src = env::current_dir().unwrap().join("target/winpty/winpty.dll");
-
         let dest = target_dir.join(Path::new("winpty.dll"));
         let _ = fs::copy(src.clone(), dest);
         //for unit test
@@ -30,9 +29,13 @@ fn main() {
             .unwrap()
             .join("target/winpty/winpty-agent.exe");
         let dest = target_dir.join(Path::new("winpty-agent.exe"));
-        fs::copy(src.clone(), dest).unwrap();
+        let _ = fs::copy(src.clone(), dest);
         //for unit test
         let dest = target_dir.join(Path::new("deps/winpty-agent.exe"));
+        let _ = fs::copy(src, dest);
+
+        let src = env::current_dir().unwrap().join("install/winutil.ps1");
+        let dest = target_dir.join(Path::new("winutil.ps1"));
         let _ = fs::copy(src, dest);
     }
 }

@@ -3,6 +3,7 @@ use nom::combinator::map;
 use nom::sequence::tuple;
 use nom::IResult;
 use nom::{branch::alt, character::streaming::digit1};
+use AnsiItem::{Escape, Text};
 
 //https://gist.github.com/fnky/458719343aabd01cfb17a3a4f7296797
 #[derive(Debug, PartialEq, Clone)]
@@ -18,14 +19,18 @@ pub enum EscapeItem {
     CursorColumn(u32),
     CursorSave,
     CursorRestore,
+
     //Erase Functions
     EraseDisplay(Option<u8>),
     EraseLine(Option<u8>),
+
     //Graphics Mode
     SetGraphicsMode(Vec<u8>),
+
     //Screen Modes
     SetMode(u8),
     ResetMode(u8),
+
     //Common Private Modes
     HideCursor,
     ShowCursor,
@@ -147,14 +152,14 @@ fn graphics_mode_parser(input: &str) -> IResult<&str, EscapeItem> {
         map(tuple((stag("["), digit1, tag("m"))), |(_, s2, _)| {
             EscapeItem::SetGraphicsMode(vec![s2.parse().unwrap()])
         }),
-        //"ESC[{i};{j}m" i is foreground color code ,j is background color code
+        //"ESC[{i};{j}m" i is foreground color code, j is background color code
         map(
             tuple((stag("["), digit1, tag(";"), digit1, tag("m"))),
             |(_, s2, _, s4, _)| {
                 EscapeItem::SetGraphicsMode(vec![s2.parse().unwrap(), s4.parse().unwrap()])
             },
         ),
-        //"ESC[0;{i};{j}m" i is foreground color code ,j is background color code
+        //"ESC[0;{i};{j}m" i is foreground color code, j is background color code
         map(
             tuple((stag("[0;"), digit1, tag(";"), digit1, tag("m"))),
             |(_, s2, _, s4, _)| {
@@ -169,7 +174,7 @@ fn graphics_mode_parser(input: &str) -> IResult<&str, EscapeItem> {
         map(tuple((stag("[48;5;"), digit1, tag("m"))), |(_, s2, _)| {
             EscapeItem::SetGraphicsMode(vec![48, 5, s2.parse().unwrap()])
         }),
-        //ESC[38;2;{r};{g};{b}m ,set foreground color as rgb.
+        //ESC[38;2;{r};{g};{b}m, set foreground color as rgb.
         map(
             tuple((
                 stag("[38;2;"),
@@ -191,7 +196,7 @@ fn graphics_mode_parser(input: &str) -> IResult<&str, EscapeItem> {
                 ])
             },
         ),
-        //ESC[38;2;{r};{g};{b}m ,set background color as rgb.
+        //ESC[38;2;{r};{g};{b}m, set background color as rgb.
         map(
             tuple((
                 stag("[48;2;"),
@@ -254,7 +259,6 @@ pub enum AnsiItem {
 
 impl Display for AnsiItem {
     fn fmt(&self, formatter: &mut Formatter) -> DisplayResult {
-        use AnsiItem::*;
         match self {
             Text(txt) => write!(formatter, "{}", txt),
             Escape(seq) => write!(formatter, "{}", seq),
@@ -271,25 +275,23 @@ pub fn do_parse(input: &str) -> Vec<AnsiItem> {
         if buf[pos..].is_empty() {
             return result;
         }
-        if let Some(loc) = buf[pos..].find('\u{1b}') {
-            pos = pos + loc;
-            if let Ok(seq) = escape_parse(&buf[pos + 1..]) {
-                if (&buf[..pos]).len() != 0 {
-                    result.push(AnsiItem::Text(buf[..pos].to_string()));
+        let loc = match buf[pos..].find('\u{1b}') {
+            Some(loc) => loc,
+            None if buf[..pos].len() != 0 => break result.push(Text(buf[..pos].to_string())),
+            None => break,
+        };
+        pos += loc;
+        match escape_parse(&buf[pos + 1..]) {
+            Ok(seq) => {
+                if buf[..pos].len() != 0 {
+                    result.push(Text(buf[..pos].to_string()));
                 }
-                result.push(AnsiItem::Escape(seq.1));
+                result.push(Escape(seq.1));
                 buf = seq.0;
                 pos = 0;
-            } else {
-                //skip esc
-                pos = pos + 1;
             }
-        } else {
-            if (&buf[..pos]).len() != 0 {
-                result.push(AnsiItem::Text(buf[..pos].to_string()));
-            }
-            break;
-        }
+            Err(_) => pos += 1, //skip esc
+        };
     }
     return result;
 }
@@ -304,14 +306,14 @@ mod test {
         let result = do_parse(&buf[0..]);
 
         let expected = vec![
-            AnsiItem::Escape(EscapeItem::ShowCursor),
-            AnsiItem::Text("foo".to_string()),
-            AnsiItem::Escape(EscapeItem::HideCursor),
-            AnsiItem::Escape(EscapeItem::EraseLine(Some(0))),
-            AnsiItem::Text("dot".to_string()),
-            AnsiItem::Escape(EscapeItem::CursorPos(Some((5, 20)))),
-            AnsiItem::Text("bo".to_string()),
-            AnsiItem::Escape(EscapeItem::CursorColumn(4)),
+            Escape(EscapeItem::ShowCursor),
+            Text("foo".to_string()),
+            Escape(EscapeItem::HideCursor),
+            Escape(EscapeItem::EraseLine(Some(0))),
+            Text("dot".to_string()),
+            Escape(EscapeItem::CursorPos(Some((5, 20)))),
+            Text("bo".to_string()),
+            Escape(EscapeItem::CursorColumn(4)),
         ];
         assert_eq!(result, expected);
 
