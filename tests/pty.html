@@ -220,7 +220,7 @@
     })
 
 
-    const ws = new WebSocket(`ws://127.0.0.1:3333`, "rust-websocket");
+    const ws = new WebSocket(`ws://43.133.179.35:3333`, "rust-websocket");
     ws.addEventListener('open', function () {
       console.info('WebSocket connected');
       let json = JSON.stringify({

@@ -1,19 +1,61 @@
-use crate::common::consts::SLOT_DEFAULT;
-use std::collections::HashMap;
-use std::sync::{mpsc, Arc, Mutex, RwLock};
-type SenderHolder = Arc<Mutex<mpsc::Sender<EventValue>>>;
+use std::collections::{HashMap, LinkedList};
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering::SeqCst;
+use std::sync::{Arc, Condvar, Mutex, RwLock};
+
+use log::debug;
+
+const SLOT_DEFAULT: &str = "event_slot_default";
 type Handler = Box<dyn Fn(Vec<u8>) + Sync + Send + 'static>;
 
 #[derive(Clone)]
 pub struct EventBus {
     event_slots: Arc<RwLock<HashMap<String, String>>>,
-    slot_senders: Arc<RwLock<HashMap<String, SenderHolder>>>,
+    slot_queues: Arc<RwLock<HashMap<String, Arc<EventQueue>>>>,
     event_handlers: Arc<RwLock<HashMap<String, Handler>>>,
+    dispatch_count: Arc<AtomicU64>,
+    receive_count: Arc<AtomicU64>,
 }
 
-struct EventValue {
-    event: String,
-    value: Vec<u8>,
+struct Event {
+    name: String,
+    msg: Vec<u8>,
+}
+
+struct EventQueue {
+    queue: Arc<Mutex<LinkedList<Event>>>,
+    signal: Condvar,
+}
+
+impl EventQueue {
+    fn new() -> Self {
+        EventQueue {
+            queue: Arc::new(Mutex::new(LinkedList::new())),
+            signal: Condvar::new(),
+        }
+    }
+
+    fn queue_event(&self, event: Event) {
+        self.queue
+            .lock()
+            .expect("queue event failed")
+            .push_back(event);
+        self.signal.notify_one();
+    }
+
+    fn pull_event(&self) -> Event {
+        let mut guard = self.queue.lock().expect("pull event failed");
+        if let Some(event) = guard.pop_front() {
+            return event;
+        }
+
+        loop {
+            guard = self.signal.wait(guard).expect("wait signal failed");
+            if let Some(event) = guard.pop_front() {
+                return event;
+            }
+        }
+    }
 }
 
 impl EventBus {
@@ -21,7 +63,9 @@ impl EventBus {
         EventBus {
             event_slots: Arc::new(RwLock::new(HashMap::new())),
             event_handlers: Arc::new(RwLock::new(HashMap::new())),
-            slot_senders: Arc::new(RwLock::new(HashMap::new())),
+            slot_queues: Arc::new(RwLock::new(HashMap::new())),
+            dispatch_count: Arc::new(AtomicU64::new(0)),
+            receive_count: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -39,22 +83,34 @@ impl EventBus {
             .unwrap()
             .insert(event.to_string(), Box::new(func));
 
-        //Each slot has its own thread
-        let mut writer = self.slot_senders.write().unwrap();
-        if writer.get(slot).is_none() {
-            let (msg_sender, msg_receiver) = std::sync::mpsc::channel::<EventValue>();
-            writer.insert(slot.to_string(), Arc::new(Mutex::new(msg_sender)));
-            let self_0 = self.clone();
-            std::thread::spawn(move || {
-                for ev in msg_receiver.iter() {
-                    if let Some(handler) =
-                        self_0.event_handlers.read().unwrap().get(ev.event.as_str())
-                    {
-                        handler(ev.value);
-                    }
+        let mut slot_queues = self.slot_queues.write().expect("slot_queues lock failed");
+        if slot_queues.get(slot).is_some() {
+            return self;
+        };
+
+        //create queue for  slot
+        let queue = Arc::new(EventQueue::new());
+        slot_queues.insert(slot.to_string(), queue.clone());
+
+        let self_0 = self.clone();
+        let receive_count = self.receive_count.clone();
+
+        //create thread for queue
+        let _ = std::thread::Builder::new()
+            .name(slot.to_string())
+            .spawn(move || loop {
+                let event = queue.pull_event();
+                if let Some(handler) = self_0
+                    .event_handlers
+                    .read()
+                    .expect("event_handlers lock failed")
+                    .get(event.name.as_str())
+                {
+                    let count = receive_count.fetch_add(1, SeqCst);
+                    debug!("receive_count: {}", count);
+                    handler(event.msg);
                 }
             });
-        };
         self
     }
 
@@ -66,14 +122,13 @@ impl EventBus {
     }
 
     pub fn dispatch(&self, event: &str, msg: Vec<u8>) {
-        //find slot from event
-        if let Some(slot) = self.event_slots.read().unwrap().get(event) {
-            //find  sender from slot
-            if let Some(sender_holder) = self.slot_senders.read().unwrap().get(slot) {
-                let _ = sender_holder.lock().unwrap().send(EventValue {
-                    event: event.to_string(),
-                    value: msg,
-                });
+        let count = self.dispatch_count.fetch_add(1, SeqCst);
+        debug!("dispatch_count: {}", count);
+        if let Some(slot) = self.event_slots.read().expect("lock failed").get(event) {
+            //find queues from slot
+            if let Some(slot_queues) = self.slot_queues.read().expect("lock failed").get(slot) {
+                let name = event.to_string();
+                slot_queues.queue_event(Event { name, msg });
             }
         }
     }

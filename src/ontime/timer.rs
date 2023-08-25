@@ -1,19 +1,18 @@
 use std::collections::BTreeMap;
 use std::fmt::{self, Debug};
 use std::ops::Fn;
-use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 pub struct TimerTask {
     task_id: u64,
-    task_fn: Box<dyn Fn() -> ()>,
+    task_fn: Box<dyn Fn() -> () + Send>,
 }
 
 impl TimerTask {
     fn new<F>(task_id: u64, task_fn: F) -> Box<TimerTask>
     where
-        F: 'static + Fn() -> (),
+        F: 'static + Fn() -> () + Send,
     {
         Box::new(TimerTask {
             task_id,
@@ -48,12 +47,10 @@ impl Timer {
     }
 
     fn inc_fetch_cur_id(&mut self) -> u64 {
-        self.cur_id = {
-            if self.cur_id == std::u64::MAX {
-                0
-            } else {
-                self.cur_id + 1
-            }
+        self.cur_id = if self.cur_id == std::u64::MAX {
+            0
+        } else {
+            self.cur_id + 1
         };
         self.cur_id
     }
@@ -76,7 +73,7 @@ impl Timer {
     // Return the actual inserted key and task_id.
     pub fn add_task<F>(&mut self, sec_after: u64, task_fn: F) -> (u128, u64)
     where
-        F: 'static + Fn() -> (),
+        F: 'static + Fn() -> () + Send,
     {
         let cur_id = self.inc_fetch_cur_id();
         let task = TimerTask::new(cur_id, task_fn);
@@ -90,11 +87,9 @@ impl Timer {
     // Return whether the task existed && removed
     pub fn del_task(&mut self, key: u128, task_id: u64) -> bool {
         let item = self.task_map.get(&key);
-        if let Some(task) = item {
-            if task_id == task.task_id() {
-                self.task_map.remove(&key);
-                return true;
-            }
+        if matches!(item, Some(task) if task.task_id() == task_id) {
+            self.task_map.remove(&key);
+            return true;
         }
         false
     }
@@ -122,11 +117,8 @@ impl Timer {
 
     // get the singleton, thread safe by mutex wrapped
     pub fn get_instance() -> Arc<Mutex<Timer>> {
-        static mut INS: Option<Arc<Mutex<Timer>>> = None;
-        let &mut ins;
-        unsafe {
-            ins = INS.get_or_insert_with(|| Arc::new(Mutex::new(Timer::new())));
-        }
+        static INS: OnceLock<Arc<Mutex<Timer>>> = OnceLock::new();
+        let ins = INS.get_or_init(|| Arc::new(Mutex::new(Timer::new())));
         ins.clone()
     }
 }
@@ -157,7 +149,6 @@ mod tests {
 
     use log::info;
 
-    use crate::common::asserts::GracefulUnwrap;
     use crate::common::logger::init_test_log;
 
     #[test]
@@ -176,7 +167,7 @@ mod tests {
     fn test_several_task() {
         {
             let timer = Timer::get_instance();
-            let mut timer = timer.lock().unwrap_or_exit("");
+            let mut timer = timer.lock().unwrap();
             timer.add_task(3, || {
                 info!("running task of after 3");
             });
@@ -192,7 +183,7 @@ mod tests {
         }
         {
             let timer = Timer::get_instance();
-            let mut timer = timer.lock().unwrap_or_exit("");
+            let mut timer = timer.lock().unwrap();
             info!("timer:{:?}", timer);
             let mut cnt = 0;
             while cnt < 4 {
@@ -211,14 +202,14 @@ mod tests {
     fn test_timer_singleton_inc_cur_id() {
         {
             let timer = Timer::get_instance();
-            let mut timer = timer.lock().unwrap_or_exit("");
+            let mut timer = timer.lock().unwrap();
             let cur = timer.inc_fetch_cur_id();
             assert_eq!(3, cur);
             info!("timer:{:?}", timer);
         }
         {
             let timer = Timer::get_instance();
-            let mut timer = timer.lock().unwrap_or_exit("");
+            let mut timer = timer.lock().unwrap();
             let cur = timer.inc_fetch_cur_id();
             assert_eq!(4, cur);
             info!("timer:{:?}", timer);
@@ -228,7 +219,7 @@ mod tests {
     fn test_timer_task_add_del_schedule() {
         {
             let timer = Timer::get_instance();
-            let mut timer = timer.lock().unwrap_or_exit("");
+            let mut timer = timer.lock().unwrap();
 
             timer.add_task(3, || {
                 info!("task after 3");
@@ -253,7 +244,7 @@ mod tests {
         }
         {
             let timer = Timer::get_instance();
-            let mut timer = timer.lock().unwrap_or_exit("");
+            let mut timer = timer.lock().unwrap();
 
             let tasks = timer.tasks_to_schedule();
             assert_eq!(0, tasks.len());
@@ -261,7 +252,7 @@ mod tests {
         thread::sleep(Duration::new(3, 0));
         {
             let timer = Timer::get_instance();
-            let mut timer = timer.lock().unwrap_or_exit("");
+            let mut timer = timer.lock().unwrap();
 
             let tasks = timer.tasks_to_schedule();
             assert_eq!(1, tasks.len());

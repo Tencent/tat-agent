@@ -1,70 +1,60 @@
-[简体中文](./README-ZH.md) | English
-
 # TAT Agent
 
-TAT agent is an agent written in Rust, which run in CVM, Lighthouse or CPM 2.0 instances.
-Its role is to run commands remotely without ssh login, invoked from TencentCloud Console/API.
-Commands include but not limited to: shell, python, php, you can provide any script interpreter
-at first line, such as: #!/bin/bash, #!/usr/bin/env python3.8.
-See more info at https://cloud.tencent.com/product/tat .
+[简体中文](./README-ZH.md) | English
 
+TencentCloud Automation Tools (TAT) is a native operations and maintenance deployment tool for cloud servers. TAT provides an automated way to directly manage instances and batch execute commands such as Shell, Powershell, Python, etc. to easily complete common management tasks such as running automation scripts, polling processes, installing or uninstalling software, updating applications and installing patches.
 
-## prerequisites
+For more information, please visit <https://cloud.tencent.com/product/tat> .
 
-- Rust environment, such as cargo, rustc, rustup. See more info at https://www.rust-lang.org/learn/get-started .
-- Docker, some binary need to be compiled in docker.
+## Environment & Tools
 
-```
-# some dependencies
-yum install -y gcc docker
-# install Rust
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-# reload your PATH environment variable to include Cargo
-source $HOME/.cargo/env
-# add target
-rustup target add x86_64-unknown-linux-musl
-rustup target add i686-unknown-linux-musl
-# start docker daemon
-systemctl start docker
-# install tool to cross-compile Rust
-cargo install cross
+- Rust environment
+- Docker
+
+## Compile
+
+Run the following command to compile:
+
+- Linux
+
+```shell
+cargo build --release --bin tat_agent
 ```
 
+- Windows
 
-## build & install
+Note: In Windows OS, the version of rust must be **higher than 1.70**, If the version is too low, you can update the version with the following command:
 
- - Linux
-```
-make run
-```
-Build a pure static binary in release mode with the real domain, need docker installed.
-
- - Windows
-```
-.\install\build.bat
-.\install\install.bat 
+```powershell
+rustup update
 ```
 
-## stop
+Then run:
 
- - Linux
-```
-make stop
-```
-Stop the daemon via systemctl, or kill by pid which was written in a pidfile.
-
- - Windows
-```
-.\install\stop.bat
+```powershell
+cargo build --release --bin tat_agent
 ```
 
-## other
+## Run
 
-See more details at Makefile.
+After successful compilation, run the following command:
 
-## supported OS
+- Linux
+
+```shell
+./target/release/tat_agent
+```
+
+- Windows
+
+```powershell
+./target/release/tat_agent.exe
+```
+
+## Supported OS
 
 Binary can run at both Linux & Windows Distributions, including but not limited to:
+
 - Tencent Linux
 - CentOS
 - Ubuntu
@@ -72,4 +62,3 @@ Binary can run at both Linux & Windows Distributions, including but not limited 
 - openSUSE
 - SUSE
 - CoreOS
-

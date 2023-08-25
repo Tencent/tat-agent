@@ -11,7 +11,7 @@ cp -f ${TAT_AGENT} ${TAT_AGENT_64}
 
 VERSION=`./${TAT_AGENT} --version | awk '{print $2}'`
 if [ -z "${VERSION}" ]; then
-    echo "${TAT_AGENT} version get fail, now exit"
+    echo "${TAT_AGENT} version get failed, now exit"
     exit 1
 fi
 echo "${TAT_AGENT} version: ${VERSION}"
