@@ -6,11 +6,11 @@ use crate::common::config::RegisterInfo;
 use crate::common::utils::generate_rsa_key;
 use crate::network::types::{
     AgentError, AgentErrorCode, AgentRequest, CheckUpdateRequest, CheckUpdateResponse,
-    DescribeTasksRequest, DescribeTasksResponse, HttpMethod, RegisterInstanceRequest,
-    RegisterInstanceResponse, ReportResourceRequest, ReportResourceResponse,
-    ReportTaskFinishRequest, ReportTaskFinishResponse, ReportTaskStartRequest,
-    ReportTaskStartResponse, ServerRawResponse, UploadTaskLogRequest, UploadTaskLogResponse,
-    ValidateInstanceRequest, ValidateInstanceResponse,
+    DescribeTasksRequest, DescribeTasksResponse, GetCosCredentialRequest, GetTmpCredentialResponse,
+    HttpMethod, RegisterInstanceRequest, RegisterInstanceResponse, ReportResourceRequest,
+    ReportResourceResponse, ReportTaskFinishRequest, ReportTaskFinishResponse,
+    ReportTaskStartRequest, ReportTaskStartResponse, ServerRawResponse, UploadTaskLogRequest,
+    UploadTaskLogResponse, ValidateInstanceRequest, ValidateInstanceResponse,
 };
 use crate::network::HttpRequester;
 use crate::sysinfo::{get_hostname, get_local_ip, get_machine_id};
@@ -180,6 +180,20 @@ impl InvokeAPIAdapter {
         let body = ValidateInstanceRequest::new(hostname, local_ip);
         self.send(
             "ValidateInstance",
+            &get_invoke_url(),
+            body,
+            HTTP_REQUEST_RETRIES,
+        )
+        .await
+    }
+
+    pub async fn get_cos_credential(
+        &self,
+        task_id: String,
+    ) -> Result<GetTmpCredentialResponse, AgentError<String>> {
+        let body = GetCosCredentialRequest::new(task_id);
+        self.send(
+            "GetCosCredential",
             &get_invoke_url(),
             body,
             HTTP_REQUEST_RETRIES,

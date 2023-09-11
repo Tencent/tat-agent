@@ -82,7 +82,8 @@ pub fn check_resource_leak() {
             mem_avg, fd_avg, zp_cnt
         );
         // let _ = Builder::new_current_thread()
-        let _ = Builder::new().basic_scheduler()
+        let _ = Builder::new()
+            .basic_scheduler()
             .enable_all()
             .build()
             .unwrap()

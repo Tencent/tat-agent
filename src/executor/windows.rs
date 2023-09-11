@@ -255,7 +255,7 @@ impl BaseCommand {
         let mut utf8_bom_checked = false;
         let mut buffer: [u8; BUF_SIZE] = [0; BUF_SIZE];
         let mut file = tokio::fs::File::from_std(file);
-        let need_cos = !(self.cos_bucket.is_empty() || self.cos_prefix.is_empty());
+        let need_cos = !self.cos_bucket.is_empty();
 
         loop {
             let mut len = match file.read(&mut buffer[..]).await {
@@ -285,7 +285,8 @@ impl BaseCommand {
             }
         }
         if need_cos {
-            self.upload_log_cos().await;
+            let invocation_task_id = self.task_id.clone();
+            self.upload_log_cos(invocation_task_id).await;
         }
     }
 

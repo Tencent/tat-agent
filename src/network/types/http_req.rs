@@ -444,6 +444,21 @@ pub struct GetTmpCredentialResponse {
     pub code: String,
 }
 
+//==============================================================================
+// get cos credential
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "PascalCase")]
+pub struct GetCosCredentialRequest {
+    pub invocation_task_id: String,
+}
+
+impl GetCosCredentialRequest {
+    pub fn new(invocation_task_id: String) -> Self {
+        GetCosCredentialRequest { invocation_task_id }
+    }
+}
+
 // Unit Tests
 #[cfg(test)]
 mod tests {

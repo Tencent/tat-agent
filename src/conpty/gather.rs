@@ -36,7 +36,8 @@ pub fn run(event_bus: &Arc<EventBus>, running_task_num: &Arc<AtomicU64>) {
             ws_seq_num: Arc::new(AtomicU64::new(0)),
             runtime: Arc::new(
                 // Builder::new_multi_thread()
-                Builder::new().threaded_scheduler()
+                Builder::new()
+                    .threaded_scheduler()
                     .enable_all()
                     .build()
                     .expect("build pty runtime failed"),

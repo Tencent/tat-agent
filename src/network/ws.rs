@@ -19,13 +19,12 @@ use websocket::header::Headers;
 use websocket::r#async::Server;
 use websocket::result::WebSocketError;
 use websocket::{ClientBuilder, CloseData, OwnedMessage};
- 
+
 use crate::common::evbus::EventBus;
 use crate::common::Opts;
 use crate::network::build_extra_headers;
 use crate::network::types::ws_msg::WsMsg;
 use crate::network::urls::get_ws_url;
-
 
 use crate::conpty::{WS_BIN_MSG, WS_TXT_MSG};
 use crate::network::types::ws_msg::{WS_MSG_TYPE_CHECK_UPDATE, WS_MSG_TYPE_KICK};

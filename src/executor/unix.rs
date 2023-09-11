@@ -190,7 +190,7 @@ impl BaseCommand {
         let stdout = child.stdout.take();
         let mut buffer: [u8; BUF_SIZE] = [0; BUF_SIZE];
         let mut reader = BufReader::new(stdout.unwrap());
-        let need_cos = !(self.cos_bucket.is_empty() || self.cos_prefix.is_empty());
+        let need_cos = !self.cos_bucket.is_empty();
 
         loop {
             let len = match reader.read(&mut buffer[..]).await {
@@ -216,7 +216,8 @@ impl BaseCommand {
             }
         }
         if need_cos {
-            self.upload_log_cos().await;
+            let invocation_task_id = self.task_id.clone();
+            self.upload_log_cos(invocation_task_id).await;
         }
     }
 

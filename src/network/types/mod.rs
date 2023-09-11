@@ -8,8 +8,8 @@ pub use error::AgentError;
 pub use error::AgentErrorCode;
 pub use http_req::{
     AgentRequest, CheckUpdateRequest, CheckUpdateResponse, DescribeTasksRequest,
-    DescribeTasksResponse, GetTmpCredentialResponse, InvocationCancelTask, InvocationNormalTask,
-    RegisterInstanceRequest, RegisterInstanceResponse, ReportResourceRequest,
+    DescribeTasksResponse, GetCosCredentialRequest, GetTmpCredentialResponse, InvocationCancelTask,
+    InvocationNormalTask, RegisterInstanceRequest, RegisterInstanceResponse, ReportResourceRequest,
     ReportResourceResponse, ReportTaskFinishRequest, ReportTaskFinishResponse,
     ReportTaskStartRequest, ReportTaskStartResponse, ServerRawResponse, UploadTaskLogRequest,
     UploadTaskLogResponse, ValidateInstanceRequest, ValidateInstanceResponse,

@@ -6,7 +6,7 @@ use crate::executor::{windows::WindowsCommand, CMD_TYPE_BAT, CMD_TYPE_POWERSHELL
 use crate::common::utils::get_now_secs;
 use crate::network::cos::{ObjectAPI, COS};
 use crate::network::urls::get_meta_url;
-use crate::network::MetadataAPIAdapter;
+use crate::network::{InvokeAPIAdapter, MetadataAPIAdapter};
 use crate::ontime::timer::Timer;
 
 use std::fmt;
@@ -458,10 +458,12 @@ impl BaseCommand {
             })
     }
 
-    pub async fn upload_log_cos(&self) {
+    pub async fn upload_log_cos(&self, task_id: String) {
         if !self.cos_bucket.is_empty() {
             let metadata = MetadataAPIAdapter::build(get_meta_url().as_str());
-            match metadata.tmp_credential().await {
+            let metadata_credential = metadata.tmp_credential().await;
+            let cos_credential = InvokeAPIAdapter::new().get_cos_credential(task_id).await;
+            match metadata_credential.or(cos_credential) {
                 Ok(credential) => {
                     let cli = COS::new(
                         credential.secret_id,
@@ -488,7 +490,7 @@ impl BaseCommand {
 
                     *self.output_url.lock().unwrap() = self.set_output_url(&instance_id);
                 }
-                Err(e) => *self.output_err_info.lock().unwrap() = e.to_string(),
+                Err(err) => *self.output_err_info.lock().unwrap() = err.message.to_string(),
             }
         }
 

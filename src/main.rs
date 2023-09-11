@@ -50,11 +50,11 @@ fn check_args() {
     if let Some(EnumCommands::Register { region, id, value }) = Opts::get_opts().command.as_ref() {
         match register(region, id, value) {
             Ok(_) => {
-                print!("register success");
+                println!("register success");
                 exit(0)
             }
             Err(err) => {
-                print!("register failed: {}", err);
+                println!("register failed: {}", err);
                 exit(-1)
             }
         }

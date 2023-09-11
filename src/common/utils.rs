@@ -27,7 +27,6 @@ pub fn gen_rand_str_with(len: usize) -> String {
         .collect()
 }
 
-
 #[cfg(windows)]
 pub fn wsz2string(ptr: *const u16) -> String {
     unsafe {
@@ -93,7 +92,6 @@ pub fn cbs_exist() -> bool {
         false
     }
 }
-
 
 #[cfg(unix)]
 pub fn cbs_exist() -> bool {
