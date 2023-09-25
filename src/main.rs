@@ -3,7 +3,6 @@ use crate::common::logger;
 use crate::common::option::EnumCommands;
 use crate::common::Opts;
 use crate::network::AGENT_VERSION;
-
 use std::env;
 use std::process::exit;
 use std::sync::atomic::AtomicU64;

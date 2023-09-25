@@ -1,4 +1,4 @@
-use super::RegisterInfo;
+use crate::common::config;
 use crate::network::mock_enabled;
 use std::net::ToSocketAddrs;
 use std::sync::atomic::AtomicUsize;
@@ -24,9 +24,37 @@ const INVOKE_APIS: [&'static str; 4] = [
     "https://invoke.tat.tencent-cloud.com",
 ];
 
+pub fn get_ws_url() -> String {
+    let result = if let Some(url) = config::get_ws_url() {
+        url
+    } else if mock_enabled() {
+        WS_URL_MOCK.to_string()
+    } else if let Some(region) = get_register_region() {
+        format!("wss://{}.notify.tat-tc.tencent.cn:8186/ws", region)
+    } else {
+        find_available_url(Vec::from(WS_URLS), dns_resolve)
+    };
+    info!("get_ws_url {}", result);
+    return result;
+}
+
+pub fn get_invoke_url() -> String {
+    let result = if let Some(url) = config::get_invoke_url() {
+        url
+    } else if mock_enabled() {
+        INVOKE_API_MOCK.to_string()
+    } else if let Some(region) = get_register_region() {
+        format!("https://{}.invoke.tat-tc.tencent.cn", region)
+    } else {
+        find_available_url(Vec::from(INVOKE_APIS), dns_resolve)
+    };
+    info!("get_invoke_url {}", result);
+    return result;
+}
+
 fn dns_resolve(url: &str) -> Result<(), ()> {
-    let url = Url::parse(url).unwrap();
-    let host = url.host().unwrap().to_string();
+    let url = Url::parse(url).expect("parse fail");
+    let host = url.host().expect("host fail").to_string();
     return match format!("{}:{}", host, 80).to_socket_addrs() {
         Ok(_) => Ok(()),
         Err(_) => Err(()),
@@ -52,36 +80,11 @@ where
     urls[idx].to_string()
 }
 
-pub fn get_ws_url() -> String {
-    let result;
-    if mock_enabled() {
-        result = WS_URL_MOCK.to_string();
-    } else if let Some(region) = get_register_region() {
-        result = format!("wss://{}.notify.tat-tc.tencent.cn:8186/ws", region);
-    } else {
-        result = find_available_url(Vec::from(WS_URLS), dns_resolve);
-    }
-    info!("get_ws_url {}", result);
-    return result;
-}
-
 fn get_register_region() -> Option<String> {
-    if let Some(info) = RegisterInfo::load() {
+    if let Some(info) = config::get_register_info() {
         return Some(info.region);
     }
     None
-}
-
-pub fn get_invoke_url() -> String {
-    let result = if mock_enabled() {
-        INVOKE_API_MOCK.to_string()
-    } else if let Some(region) = get_register_region() {
-        format!("https://{}.invoke.tat-tc.tencent.cn", region)
-    } else {
-        find_available_url(Vec::from(INVOKE_APIS), dns_resolve)
-    };
-    info!("get_invoke_url {}", result);
-    return result;
 }
 
 pub fn get_meta_url() -> String {
@@ -93,7 +96,9 @@ pub fn get_meta_url() -> String {
 }
 
 pub fn get_register_url(region: &str) -> String {
-    let result = if mock_enabled() {
+    let result = if let Some(url) = config::get_invoke_url() {
+        url
+    } else if mock_enabled() {
         INVOKE_API_MOCK.to_string()
     } else {
         format!("https://{}.invoke.tat-tc.tencent.cn", region)

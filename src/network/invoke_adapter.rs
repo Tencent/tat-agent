@@ -1,7 +1,8 @@
 // 用于封装访问HTTP API的方法
 
+use super::build_extra_headers;
 use super::urls::{get_invoke_url, get_register_url};
-use super::{build_extra_headers, RegisterInfo};
+use crate::common::config::RegisterInfo;
 use crate::common::utils::generate_rsa_key;
 use crate::network::types::{
     AgentError, AgentErrorCode, AgentRequest, CheckUpdateRequest, CheckUpdateResponse,

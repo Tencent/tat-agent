@@ -401,7 +401,7 @@ pub struct RegisterInstanceResponse {
 #[serde(rename_all = "PascalCase")]
 pub struct ValidateInstanceRequest {
     #[serde(default)]
-    system_name: String,
+    sys_name: String,
     #[serde(default)]
     pub hostname: String,
     #[serde(default)]
@@ -414,9 +414,9 @@ impl ValidateInstanceRequest {
             hostname,
             local_ip,
             #[cfg(windows)]
-            system_name: "Windows".to_string(),
+            sys_name: "Windows".to_string(),
             #[cfg(unix)]
-            system_name: "Linux".to_string(),
+            sys_name: "Linux".to_string(),
         }
     }
 }

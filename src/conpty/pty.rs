@@ -2,7 +2,7 @@ use super::gather::PtyGather;
 use super::handler::{BsonHandler, Handler, JsonHandler};
 use crate::common::evbus::EventBus;
 use crate::common::utils::{get_current_username, get_now_secs};
-use crate::conpty::{PtyAdapter, PtyBase};
+use crate::conpty::{PtyAdapter, PtyBase, WS_MSG_TYPE_PTY_OUTPUT, WS_MSG_TYPE_PTY_READY};
 use crate::network::types::ws_msg::{
     ExecCmdReq, PtyBinErrMsg, PtyError, PtyInput, PtyOutput, PtyReady, PtyResize, PtyStart, PtyStop,
 };
@@ -18,15 +18,12 @@ use log::{error, info};
 use tokio::io::AsyncReadExt;
 use tokio::time::timeout;
 
-use super::{PTY_FLAG_ENABLE_BLOCK, SLOT_PTY_BIN, WS_MSG_TYPE_PTY_ERROR};
+use super::{
+    PTY_FLAG_ENABLE_BLOCK, SLOT_PTY_BIN, WS_MSG_TYPE_PTY_ERROR, WS_MSG_TYPE_PTY_EXEC_CMD,
+    WS_MSG_TYPE_PTY_INPUT, WS_MSG_TYPE_PTY_RESIZE, WS_MSG_TYPE_PTY_START, WS_MSG_TYPE_PTY_STOP,
+};
 const SLOT_PTY_CMD: &str = "event_slot_pty_cmd";
-const WS_MSG_TYPE_PTY_EXEC_CMD: &str = "PtyExecCmd";
-const WS_MSG_TYPE_PTY_START: &str = "PtyStart";
-const WS_MSG_TYPE_PTY_STOP: &str = "PtyStop";
-const WS_MSG_TYPE_PTY_RESIZE: &str = "PtyResize";
-const WS_MSG_TYPE_PTY_INPUT: &str = "PtyInput";
-const WS_MSG_TYPE_PTY_READY: &str = "PtyReady";
-const WS_MSG_TYPE_PTY_OUTPUT: &str = "PtyOutput";
+
 const PTY_REMOVE_INTERVAL: u64 = 3 * 60;
 
 #[cfg(unix)]
@@ -205,11 +202,11 @@ impl PtySession {
                 }
                 Err(e) => {
                     info!("process_output {} err: {}", self.session_id, e);
-                    let pty_error = PtyError {
+                    let pty_logintout = PtyError {
                         session_id: self.session_id.clone(),
-                        reason: format!("session {} error: {}", self.session_id, e),
+                        reason: format!("loginout"),
                     };
-                    break PtyGather::reply_json_msg(WS_MSG_TYPE_PTY_ERROR, pty_error);
+                    break PtyGather::reply_json_msg(WS_MSG_TYPE_PTY_ERROR, pty_logintout);
                 }
             }
         }

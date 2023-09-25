@@ -1,3 +1,4 @@
+use crate::common::config::{self, RegisterInfo};
 use crate::common::utils::{gen_rand_str_with, get_now_secs};
 use crate::sysinfo::{get_hostname, get_local_ip, Uname};
 use std::env;
@@ -8,7 +9,6 @@ use reqwest::header::HeaderValue;
 use reqwest::header::{self, HeaderMap};
 use rsa::pkcs1v15::Pkcs1v15Sign;
 use rsa::{pkcs1::DecodeRsaPrivateKey, RsaPrivateKey};
-use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 
 pub mod cos;
@@ -26,26 +26,9 @@ pub use requester::HttpRequester;
 
 const VPCID_HEADER: &str = "Tat-Vpcid";
 const VIP_HEADER: &str = "Tat-Vip";
-const REGISTER_FILE: &str = "register.dat";
 const WS_VERSION_HEADER: &str = "Tat-Version";
 const WS_KERNEL_NAME_HEADER: &str = "Tat-KernelName";
 pub const AGENT_VERSION: &str = env!("CARGO_PKG_VERSION");
-
-#[derive(Serialize, Deserialize, Debug, Default)]
-pub struct RegisterInfo {
-    #[serde(default)]
-    pub region: String,
-    #[serde(default)]
-    pub register_code: String,
-    #[serde(default)]
-    pub register_value: String,
-    #[serde(default)]
-    pub machine_id: String,
-    #[serde(default)]
-    pub private_key: String,
-    #[serde(default)]
-    pub instance_id: String,
-}
 
 fn mock_enabled() -> bool {
     return env::var("MOCK_ENABLE").map(|_| true).unwrap_or(false);
@@ -57,22 +40,6 @@ fn mock_vpcid() -> String {
 
 fn mock_vip() -> String {
     return env::var("MOCK_VIP").unwrap_or("192.168.0.1".to_string());
-}
-
-impl RegisterInfo {
-    fn save(&self) -> Result<(), String> {
-        let json_data = serde_json::to_string(self).map_err(|e| e.to_string())?;
-        let ba64_data = STANDARD.encode(json_data);
-        std::fs::write(REGISTER_FILE, ba64_data).map_err(|e| e.to_string())?;
-        Ok(())
-    }
-
-    fn load() -> Option<Self> {
-        let b64_data = std::fs::read_to_string(REGISTER_FILE).ok()?;
-        let json_data = STANDARD.decode(b64_data).ok()?;
-        let record = serde_json::from_slice::<RegisterInfo>(&json_data[..]).ok()?;
-        return Some(record);
-    }
 }
 
 fn build_extra_headers() -> HeaderMap {
@@ -99,11 +66,10 @@ fn build_extra_headers() -> HeaderMap {
         );
     }
 
-    let record: RegisterInfo = match RegisterInfo::load() {
+    let record: RegisterInfo = match config::get_register_info() {
         Some(record) => record,
         None => return headers,
     };
-
 
     let private_key = match RsaPrivateKey::from_pkcs1_pem(&record.private_key) {
         Ok(v) => v,
@@ -157,7 +123,8 @@ pub fn register(
 ) -> Result<(), String> {
     //temp runtime in current thread
     // tokio::runtime::Builder::new_current_thread()
-    tokio::runtime::Builder::new().basic_scheduler()
+    tokio::runtime::Builder::new()
+        .basic_scheduler()
         .enable_all()
         .build()
         .expect("register runtime failed")
@@ -167,17 +134,23 @@ pub fn register(
                 .register_instance(region, register_id, register_value)
                 .await
         })
-        .and_then(|record| record.save())
+        .and_then(|record| {
+            config::save_register_info(record).map_err(|e| {
+                error!("save_register_info fail {}", e);
+                e.to_string()
+            })
+        })
 }
 
 pub fn check() {
     // tokio::runtime::Builder::new_current_thread()
-    tokio::runtime::Builder::new().basic_scheduler()
+    tokio::runtime::Builder::new()
+        .basic_scheduler()
         .enable_all()
         .build()
         .expect("check runtime failed")
         .block_on(async move {
-            if let Some(record) = RegisterInfo::load() {
+            if let Some(record) = config::get_register_info() {
                 info!("find register info, try validate");
                 let adapter = InvokeAPIAdapter::new();
                 let local_ip = get_local_ip().expect("get_local_ip failed");
@@ -187,7 +160,7 @@ pub fn check() {
                 } else {
                     info!("validate_instance success, work as register instance");
                 };
-                let _ = record.save();
+                let _ = config::save_register_info(record);
             }
         });
 }
