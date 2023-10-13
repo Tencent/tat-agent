@@ -5,13 +5,14 @@ use std::ptr;
 use log::error;
 use ntapi::ntrtl::RtlAdjustPrivilege;
 use ntapi::ntseapi::{SE_ASSIGNPRIMARYTOKEN_PRIVILEGE, SE_TCB_PRIVILEGE};
-use winapi::shared::minwindef::{DWORD, FALSE, LPVOID};
+use winapi::shared::minwindef::{DWORD, FALSE, LPVOID, MAKEWORD};
 use winapi::shared::ntdef::{NULL, TRUE};
 use winapi::shared::winerror::{ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS};
 use winapi::um::errhandlingapi::GetLastError;
 use winapi::um::minwinbase::LPSECURITY_ATTRIBUTES;
 use winapi::um::synchapi::*;
 use winapi::um::winnt::{BOOLEAN, LPWSTR, PVOID, SERVICE_WIN32_OWN_PROCESS};
+use winapi::um::winsock2::{WSAStartup, WSADATA};
 use winapi::um::winsvc::*;
 use winapi::um::wow64apiset::*;
 
@@ -143,7 +144,16 @@ pub fn daemonize(entry: fn()) {
     if already_start() {
         std::process::exit(183);
     }
+
+    // Init Winsock
+    let mut wsa_data: WSADATA = unsafe { std::mem::zeroed() };
+    let result = unsafe { WSAStartup(MAKEWORD(2, 2), &mut wsa_data as *mut WSADATA) };
+    if result != 0 {
+        error!("WSAStartup fail,GetLastError {}", unsafe { GetLastError() })
+    }
+
     clean_update_files();
     adjust_privileges();
+
     try_start_service(entry);
 }

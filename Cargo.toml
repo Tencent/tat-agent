@@ -1,6 +1,6 @@
 [package]
 name = "tat_agent"
-version = "1.0.6"
+version = "1.0.7"
 edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -81,6 +81,7 @@ winapi = { version = "0.3.9", features = [
     "psapi",
     "memoryapi",
     "subauth",
+    "winsock2",
 ] }
 codepage-strings = "1.0.2"
 ntapi = "0.4.1"
