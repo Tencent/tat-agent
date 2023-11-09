@@ -14,7 +14,7 @@ use log4rs::filter::{Filter, Response};
 const LOG_PATTERN: &str = "{d}|{f}:{L}|{l}|{m}{n}";
 const LOG_FILE_NAME: &str = "log/tat_agent.log";
 const LOG_FILE_NAME_WHEN_ROLL: &str = "log/tat_agent_{}.log";
-const LOG_FILE_SIZE: u64 = 1 * 1024 * 1024;
+const LOG_FILE_SIZE: u64 = 10 * 1024 * 1024;
 const LOG_FILE_BASE_INDEX: u32 = 0;
 const MAX_LOG_FILE_COUNT: u32 = 2;
 const LOG_LEVEL: log::LevelFilter = log::LevelFilter::Info;

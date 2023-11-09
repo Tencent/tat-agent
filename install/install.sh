@@ -151,7 +151,9 @@ start() {
         systemctl start tat_agent.service
     elif has_upstart; then
         echo "use upstart(initctl) to manage service"
-        initctl start tat_agent_service
+        if ! initctl status tat_agent_service | grep -q "start/running"; then
+            initctl start tat_agent_service
+        fi
     elif has_sysvinit; then
         /etc/init.d/tat_agent_service start
     else

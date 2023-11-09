@@ -31,10 +31,11 @@ pub fn get_local_ip() -> Option<String> {
 }
 
 pub fn get_machine_id() -> Option<String> {
-    let smbios_data = table_load_from_device().unwrap();
+    let smbios_data = table_load_from_device().ok()?;
     for (_, undefstruct) in smbios_data.iter().enumerate() {
-        let DefinedStruct::SystemInformation(info) = undefstruct.defined_struct()
-            else { continue };
+        let DefinedStruct::SystemInformation(info) = undefstruct.defined_struct() else {
+            continue;
+        };
         if let Some(uuid_data @ SystemUuidData::Uuid(_)) = info.uuid() {
             return Some(uuid_data.to_string());
         }

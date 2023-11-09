@@ -472,8 +472,9 @@ impl BaseCommand {
                         self.cos_bucket.to_string(),
                     );
                     let instance_id = metadata.instance_id().await;
+                    let invocation_id = credential.invocation_id;
                     let object_name =
-                        self.object_name(&self.cos_prefix, &instance_id, &self.task_id);
+                        self.object_name(&self.cos_prefix, &invocation_id, &self.task_id);
 
                     if let Err(e) = cli
                         .put_object_from_file(&self.log_file_path, &object_name, None)
@@ -488,7 +489,7 @@ impl BaseCommand {
                         );
                     }
 
-                    *self.output_url.lock().unwrap() = self.set_output_url(&instance_id);
+                    *self.output_url.lock().unwrap() = self.set_output_url(&invocation_id);
                 }
                 Err(err) => *self.output_err_info.lock().unwrap() = err.message.to_string(),
             }
@@ -503,7 +504,7 @@ impl BaseCommand {
         }
     }
 
-    pub fn set_output_url(&self, instance_id: &str) -> String {
+    pub fn set_output_url(&self, invocation_id: &str) -> String {
         let output_err_info = self.output_err_info.lock().expect("lock failed");
         if !output_err_info.is_empty() {
             return "".to_string();
@@ -516,20 +517,20 @@ impl BaseCommand {
         let arr = vec![
             self.cos_bucket.to_string(),
             self.cos_prefix.to_string(),
-            instance_id.to_string(),
+            invocation_id.to_string(),
             format!("{}.log", self.task_id.to_string()),
         ];
         let x: Vec<String> = arr.into_iter().filter(|x| !x.is_empty()).collect();
         x.join("/")
     }
 
-    fn object_name(&self, cos_prefix: &str, instance_id: &str, task_id: &str) -> String {
+    fn object_name(&self, cos_prefix: &str, invocation_id: &str, task_id: &str) -> String {
         let mut object_name = format!("");
         if !cos_prefix.is_empty() {
             object_name.push_str(format!("/{}", cos_prefix).as_str())
         }
-        if !instance_id.is_empty() {
-            object_name.push_str(format!("/{}", instance_id).as_str())
+        if !invocation_id.is_empty() {
+            object_name.push_str(format!("/{}", invocation_id).as_str())
         }
         object_name.push_str(format!("/{}.log", task_id).as_str());
         object_name

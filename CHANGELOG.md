@@ -1,6 +1,12 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [1.0.8] - 2023-11-08
+
+### Changed
+- Modify the path for uploading output to COS.
+- Fix some bugs.
+
 ## [1.0.7] - 2023-10-17
 
 ### Changed

@@ -442,6 +442,9 @@ pub struct GetTmpCredentialResponse {
     pub token: String,
     #[serde(default)]
     pub code: String,
+    #[serde(alias = "InvocationID")]
+    #[serde(default)]
+    pub invocation_id: String,
 }
 
 //==============================================================================
