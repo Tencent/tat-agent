@@ -1,5 +1,6 @@
 use crate::common::utils::gen_rand_str_with;
 use crate::network::types::InvocationNormalTask;
+use std::env;
 use std::fs::{create_dir_all, remove_file, File};
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
@@ -8,7 +9,6 @@ use chrono::Local;
 use log::info;
 
 use super::{CMD_TYPE_BAT, CMD_TYPE_POWERSHELL, CMD_TYPE_SHELL};
-use super::{TASK_LOG_PATH, TASK_STORE_PATH};
 const TASK_STORE_PREFIX: &str = "task";
 const SUFFIX_BAT: &str = ".bat";
 const SUFFIX_PS1: &str = ".ps1";
@@ -22,10 +22,26 @@ pub struct TaskFileStore {
 
 impl TaskFileStore {
     pub fn new() -> TaskFileStore {
+        let current_bin = env::current_exe().expect("current path failed");
+        let current_path = current_bin.parent().expect("parent path failed");
+        let agent_path = current_path.to_string_lossy().to_string();
+
         let t = TaskFileStore {
-            store_path: Path::new(TASK_STORE_PATH).to_path_buf(),
             prefix: String::from(TASK_STORE_PREFIX),
-            log_path: Path::new(TASK_LOG_PATH).to_path_buf(),
+            store_path: Path::new(&format!(
+                "{}{}tmp{}commands",
+                agent_path,
+                std::path::MAIN_SEPARATOR_STR,
+                std::path::MAIN_SEPARATOR_STR,
+            ))
+            .to_path_buf(),
+            log_path: Path::new(&format!(
+                "{}{}tmp{}outputs",
+                agent_path,
+                std::path::MAIN_SEPARATOR_STR,
+                std::path::MAIN_SEPARATOR_STR,
+            ))
+            .to_path_buf(),
         };
         t
     }
@@ -110,22 +126,14 @@ impl TaskFileStore {
     #[cfg(unix)]
     fn set_permissions_recursively(&self, path: &Path) -> std::io::Result<()> {
         use crate::executor::FILE_EXECUTE_PERMISSION_MODE;
+        use log::error;
         use std::fs::{set_permissions, Permissions};
         use std::os::unix::fs::PermissionsExt;
-
-        let mut path = path.clone();
-        while path.to_str() != Some("/tmp") {
-            match set_permissions(path, Permissions::from_mode(FILE_EXECUTE_PERMISSION_MODE)) {
-                Err(e) => {
-                    info!("failed to chmod path `{:?}`: {}", path, e);
-                    return Err(e);
-                }
-                _ => match path.parent() {
-                    Some(parent) => path = parent,
-                    None => Err("").expect("should never come here"),
-                },
-            };
-        }
+        if let Err(e) = set_permissions(path, Permissions::from_mode(FILE_EXECUTE_PERMISSION_MODE))
+        {
+            error!("failed to chmod path `{:?}`: {}", path, e);
+            return Err(e);
+        };
         Ok(())
     }
 
@@ -176,13 +184,17 @@ mod tests {
     fn test_store_task() {
         logger::init_test_log();
 
+        let current_bin = env::current_exe().expect("current path failed");
+        let current_path = current_bin.parent().expect("parent path failed");
+        let agent_path = current_path.to_string_lossy().to_string();
+
         #[cfg(unix)]
         let workdir = format!("/root/");
         #[cfg(windows)]
         let workdir = format!("C:\\Program Files\\qcloud\\tat_agent");
         let task = InvocationNormalTask {
             invocation_task_id: "100001".to_string(),
-            command_type: format!("SHELL"),
+            command_type: format!("POWERSHELL"),
             time_out: 30,
             command: format!("bHMgLWw="),
             username: format!("root"),
@@ -192,23 +204,28 @@ mod tests {
         };
 
         let store = TaskFileStore::new();
-        #[cfg(unix)]
-        let desired_path = format!("/tmp/tat_agent/commands/{}", Local::now().format("%Y%m"));
-        #[cfg(windows)]
         let desired_path = format!(
-            "C:\\Program Files\\qcloud\\tat_agent\\tmp\\commands\\{}",
+            "{}{}{}",
+            Path::new(&format!(
+                "{}{}tmp{}commands",
+                agent_path,
+                std::path::MAIN_SEPARATOR_STR,
+                std::path::MAIN_SEPARATOR_STR,
+            ))
+            .to_string_lossy()
+            .to_string(),
+            std::path::MAIN_SEPARATOR_STR,
             Local::now().format("%Y%m")
         );
-        assert_eq!(
-            store
-                .gen_task_file_path(&task)
-                .as_path()
-                .parent()
-                .unwrap()
-                .display()
-                .to_string(),
-            desired_path
-        );
+
+        let store_path = store
+            .gen_task_file_path(&task)
+            .as_path()
+            .parent()
+            .unwrap()
+            .display()
+            .to_string();
+        assert_eq!(store_path, desired_path);
 
         let (task_file, _) = store.store(&task).unwrap();
         #[cfg(unix)]

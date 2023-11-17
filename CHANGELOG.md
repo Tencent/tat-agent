@@ -1,45 +1,62 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+
+## [1.0.11] - 2023-12-04
+
+### Changed
+
+- Optimize pty login logic: add utmpx record, use system default shell.
+- Change task script storage directory.
+- Optimize build script.
+
 ## [1.0.10] - 2023-11-30
 
 ### Changed
+
 - Remove temp files after task finished.
 
 ## [1.0.9] - 2023-11-23
 
 ### Changed
+
 - Change the permissions for the config file and log files.
 
 ## [1.0.8] - 2023-11-08
 
 ### Changed
+
 - Modify the path for uploading output to COS.
 - Fix some bugs.
 
 ## [1.0.7] - 2023-10-17
 
 ### Changed
+
 - Optimized the logic for uploading output to COS.
 
 ## [1.0.6] - 2023-09-25
 
 ### Changed
+
 - Add config file support.
 
 ## [1.0.5] - 2023-08-25
 
 ### Changed
+
 - Optimize CBS support.
 
 ## [1.0.4] - 2023-07-07
 
 ### Changed
+
 - Fix performance problems.
 
 ## [1.0.3] - 2023-07-03
 
 ### Changed
+
 - Add installer packager.
 - Add consistent global snapshot support.
 - Fix init script bugs.
@@ -48,11 +65,13 @@ All notable changes to this project will be documented in this file.
 ## [1.0.2] - 2023-05-26
 
 ### Changed
+
 - Fix PtyInfoFile bugs.
 
 ## [1.0.1] - 2023-05-09
 
 ### Changed
+
 - Add register instance.
 - Add vscode proxy support.
 - Optimize some logic.
@@ -60,47 +79,56 @@ All notable changes to this project will be documented in this file.
 ## [0.1.33] - 2023-02-23
 
 ### Changed
+
 - Optimize log record.
 
 ## [0.1.31] - 2022-11-17
 
 ### Changed
+
 - Optimize leak check logic.
 
 ## [0.1.30] - 2022-11-15
 
 ### Changed
+
 - Add some log for conpty mod.
 
 ## [0.1.29] - 2022-09-21
 
 ### Changed
+
 - Add pty fs support.
 - Add ps1 block support.
 
 ## [0.1.28] - 2022-08-03
 
 ### Changed
+
 - Optimize create_user_token logic.
 
 ## [0.1.27] - 2022-07-14
 
 ### Changed
+
 - Change reconnect time from fixed to random.
 
 ## [0.1.26] - 2022-06-29
 
 ### Changed
+
 - Add resource leakage monitoring logic.
 
 ## [0.1.25] - 2022-06-24
 
 ### Changed
+
 - Dispatch error msg when pty bash terminated.
 
 ## [0.1.24] - 2022-06-23
 
 ### Changed
+
 - Fix pty stop logic.
 
 ## [0.1.23] - 2022-05-06
@@ -232,7 +260,7 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
-- Support set `username` for invocation task. 
+- Support set `username` for invocation task.
 - Support preload environment variables before running task.
 - Add `err_info` to store the reason for task `START_FAILED`.
 
@@ -285,4 +313,3 @@ All notable changes to this project will be documented in this file.
 - Including one HTTP thread for task query & report.
 - Including one On-time thread for some periodic & timer tasks.
 - Commands spawned as an independent process.
-

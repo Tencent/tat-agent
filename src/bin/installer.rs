@@ -7,7 +7,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = args_os().skip(1);
     let target_dir = temp_dir();
 
-    let buf = include_bytes!("..\\..\\install\\data.zip");
+    let buf = include_bytes!("..\\..\\install\\win-bin.zip");
     zip_extract::extract(Cursor::new(buf), &target_dir, true)?;
 
     // Run install command

@@ -1,5 +1,8 @@
 use super::{PtyAdapter, PtyBase, PTY_INSPECT_READ};
 use crate::executor::unix::{build_envs, cmd_path};
+use libc::{self, getsid, pid_t, ttyname, waitpid, winsize, SIGHUP};
+use log::{error, info};
+use std::ffi::CStr;
 use std::fs::{metadata, File};
 use std::io::{Read, Write};
 use std::os::linux::fs::MetadataExt;
@@ -8,17 +11,57 @@ use std::process::{Child, Command};
 use std::ptr::null_mut;
 use std::sync::{Arc, Mutex};
 use std::{env, io, ptr};
-
-use libc::{self, waitpid, winsize, SIGHUP};
-use log::error;
 use unix_mode::{is_allowed, Access, Accessor};
 use users::os::unix::UserExt;
 use users::{get_user_by_name, User};
+
+fn call_utmpx(ttyname: &str, username: &str, pid: libc::pid_t, sid: libc::pid_t, ut_type: &str) {
+    info!(
+        "=>call_utmpx tty:{} user:{} pid:{} sid:{} type:{}",
+        ttyname, username, pid, sid, ut_type
+    );
+    let current_bin = env::current_exe().expect("current path failed");
+    let current_path = current_bin.parent().expect("parent path failed");
+    let utmpx_path = format!("{}/utmpx", current_path.to_string_lossy());
+    match Command::new(utmpx_path)
+        .arg(ttyname)
+        .arg(username)
+        .arg(pid.to_string())
+        .arg(sid.to_string())
+        .arg(ut_type)
+        .output()
+    {
+        Ok(output) => {
+            info!(
+                "stdout:{}  stderr:{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        Err(err) => {
+            info!("call_utmpx  err:{}", err);
+        }
+    }
+}
+
+fn get_default_shell(username: &str) -> String {
+    let default_shell = "bash";
+    if let Ok(output) = Command::new("getent").arg("passwd").arg(username).output() {
+        if let Ok(result) = String::from_utf8(output.stdout) {
+            let shell = result.split(':').nth(6).unwrap_or(default_shell).trim();
+            info!("user shell is {}", shell);
+            return shell.to_string();
+        }
+    }
+    info!("user shell is {}", default_shell);
+    return default_shell.to_string();
+}
 
 struct Inner {
     master: File,
     child: Child,
     user: User,
+    tty_name: String,
 }
 
 fn openpty(user: User, cols: u16, rows: u16) -> Result<(File, File), String> {
@@ -69,7 +112,11 @@ impl PtyAdapter for ConPtyAdapter {
         let envs = build_envs(user_name, home_path, &shell_path);
         let (master, slave) = openpty(user.clone(), cols, rows)?;
 
-        let mut cmd = Command::new("bash");
+        let tty_name = unsafe {
+            let tty_name_c = ttyname(slave.as_raw_fd());
+            CStr::from_ptr(tty_name_c).to_string_lossy().to_string()
+        };
+        let mut cmd = Command::new(get_default_shell(user_name));
         unsafe {
             cmd.pre_exec(move || {
                 libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGHUP);
@@ -80,20 +127,25 @@ impl PtyAdapter for ConPtyAdapter {
             });
         }
         let child = cmd
-            .args(["--login"])
             .uid(user.uid())
             .gid(user.primary_group_id())
-            .stdin(slave.try_clone().unwrap())
-            .stdout(slave.try_clone().unwrap())
-            .stderr(slave.try_clone().unwrap())
+            .stdin(slave.try_clone().expect(""))
+            .stdout(slave.try_clone().expect(""))
+            .stderr(slave.try_clone().expect(""))
             .envs(envs)
             .current_dir(home_path)
             .spawn()
             .map_err(|e| format!("spawn error: {}", e))?;
 
+        let pid = child.id() as pid_t;
+        let sid = unsafe { getsid(pid) };
+        let utmx_type = "LOGIN";
+        call_utmpx(&tty_name.clone(), user_name, pid, sid, &utmx_type);
+
         return Ok(Arc::new(UnixPtySession {
             inner: Arc::new(Mutex::new(Inner {
                 master,
+                tty_name,
                 child,
                 user,
             })),
@@ -236,8 +288,15 @@ impl PtyBase for UnixPtySession {
 
 impl Drop for UnixPtySession {
     fn drop(&mut self) {
-        let pid = self.inner.lock().unwrap().child.id() as i32;
+        let pid = self.inner.lock().expect("").child.id() as i32;
+        let user = self.inner.lock().expect("").user.clone();
+        let tty_name = self.inner.lock().expect("").tty_name.clone();
+
         unsafe {
+            let user_name = user.name().to_string_lossy().to_string();
+            let sid = getsid(pid);
+            let utmx_type = "EXIT";
+            call_utmpx(&tty_name, &user_name, pid, sid, &utmx_type);
             libc::kill(pid * -1, SIGHUP);
             waitpid(pid, null_mut(), 0);
         }
