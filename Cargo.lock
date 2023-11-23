@@ -2872,8 +2872,9 @@ checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
 
 [[package]]
 name = "tat_agent"
-version = "1.0.8"
+version = "1.0.9"
 dependencies = [
+ "anyhow",
  "async-trait",
  "base64 0.21.2",
  "bson",

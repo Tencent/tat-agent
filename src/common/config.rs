@@ -1,8 +1,11 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
 use std::error::Error;
-use std::fs::File;
+use std::fs::{File, self};
 use std::io::{ErrorKind, Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use crate::common::utils::update_file_permission;
 
 const CONFIG_DAT: &str = "config.dat";
 const REGISTER_FILE: &str = "register.dat";
@@ -52,16 +55,25 @@ pub fn get_ws_url() -> Option<String> {
 }
 
 pub fn get_register_info() -> Option<RegisterInfo> {
+    static NEED_CHECK: AtomicBool = AtomicBool::new(true);
     match load_config().ok().and_then(|config| config.register) {
         Some(info) => Some(info),
         None => match get_register_info_old() {
             Some(info) => {
-                let _ = save_register_info(info.clone());
+                if save_register_info(info.clone()).is_ok(){
+                    let _ = fs::remove_file(REGISTER_FILE);
+                };
                 Some(info)
             }
             None => None,
         },
     }
+    .and_then(|x| {
+        if NEED_CHECK.fetch_and(false, Ordering::SeqCst) {
+            update_file_permission(CONFIG_DAT)
+        }
+        Some(x)
+    })
 }
 
 pub fn save_register_info(info: RegisterInfo) -> Result<(), Box<dyn Error>> {
@@ -99,13 +111,13 @@ fn save_config(config: &Config) -> Result<(), Box<dyn Error>> {
     let json_str = serde_json::to_string(config)?;
     let mut file = File::create(CONFIG_DAT)?;
     file.write_all(json_str.as_bytes())?;
+    update_file_permission(CONFIG_DAT);
     Ok(())
 }
 
-
 #[cfg(test)]
-mod tests {        
-    use super::{RegisterInfo, save_register_info};
+mod tests {
+    use super::{save_register_info, RegisterInfo};
     #[test]
     fn test_save_config() {
         let mut config = RegisterInfo::default();

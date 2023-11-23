@@ -1,15 +1,18 @@
+use crate::common::utils::update_file_permission;
 use crate::common::Opts;
-
 use log::{debug, info, Record};
 use log4rs::append::console::{ConsoleAppender, Target};
 use log4rs::append::rolling_file::policy::compound::roll::fixed_window::FixedWindowRoller;
+use log4rs::append::rolling_file::policy::compound::roll::Roll;
+use log4rs::append::rolling_file::policy::compound::trigger;
 use log4rs::append::rolling_file::policy::compound::trigger::size::SizeTrigger;
-use log4rs::append::rolling_file::policy::compound::CompoundPolicy;
-use log4rs::append::rolling_file::RollingFileAppender;
+use log4rs::append::rolling_file::policy::Policy;
+use log4rs::append::rolling_file::{LogFile, RollingFileAppender};
 use log4rs::config::{Appender, Config, Root};
 use log4rs::encode::pattern::PatternEncoder;
 use log4rs::filter::threshold::ThresholdFilter;
 use log4rs::filter::{Filter, Response};
+use std::fs::{create_dir_all, OpenOptions};
 
 const LOG_PATTERN: &str = "{d}|{f}:{L}|{l}|{m}{n}";
 const LOG_FILE_NAME: &str = "log/tat_agent.log";
@@ -22,24 +25,29 @@ const LOG_LEVEL_DEBUG: log::LevelFilter = log::LevelFilter::Debug;
 
 pub fn init() {
     let log_level = LOG_LEVEL;
-    let trigger = SizeTrigger::new(LOG_FILE_SIZE);
-    let roller = FixedWindowRoller::builder()
-        .base(LOG_FILE_BASE_INDEX)
-        .build(LOG_FILE_NAME_WHEN_ROLL, MAX_LOG_FILE_COUNT)
-        .expect("FixedWindowRoller build failed");
-    let policy = CompoundPolicy::new(Box::new(trigger), Box::new(roller));
-    let logfile = RollingFileAppender::builder()
-        .encoder(Box::new(PatternEncoder::new(LOG_PATTERN)))
-        .build(LOG_FILE_NAME, Box::new(policy))
-        .expect("RollingFileAppender build failed");
-
-    let stdout = ConsoleAppender::builder().target(Target::Stdout).build();
-
     let appender = if Opts::get_opts().console_log {
+        let stdout = ConsoleAppender::builder().target(Target::Stdout).build();
         Appender::builder()
             .filter(Box::new(ThresholdFilter::new(log_level)))
             .build("logger", Box::new(stdout))
     } else {
+        //create the file now to ensure that the permissions can be set successfully
+        let _ = create_dir_all("log");
+        let _ = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(LOG_FILE_NAME);
+
+        let trigger = SizeTrigger::new(LOG_FILE_SIZE);
+        let roller = FixedWindowRoller::builder()
+            .base(LOG_FILE_BASE_INDEX)
+            .build(LOG_FILE_NAME_WHEN_ROLL, MAX_LOG_FILE_COUNT)
+            .expect("FixedWindowRoller build failed");
+        let policy = CompoundPolicy::new(Box::new(trigger), Box::new(roller));
+        let logfile = RollingFileAppender::builder()
+            .encoder(Box::new(PatternEncoder::new(LOG_PATTERN)))
+            .build(LOG_FILE_NAME, Box::new(policy))
+            .expect("RollingFileAppender build failed");
         Appender::builder()
             .filter(Box::new(SnapshortFilter))
             .filter(Box::new(ThresholdFilter::new(log_level)))
@@ -54,6 +62,7 @@ pub fn init() {
     let config_log = format!("{:?}", config);
     log4rs::init_config(config).unwrap();
     debug!("logger init success, config: {}", config_log);
+    update_file_permission(LOG_FILE_NAME)
 }
 
 #[derive(Debug)]
@@ -67,6 +76,34 @@ impl Filter for SnapshortFilter {
         } else {
             Response::Neutral
         }
+    }
+}
+
+#[derive(Debug)]
+pub struct CompoundPolicy {
+    trigger: Box<dyn trigger::Trigger>,
+    roller: Box<dyn Roll>,
+}
+
+impl CompoundPolicy {
+    /// Creates a new `CompoundPolicy`.
+    pub fn new(trigger: Box<dyn trigger::Trigger>, roller: Box<dyn Roll>) -> CompoundPolicy {
+        CompoundPolicy { trigger, roller }
+    }
+}
+
+impl Policy for CompoundPolicy {
+    fn process(&self, log: &mut LogFile) -> anyhow::Result<()> {
+        if self.trigger.trigger(log)? {
+            log.roll();
+            self.roller.roll(log.path())?;
+            let _ = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(LOG_FILE_NAME);
+            update_file_permission(LOG_FILE_NAME)
+        }
+        Ok(())
     }
 }
 

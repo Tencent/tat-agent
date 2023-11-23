@@ -20,7 +20,9 @@ mod ontime;
 mod sysinfo;
 
 fn main() {
-    init_agent();
+    set_work_dir();
+    logger::init();
+    info!("tat_agent start:[{}]", AGENT_VERSION);
     check_args();
 
     daemonizer::daemonize(move || {
@@ -38,12 +40,10 @@ fn main() {
     });
 }
 
-fn init_agent() {
+fn set_work_dir() {
     let current_bin = env::current_exe().expect("current path failed");
     let current_path = current_bin.parent().expect("parent path failed");
-    env::set_current_dir(current_path).expect("set dir failed");
-    logger::init();
-    info!("agent initialized, version:[{}]", AGENT_VERSION);
+    env::set_current_dir(current_path).expect("set cwd failed");
 }
 
 fn check_args() {
