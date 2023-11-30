@@ -195,12 +195,14 @@ impl HttpWorker {
         //remove lock, important
         std::mem::drop(cmd);
 
-        //remove script after finished
+        //remove file after finished
         if !cbs_exist() {
-            match std::fs::remove_file(&task_file) {
-                Ok(_) => info!("delete `{}` success", task_file),
-                Err(e) => error!("delete `{}` failed: {}", task_file, e),
-            };
+            for file in &[&task_file, &task_log_file] {
+                match std::fs::remove_file(file) {
+                    Ok(_) => info!("delete `{}` success", file),
+                    Err(e) => error!("delete `{}` failed: {}", file, e),
+                };
+            }
         }
 
         let _ = self

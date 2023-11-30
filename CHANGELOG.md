@@ -1,6 +1,11 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [1.0.10] - 2023-11-30
+
+### Changed
+- Remove temp files after task finished.
+
 ## [1.0.9] - 2023-11-23
 
 ### Changed
