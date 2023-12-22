@@ -16,7 +16,7 @@ use std::{fmt, slice};
 
 use async_trait::async_trait;
 use libc::{c_void, free, malloc, memcpy};
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use ntapi::ntpsapi::{
     NtResumeProcess, NtSetInformationProcess, ProcessAccessToken, PROCESS_ACCESS_TOKEN,
 };
@@ -274,7 +274,7 @@ impl BaseCommand {
             }
 
             let output_string = decode_windows_output(&buffer[..len]);
-            //debug!("output:[{}], pid:{}, len:{}", output_string, pid, len);
+            debug!("output:[{}], pid:{}, len:{}", output_string, pid, len);
 
             self.append_output(output_string.as_bytes());
 

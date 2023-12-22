@@ -22,11 +22,11 @@ cfg_if::cfg_if! {
         use std::os::unix::fs::PermissionsExt;
         use std::fs::{set_permissions, Permissions};
         const INSTALL_SCRIPT: &str = "install.sh";
-        const SELF_UPDATE_PATH: &str = "./tmp/self_update/";
+        const SELF_UPDATE_PATH: &str = "/tmp/tat_agent/self_update/";
         const SELF_UPDATE_SCRIPT: &str = "self_update.sh";
     } else if #[cfg(windows)] {
         use crate::daemonizer::wow64_disable_exc;
-        const SELF_UPDATE_PATH: &str = ".\\tmp\\self_update\\";
+        const SELF_UPDATE_PATH: &str = "C:\\Program Files\\qcloud\\tat_agent\\tmp\\self_update\\";
         const SELF_UPDATE_SCRIPT: &str = "self_update.bat";
     }
 }

@@ -21,20 +21,14 @@ const DEFAULT_OUTPUT_BYTE: u64 = 24 * 1024;
 
 pub fn run(dispatcher: &Arc<EventBus>, running_task_num: &Arc<AtomicU64>) {
     let runtime = Runtime::new().expect("executor-runime build failed");
+
     let running_task_num = running_task_num.clone();
-    let running_tasks = Arc::new(Mutex::new(HashMap::new()));
-    
     dispatcher.register(WS_MSG_TYPE_KICK, move |source| {
         let source = String::from_utf8_lossy(&source).to_string(); //from vec to string
         let running_task_num = running_task_num.clone();
-        let running_tasks = running_tasks.clone();
         runtime.spawn(async move {
             let adapter = InvokeAPIAdapter::new();
-            let worker = Arc::new(HttpWorker::new(
-                adapter,
-                running_task_num.clone(),
-                running_tasks,
-            ));
+            let worker = Arc::new(HttpWorker::new(adapter, running_task_num.clone()));
             worker.process(source).await
         });
     });
@@ -43,16 +37,12 @@ pub fn run(dispatcher: &Arc<EventBus>, running_task_num: &Arc<AtomicU64>) {
 pub struct HttpWorker {
     adapter: InvokeAPIAdapter,
     task_store: TaskFileStore,
-    running_tasks: Arc<Mutex<HashMap<String, Arc<Mutex<Box<dyn MyCommand + Send>>>>>>,
+    running_tasks: Mutex<HashMap<String, Arc<Mutex<Box<dyn MyCommand + Send>>>>>,
     running_task_num: Arc<AtomicU64>,
 }
 
 impl HttpWorker {
-    pub fn new(
-        adapter: InvokeAPIAdapter,
-        running_task_num: Arc<AtomicU64>,
-        running_tasks: Arc<Mutex<HashMap<String, Arc<Mutex<Box<dyn MyCommand + Send>>>>>>,
-    ) -> Self {
+    pub fn new(adapter: InvokeAPIAdapter, running_task_num: Arc<AtomicU64>) -> Self {
         let task_store = TaskFileStore::new();
         info!(
             "http worker create success, save tasks to `{}`",
@@ -62,7 +52,7 @@ impl HttpWorker {
             adapter,
             task_store,
             running_task_num,
-            running_tasks: running_tasks,
+            running_tasks: Mutex::new(HashMap::new()),
         }
     }
 

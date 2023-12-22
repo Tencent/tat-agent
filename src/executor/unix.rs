@@ -10,7 +10,7 @@ use std::{env, fmt, io};
 
 use async_trait::async_trait;
 use libc;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use tokio::io::{AsyncReadExt, BufReader};
 use tokio::process::{Child, Command};
 use users::os::unix::UserExt;
@@ -198,6 +198,14 @@ impl BaseCommand {
                 Ok(0) => break info!("read output finished normally, pid:{}", pid),
                 Ok(len) => len,
             };
+
+            debug!(
+                "output:[{}], may_contain_binary:{}, pid:{}, len:{}",
+                String::from_utf8_lossy(&buffer[..len]),
+                String::from_utf8(Vec::from(&buffer[..len])).is_err(),
+                pid,
+                len
+            );
 
             self.append_output(&buffer[..len]);
 

@@ -1,80 +1,100 @@
-VERSION ?= $(shell cargo pkgid | awk -F'@' '{sub(/[ \t]+$$/, "", $$2); print $$2}')
+.PHONY: test static release stop run t clean build
+ifndef QCI_TRIGGER
+	QCI_TRIGGER = root
+endif
+
+VERSION ?= $(shell git rev-parse --short HEAD || echo "GitNotFound")
 DOCKER_REGISTRY=csighub.tencentyun.com
 AGENT_IMG=$(DOCKER_REGISTRY)/tat-develop/tat_agent
-# test 
-test:
+
+# test all case
+lib-test:
 	cargo test --package tat_agent -- --nocapture --skip ontime
 
-linux_32_bin:
-	(RUSTFLAGS='-C target-feature=+crt-static' cross build --bin utmpx -r --target i686-unknown-linux-gnu)
-	cross build --bin tat_agent -r --target=i686-unknown-linux-musl
-	mkdir -p release/linux-32
-	cp ./target/i686-unknown-linux-musl/release/tat_agent ./release/linux-32
-	cp ./target/i686-unknown-linux-gnu/release/utmpx ./release/linux-32
+arch ?= x86_64
+rust_target =
+in_docker ?= true
+ifeq ($(arch),x86_64)
+	rust_target = x86_64-unknown-linux-musl
+else ifeq ($(arch), i686)
+	rust_target = i686-unknown-linux-musl
+else ifeq ($(arch), i586)
+	rust_target = i586-unknown-linux-musl
+else ifeq ($(arch), aarch64)
+	rust_target = aarch64-unknown-linux-musl
+endif
 
-linux_32_update_pkg: linux_32_bin
-	rm -f ./release/tat_agent_linux_install_i686_*.zip
-	cd ./release/linux-32 && \
-	cp ../../install/{tat_agent_service,tat_agent_service.conf,tat_agent.service,*.sh} ./ && \
-	zip ../tat_agent_linux_install_i686_${VERSION}.zip  * 
+# ensure cross installed. we use it for cross-compile.
+ifeq (, $(shell which cross))
+$(info "cross not found, install it now.")
+$(shell cargo install cross)
+endif
 
-linux_64_bin:
-	(RUSTFLAGS='-C target-feature=+crt-static' cross build --bin utmpx -r --target x86_64-unknown-linux-gnu)
-	cross build --bin tat_agent -r --target=x86_64-unknown-linux-musl
-	mkdir -p release/linux-64
-	cp ./target/x86_64-unknown-linux-musl/release/tat_agent ./release/linux-64
-	cp ./target/x86_64-unknown-linux-gnu/release/utmpx ./release/linux-64
+# build a pure static binary in debug mode
+static:
+ifeq ($(rust_target), )
+$(error `$(arch)` not exists or not supported yet.)
+endif
 
-linux_64_update_pkg: linux_64_bin
-	rm -f ./release/tat_agent_linux_install_x86_64_*.zip
-	cd ./release/linux-64 && \
-	cp ../../install/{tat_agent_service,tat_agent_service.conf,tat_agent.service,*.sh} ./ && \
-	zip ../tat_agent_linux_install_x86_64_${VERSION}.zip  * 
+ifeq ($(in_docker),true)
+	cross build --target=$(rust_target)
+else
+	cargo build --target=$(rust_target)
+endif
 
-linux_arm64_bin:
-	cross build --bin tat_agent -r --target=aarch64-unknown-linux-musl
-	cross build --bin utmpx -r --target aarch64-unknown-linux-gnu
-	mkdir -p release/linux-arm64
-	cp ./target/aarch64-unknown-linux-musl/release/tat_agent ./release/linux-arm64
-	cp ./target/aarch64-unknown-linux-gnu/release/utmpx ./release/linux-arm64
+	ln -f target/$(rust_target)/debug/tat_agent tat_agent
 
-linux_arm64_update_pkg: linux_arm64_bin
-	rm -f ./release/tat_agent_linux_install_aarch64_*.zip
-	cd ./release/linux-arm64 && \
-	cp ../../install/{tat_agent_service,tat_agent_service.conf,tat_agent.service,*.sh} ./ && \
-	zip ../tat_agent_linux_install_aarch64_${VERSION}.zip * 
+# build a pure static binary in release
+release:
+ifeq ($(in_docker),true)
+	cross build --release --target=i686-unknown-linux-musl
+	cross build --release --target=x86_64-unknown-linux-musl
+	cross build --release --target=aarch64-unknown-linux-musl
+else
+	cargo build --release --target=i686-unknown-linux-musl
+	cargo build --release --target=x86_64-unknown-linux-musl
+	cargo build --release --target=aarch64-unknown-linux-musl
+endif
 
+	ln -f target/x86_64-unknown-linux-musl/release/tat_agent tat_agent
+	ln -f target/i686-unknown-linux-musl/release/tat_agent tat_agent32
+	ln -f target/aarch64-unknown-linux-musl/release/tat_agent tat_agent_aarch64
+	install/release.sh
 
-linux_install_pkg: linux_32_bin linux_64_bin linux_arm64_bin
-	rm -rf ./release/linux-all
-	mkdir  ./release/linux-all
-	cd  ./release/linux-all && \
-	cp ../../install/{tat_agent_service,tat_agent_service.conf,tat_agent.service,*.sh} ./ && \
-	cp ../linux-32/tat_agent  ./tat_agent32 && \
-	cp ../linux-32/utmpx  ./utmpx32 && \
-	cp ../linux-64/tat_agent  ./tat_agent && \
-	cp ../linux-64/utmpx  ./utmpx && \
-	cp ../linux-arm64/tat_agent  ./tat_agent_aarch64 && \
-	cp ../linux-arm64/utmpx  ./utmpx_aarch64 && \
-	rm -f ./release/tat_agent_linux_install_${VERSION}.tar.gz && \
-	tar -czf ../tat_agent_linux_install_${VERSION}.tar.gz * 
+# stop the daemon via systemctl, or kill directly by pid
+stop:
+	systemctl stop tat_agent || kill -9 `cat /var/run/tat_agent.pid`
 
+# build via make release and then install it
+run:
+	make release
+	install/install.sh
 
-release: linux_install_pkg linux_32_update_pkg linux_64_update_pkg linux_arm64_update_pkg
-
-
+# build a pure static binary for debugging
 build:
-	cargo build 
+	cross build --target=x86_64-unknown-linux-musl
+	ln -f target/x86_64-unknown-linux-musl/debug/tat_agent tat_agent
+
+# a shortcut for fuzzy matching
+# usage: make t m=partial_of_testcase_name
+t:
+	cargo test $(m) --lib -- --nocapture
 
 # notice：agent image only used for E2E environment.
-build-img: release_linux_64
+build-img:
 	$(info VERSION: $(VERSION))
-	docker build --tag $(AGENT_IMG):$(VERSION) -f Dockerfile ./target/x86_64-unknown-linux-musl/release
+	mkdir -p ./bin
+	ln -f tat_agent ./bin/tat_agent
+	docker build --tag $(AGENT_IMG):$(VERSION) -f Dockerfile ./bin
+	rm -r ./bin
 
 # notice：agent image only used for E2E environment.
 push-img:
 	$(info image: $(AGENT_IMG):$(VERSION))
 	docker push $(AGENT_IMG):$(VERSION)
+
+# notice：agent image only used for E2E environment.
+all-img: static build-img push-img
 
 clean:
 	rm .*.sh 2> /dev/null || true

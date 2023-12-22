@@ -7,12 +7,8 @@ PID_FILE="/var/run/tat_agent.pid"
 SERVICE_DIR="/usr/local/qcloud/tat_agent/"
 PATH_DIR="/usr/sbin/"
 TAT_AGENT="tat_agent"
-UTMPX="utmpx"
 TAT_AGENT32="tat_agent32"
 TAT_AGENT_AARCH64="tat_agent_aarch64"
-UTMPX32="utmpx32"
-UTMPX_AARCH64="utmpx_aarch64"
-
 
 try_kill_by_pid() {
     if [ -f ${PID_FILE} ]; then
@@ -60,20 +56,15 @@ install() {
     if [ "$machine" != "x86_64" ]; then
         if [ "$machine" != "aarch64" ] && [ -f "$TAT_AGENT32" ]; then
             mv ${TAT_AGENT} -f ${TAT_AGENT}64
-            mv ${UTMPX} -f ${UTMPX}64
             mv ${TAT_AGENT32} -f ${TAT_AGENT}
-            mv ${UTMPX32} -f ${UTMPX}
         elif [ -f "$TAT_AGENT_AARCH64" ]; then
             mv ${TAT_AGENT} -f ${TAT_AGENT}64
-            mv ${UTMPX} -f ${UTMPX}64
             mv ${TAT_AGENT_AARCH64} -f ${TAT_AGENT}
-             mv ${UTMPX_AARCH64} -f ${UTMPX}
         fi
     fi
 
     # check if agent runnable
     chmod +x ${TAT_AGENT}
-    chmod +x ${UTMPX}
     if ! ./${TAT_AGENT} -V; then
         echo "tat_agent not runnable, exit."
         exit 1
@@ -95,7 +86,6 @@ install() {
         fi
     fi
     cp -f ${TAT_AGENT} ${SERVICE_DIR}
-    cp -f ${UTMPX} ${SERVICE_DIR}
     ln -sf ${SERVICE_DIR}${TAT_AGENT} ${PATH_DIR}${TAT_AGENT}
 
     if has_systemd; then
