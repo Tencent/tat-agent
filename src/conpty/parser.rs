@@ -80,7 +80,7 @@ impl Display for EscapeItem {
 }
 
 fn stag(p: &str) -> impl Fn(&str) -> IResult<&str, &str> + '_ {
-    move |input: &str| tag(p.clone())(input)
+    move |input: &str| tag(p)(input)
 }
 
 fn cursor_control_parser(input: &str) -> IResult<&str, EscapeItem> {

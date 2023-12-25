@@ -21,7 +21,7 @@ use async_trait::async_trait;
 use log::{debug, error, info, warn};
 use tokio::process::Child;
 
-use super::{FINISH_RESULT_TERMINATED, TASK_STORE_PATH};
+use super::FINISH_RESULT_TERMINATED;
 const OUTPUT_BYTE_LIMIT_EACH_REPORT: usize = 30 * 1024;
 const FINISH_RESULT_TIMEOUT: &str = "TIMEOUT";
 const FINISH_RESULT_SUCCESS: &str = "SUCCESS";
@@ -426,7 +426,7 @@ impl BaseCommand {
         if self.cmd_path.is_empty() {
             let ret = format!("start failed because script file store failed.");
             *self.err_info.lock().unwrap() =
-                format!("ScriptStoreFailed: script file store failed at `{TASK_STORE_PATH}`, please check disk space or permission");
+                format!("ScriptStoreFailed: script file store failed, please check disk space or permission");
             return Err(ret);
         }
         Ok(())
@@ -1053,7 +1053,7 @@ mod tests {
         let instant = Instant::now();
         info!("{} running, pid:{}", filename, cmd.pid());
         let mut cnt = 0;
-        loop {
+        for _ in 0..5 {
             {
                 let timer = Timer::get_instance();
                 let mut timer = timer.lock().unwrap();
@@ -1065,7 +1065,7 @@ mod tests {
                 }
             }
             info!("total {} tasks run", cnt);
-            delay_for(Duration::new(0, 500_000_000)).await;
+            delay_for(Duration::from_secs(1)).await;
             let finished = cmd.is_finished();
             if finished {
                 break;

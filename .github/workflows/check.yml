@@ -32,7 +32,7 @@ jobs:
       # deny any warnings
       run: RUSTFLAGS="-D warnings" cargo build
     - name: Unit Tests
-      run: RUSTFLAGS="-D warnings" make lib-test
+      run: RUSTFLAGS="-D warnings" make test
     
   check-build-windows:
 
@@ -57,5 +57,5 @@ jobs:
     - name: Build Check Warnings
       run: cargo build --release --target x86_64-pc-windows-msvc
     - name: Unit Tests
-      run: cargo test --target x86_64-pc-windows-msvc -- --nocapture --skip ontime --skip executor::proc::tests::test_run_then_sleep --skip executor::proc::tests::test_long_output 
+      run: ./Make.bat test
 

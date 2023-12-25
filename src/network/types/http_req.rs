@@ -573,7 +573,10 @@ mod tests {
     fn test_decode_normal_command() {
         let tasks1 = InvocationNormalTask {
             invocation_task_id: format!(""),
+            #[cfg(unix)]
             command_type: format!("SHELL"),
+            #[cfg(windows)]
+            command_type: format!("POWERSHELL"),
             time_out: 0,
             command: String::from("bHMgLWw7CmVjaG8gIkhlbGxvIFdvcmxkIg=="),
             username: format!("root"),

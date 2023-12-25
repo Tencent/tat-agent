@@ -1,5 +1,4 @@
-FROM csighub.tencentyun.com/tat-develop/library:centos-base
-
+FROM centos:7
 ADD tat_agent /usr/local/bin
-
-ENTRYPOINT ["/usr/local/bin/tat_agent"]
+ADD utmpx /usr/local/bin
+ENTRYPOINT ["/usr/local/bin/tat_agent","-n","-c"]

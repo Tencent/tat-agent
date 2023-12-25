@@ -2,6 +2,7 @@
 .vscode/
 .idea/
 log
+install/win-bin.zip
 install/tat_agent
 install/tat_agent32
 install/tat_agent64
@@ -18,4 +19,9 @@ install/tmpdata/
 .*.sh
 *.exe
 install/*.exe
+/release
+winpty
+*.log
+*.dat
+*.ps1
 

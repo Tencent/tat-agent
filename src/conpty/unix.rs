@@ -1,24 +1,67 @@
 use super::{PtyAdapter, PtyBase, PTY_INSPECT_READ};
-use crate::executor::unix::{build_envs, cmd_path};
+use crate::executor::unix::build_envs;
+use libc::{
+    self, getsid, pid_t, ttyname, uid_t, waitpid, winsize, SIGHUP, STDIN_FILENO, TIOCSCTTY,
+};
+use log::{error, info};
+use std::ffi::CStr;
 use std::fs::{metadata, File};
 use std::io::{Read, Write};
 use std::os::linux::fs::MetadataExt;
 use std::os::unix::prelude::{AsRawFd, CommandExt, FromRawFd, RawFd};
+use std::path::Path;
 use std::process::{Child, Command};
 use std::ptr::null_mut;
 use std::sync::{Arc, Mutex};
 use std::{env, io, ptr};
-
-use libc::{self, waitpid, winsize, SIGHUP};
-use log::error;
 use unix_mode::{is_allowed, Access, Accessor};
 use users::os::unix::UserExt;
 use users::{get_user_by_name, User};
+
+fn call_utmpx(ttyname: &str, username: &str, pid: libc::pid_t, sid: libc::pid_t, ut_type: &str) {
+    info!(
+        "=>call_utmpx tty:{} user:{} pid:{} sid:{} type:{}",
+        ttyname, username, pid, sid, ut_type
+    );
+    let current_bin = env::current_exe().expect("current path failed");
+    let current_path = current_bin.parent().expect("parent path failed");
+    let utmpx_path = format!("{}/utmpx", current_path.to_string_lossy());
+    match Command::new(utmpx_path)
+        .arg(ttyname)
+        .arg(username)
+        .arg(pid.to_string())
+        .arg(sid.to_string())
+        .arg(ut_type)
+        .output()
+    {
+        Ok(output) => {
+            info!(
+                "stdout:{}  stderr:{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        Err(err) => {
+            info!("call_utmpx  err:{}", err);
+        }
+    }
+}
+
+fn audit_setloginuid(uid: uid_t) -> Result<(), std::io::Error> {
+    info!("=>audit_setloginuid {}", uid);
+    let loginuid = format!("{}", uid);
+    let loginuid_path = format!("/proc/self/loginuid");
+
+    let mut file = File::create(loginuid_path)?;
+    file.write_all(loginuid.as_bytes())?;
+    Ok(())
+}
 
 struct Inner {
     master: File,
     child: Child,
     user: User,
+    tty_name: String,
 }
 
 fn openpty(user: User, cols: u16, rows: u16) -> Result<(File, File), String> {
@@ -63,37 +106,55 @@ impl PtyAdapter for ConPtyAdapter {
         #[allow(dead_code)] _flag: u32,
     ) -> Result<std::sync::Arc<dyn PtyBase + Send + Sync>, String> {
         let user = get_user_by_name(user_name).ok_or(format!("user {} not exist", user_name))?;
-        let shell_path = cmd_path("bash").ok_or("bash not exist".to_string())?;
+        let shell_path = user.shell();
+        let shell_name = Path::new(shell_path)
+            .file_name()
+            .unwrap_or_else(|| std::ffi::OsStr::new("bash"))
+            .to_string_lossy()
+            .to_string();
+
         let home_path = user.home_dir().to_str().unwrap_or_else(|| "/tmp");
-
-        let envs = build_envs(user_name, home_path, &shell_path);
+        let envs = build_envs(user_name, home_path, &shell_path.to_string_lossy());
         let (master, slave) = openpty(user.clone(), cols, rows)?;
-
-        let mut cmd = Command::new("bash");
+        let mut cmd = Command::new(shell_name);
         unsafe {
+            let uid = user.uid();
+            let gid = user.primary_group_id();
             cmd.pre_exec(move || {
+                audit_setloginuid(uid)?;
+                libc::setgid(gid);
+                libc::setuid(uid);
                 libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGHUP);
                 if libc::setsid() == -1 {
                     return Err(io::Error::last_os_error());
                 }
+                libc::ioctl(STDIN_FILENO, TIOCSCTTY, 0);
+                libc::tcsetpgrp(STDIN_FILENO, libc::getpid());
                 Ok(())
             });
         }
         let child = cmd
-            .args(["--login"])
-            .uid(user.uid())
-            .gid(user.primary_group_id())
-            .stdin(slave.try_clone().unwrap())
-            .stdout(slave.try_clone().unwrap())
-            .stderr(slave.try_clone().unwrap())
+            .stdin(slave.try_clone().expect(""))
+            .stdout(slave.try_clone().expect(""))
+            .stderr(slave.try_clone().expect(""))
             .envs(envs)
             .current_dir(home_path)
             .spawn()
             .map_err(|e| format!("spawn error: {}", e))?;
 
+        let pid = child.id() as pid_t;
+        let sid = unsafe { getsid(pid) };
+        let utmx_type = "LOGIN";
+        let tty_name = unsafe {
+            let tty_name_c = ttyname(slave.as_raw_fd());
+            CStr::from_ptr(tty_name_c).to_string_lossy().to_string()
+        };
+        call_utmpx(&tty_name.clone(), user_name, pid, sid, &utmx_type);
+
         return Ok(Arc::new(UnixPtySession {
             inner: Arc::new(Mutex::new(Inner {
                 master,
+                tty_name,
                 child,
                 user,
             })),
@@ -236,8 +297,15 @@ impl PtyBase for UnixPtySession {
 
 impl Drop for UnixPtySession {
     fn drop(&mut self) {
-        let pid = self.inner.lock().unwrap().child.id() as i32;
+        let pid = self.inner.lock().expect("").child.id() as i32;
+        let user = self.inner.lock().expect("").user.clone();
+        let tty_name = self.inner.lock().expect("").tty_name.clone();
+
         unsafe {
+            let user_name = user.name().to_string_lossy().to_string();
+            let sid = getsid(pid);
+            let utmx_type = "EXIT";
+            call_utmpx(&tty_name, &user_name, pid, sid, &utmx_type);
             libc::kill(pid * -1, SIGHUP);
             waitpid(pid, null_mut(), 0);
         }

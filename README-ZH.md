@@ -59,6 +59,5 @@ cargo build --release --bin tat_agent
 - CentOS
 - Ubuntu
 - Debian
-- SUSE
 - openSUSE
 - CoreOS

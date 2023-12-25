@@ -60,5 +60,4 @@ Binary can run at both Linux & Windows Distributions, including but not limited 
 - Ubuntu
 - Debian
 - openSUSE
-- SUSE
 - CoreOS
