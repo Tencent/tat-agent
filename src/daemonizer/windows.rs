@@ -1,8 +1,9 @@
-use crate::common::utils::str2wsz;
+use crate::common::utils::{get_now_secs, str2wsz, wsz2string};
 use std::process::{Command, Stdio};
-use std::ptr;
+use std::time::Duration;
+use std::{mem, ptr};
 
-use log::error;
+use log::{error, info};
 use ntapi::ntrtl::RtlAdjustPrivilege;
 use ntapi::ntseapi::{SE_ASSIGNPRIMARYTOKEN_PRIVILEGE, SE_TCB_PRIVILEGE};
 use winapi::shared::minwindef::{DWORD, FALSE, LPVOID, MAKEWORD};
@@ -11,10 +12,16 @@ use winapi::shared::winerror::{ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS};
 use winapi::um::errhandlingapi::GetLastError;
 use winapi::um::minwinbase::LPSECURITY_ATTRIBUTES;
 use winapi::um::synchapi::*;
-use winapi::um::winnt::{BOOLEAN, LPWSTR, PVOID, SERVICE_WIN32_OWN_PROCESS};
+use winapi::um::winnt::{
+    BOOLEAN, KEY_QUERY_VALUE, KEY_READ, LPWSTR, PVOID, SERVICE_WIN32_OWN_PROCESS,
+};
+use winapi::um::winreg::{RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY_LOCAL_MACHINE};
 use winapi::um::winsock2::{WSAStartup, WSADATA};
 use winapi::um::winsvc::*;
 use winapi::um::wow64apiset::*;
+
+const IMAGE_STATE_COMPLETE: &str = "IMAGE_STATE_COMPLETE";
+const WAIT_STATE_COMPLETE_MAX_TIME: u64 = 60 * 3;
 
 static mut HANDLE: SERVICE_STATUS_HANDLE = 0 as SERVICE_STATUS_HANDLE;
 static mut TAT_ENTRY: fn() = || {};
@@ -41,9 +48,12 @@ unsafe extern "system" fn service_main(
         Some(service_handler),
         ptr::null_mut(),
     );
-    std::thread::spawn(TAT_ENTRY);
     let service_status = &mut create_service_status(SERVICE_RUNNING);
     SetServiceStatus(HANDLE, service_status);
+    std::thread::spawn(|| {
+        wait_image_state_complete(WAIT_STATE_COMPLETE_MAX_TIME);
+        TAT_ENTRY();
+    });
 }
 
 unsafe extern "system" fn service_handler(
@@ -76,6 +86,7 @@ fn try_start_service(entry: fn()) {
         ];
 
         if 0 == StartServiceCtrlDispatcherW(*service_table.as_ptr()) {
+            wait_image_state_complete(WAIT_STATE_COMPLETE_MAX_TIME);
             TAT_ENTRY()
         };
     }
@@ -154,6 +165,70 @@ pub fn daemonize(entry: fn()) {
 
     clean_update_files();
     adjust_privileges();
-
     try_start_service(entry);
+}
+
+// https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/windows-setup-states
+fn read_image_state() -> Option<String> {
+    let mut h_key = ptr::null_mut();
+    let mut buffer = [0u16; 256];
+    let mut buffer_size = (buffer.len() * mem::size_of::<u16>()) as u32;
+
+    unsafe {
+        RegOpenKeyExW(
+            HKEY_LOCAL_MACHINE,
+            str2wsz("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Setup\\State").as_ptr(),
+            0,
+            KEY_READ | KEY_QUERY_VALUE,
+            &mut h_key,
+        );
+
+        RegQueryValueExW(
+            h_key,
+            str2wsz("ImageState").as_ptr(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            buffer.as_mut_ptr() as *mut u8,
+            &mut buffer_size,
+        );
+        RegCloseKey(h_key);
+    }
+    let image_state = wsz2string(buffer.as_ptr());
+    return Some(image_state);
+}
+
+fn wait_image_state_complete(timeout: u64) {
+    info!("wait_image_state");
+    let start_time = get_now_secs();
+    loop {
+        let elapsed = get_now_secs() - start_time;
+        if let Some(state) = read_image_state() {
+            if elapsed % 10 == 0 {
+                info!("current state: {}", state);
+            }
+            if state == IMAGE_STATE_COMPLETE {
+                break;
+            }   
+        }
+        std::thread::sleep(Duration::from_secs(2));
+        if elapsed > timeout {
+            info!("wait_image_state timeout");
+            break;
+        }
+      
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::daemonizer::windows::IMAGE_STATE_COMPLETE;
+
+    use super::read_image_state;
+    #[test]
+    fn test_read_image_state() {
+        let opt_state = read_image_state();
+        assert_eq!(true, opt_state.is_some());
+        let state = opt_state.unwrap();
+        assert_eq!(state, IMAGE_STATE_COMPLETE)
+    }
 }
