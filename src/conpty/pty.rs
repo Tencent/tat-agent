@@ -4,7 +4,8 @@ use crate::common::evbus::EventBus;
 use crate::common::utils::{get_current_username, get_now_secs};
 use crate::conpty::{PtyAdapter, PtyBase, WS_MSG_TYPE_PTY_OUTPUT, WS_MSG_TYPE_PTY_READY};
 use crate::network::types::ws_msg::{
-    ExecCmdReq, PtyBinErrMsg, PtyError, PtyInput, PtyOutput, PtyReady, PtyResize, PtyStart, PtyStop,
+    ExecCmdReq, ExecCmdStreamReq, PtyBinErrMsg, PtyError, PtyInput, PtyOutput, PtyReady, PtyResize,
+    PtyStart, PtyStop,
 };
 
 use std::fs::File;
@@ -20,7 +21,8 @@ use tokio::time::timeout;
 
 use super::{
     PTY_FLAG_ENABLE_BLOCK, SLOT_PTY_BIN, WS_MSG_TYPE_PTY_ERROR, WS_MSG_TYPE_PTY_EXEC_CMD,
-    WS_MSG_TYPE_PTY_INPUT, WS_MSG_TYPE_PTY_RESIZE, WS_MSG_TYPE_PTY_START, WS_MSG_TYPE_PTY_STOP,
+    WS_MSG_TYPE_PTY_EXEC_CMD_STREAM, WS_MSG_TYPE_PTY_INPUT, WS_MSG_TYPE_PTY_RESIZE,
+    WS_MSG_TYPE_PTY_START, WS_MSG_TYPE_PTY_STOP,
 };
 const SLOT_PTY_CMD: &str = "event_slot_pty_cmd";
 
@@ -28,15 +30,14 @@ const PTY_REMOVE_INTERVAL: u64 = 3 * 60;
 
 #[cfg(unix)]
 use super::unix::ConPtyAdapter;
+#[cfg(windows)]
+use super::windows::ConPtyAdapter;
 #[cfg(unix)]
-use crate::network::types::ws_msg::ExecCmdResp;
+use crate::network::types::ws_msg::{ExecCmdResp, ExecCmdStreamResp};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 #[cfg(unix)]
 use std::process::{Command, Stdio};
-
-#[cfg(windows)]
-use super::windows::ConPtyAdapter;
 
 pub fn register_pty_handlers(event_bus: &Arc<EventBus>) {
     event_bus
@@ -54,7 +55,14 @@ pub fn register_pty_handlers(event_bus: &Arc<EventBus>) {
         })
         .slot_register(SLOT_PTY_BIN, WS_MSG_TYPE_PTY_EXEC_CMD, move |value| {
             BsonHandler::<ExecCmdReq>::dispatch(value);
-        });
+        })
+        .slot_register(
+            SLOT_PTY_BIN,
+            WS_MSG_TYPE_PTY_EXEC_CMD_STREAM,
+            move |value| {
+                BsonHandler::<ExecCmdStreamReq>::dispatch(value);
+            },
+        );
 }
 
 impl Handler for JsonHandler<PtyStart> {
@@ -187,8 +195,9 @@ impl PtySession {
 
             let mut buffer: [u8; 1024] = [0; 1024];
 
-            let Ok(result) = timeout(duration, reader.read(&mut buffer[..])).await
-                else { continue };
+            let Ok(result) = timeout(duration, reader.read(&mut buffer[..])).await else {
+                continue;
+            };
 
             match result {
                 Ok(0) => break info!("process_output {} read size is 0 close", self.session_id),
@@ -216,12 +225,19 @@ impl PtySession {
 
     fn is_timeout(&self) -> bool {
         let elapse = get_now_secs() - self.last_time.load(SeqCst);
-        return elapse > PTY_REMOVE_INTERVAL;
+        elapse > PTY_REMOVE_INTERVAL
     }
 }
 
 #[cfg(windows)]
 impl Handler for BsonHandler<ExecCmdReq> {
+    fn process(self) {
+        self.reply(PtyBinErrMsg::new("not support on windows"));
+    }
+}
+
+#[cfg(windows)]
+impl Handler for BsonHandler<ExecCmdStreamReq> {
     fn process(self) {
         self.reply(PtyBinErrMsg::new("not support on windows"));
     }
@@ -261,8 +277,35 @@ impl Handler for BsonHandler<ExecCmdReq> {
             }
             Err(err) => {
                 error!("{} exec failed: {}", session_id, err);
-                return self.reply(PtyBinErrMsg::new(err));
+                self.reply(PtyBinErrMsg::new(err))
             }
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Handler for BsonHandler<ExecCmdStreamReq> {
+    fn process(self) {
+        let param = &self.request.data;
+        let session_id = self.request.session_id.clone();
+        info!("=>pty exec {} {}", session_id, param.cmd);
+        let self_c = self.clone();
+        let mut cmd = Command::new("bash");
+        cmd.args(&["-c", param.cmd.as_str()]);
+        let cb = Box::new(move |index, is_last, exit_code, data: Vec<u8>| {
+            self_c.reply(ExecCmdStreamResp {
+                index,
+                is_last,
+                exit_code,
+                data,
+            })
+        });
+        let exec_result = self
+            .associate_pty
+            .execute_stream(cmd, Some(cb), param.timeout);
+        if let Err(e) = exec_result {
+            error!("{} exec failed: {}", session_id, e);
+            self.reply(PtyBinErrMsg::new(e))
         }
     }
 }

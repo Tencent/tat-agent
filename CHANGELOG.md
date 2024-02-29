@@ -1,9 +1,18 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+
+## [1.0.13] - 2024-02-24
+
+### Changed
+
+- Support streaming output of pty execute command on Unix system.
+- Check Windows image state when Windows start.
+
 ## [1.0.12] - 2023-12-23
 
 ### Changed
+
 - Revert script storage directory.
 
 ## [1.0.11] - 2023-12-04

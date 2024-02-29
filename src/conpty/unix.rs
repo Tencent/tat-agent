@@ -1,19 +1,26 @@
-use super::{PtyAdapter, PtyBase, PTY_INSPECT_READ};
+use super::{
+    PtyAdapter, PtyBase, PtyExecCallback, PtyResult, PTY_EXEC_DATA_SIZE, PTY_INSPECT_READ,
+};
 use crate::executor::unix::build_envs;
+
+use std::ffi::CStr;
+use std::fs::{metadata, File};
+use std::io::{Read as _, Write as _};
+use std::os::linux::fs::MetadataExt;
+use std::os::unix::prelude::{AsRawFd, CommandExt, FromRawFd, RawFd};
+use std::path::Path;
+use std::process::{Child, Command, Stdio};
+use std::ptr::null_mut;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use std::{env, io, ptr};
+
 use libc::{
     self, getsid, pid_t, ttyname, uid_t, waitpid, winsize, SIGHUP, STDIN_FILENO, TIOCSCTTY,
 };
 use log::{error, info};
-use std::ffi::CStr;
-use std::fs::{metadata, File};
-use std::io::{Read, Write};
-use std::os::linux::fs::MetadataExt;
-use std::os::unix::prelude::{AsRawFd, CommandExt, FromRawFd, RawFd};
-use std::path::Path;
-use std::process::{Child, Command};
-use std::ptr::null_mut;
-use std::sync::{Arc, Mutex};
-use std::{env, io, ptr};
+use tokio::io::{AsyncReadExt as _, BufReader};
+use tokio::time::Instant;
 use unix_mode::{is_allowed, Access, Accessor};
 use users::os::unix::UserExt;
 use users::{get_user_by_name, User};
@@ -64,7 +71,7 @@ struct Inner {
     tty_name: String,
 }
 
-fn openpty(user: User, cols: u16, rows: u16) -> Result<(File, File), String> {
+fn openpty(user: User, cols: u16, rows: u16) -> PtyResult<(File, File)> {
     let mut master: RawFd = -1;
     let mut slave: RawFd = -1;
 
@@ -104,7 +111,7 @@ impl PtyAdapter for ConPtyAdapter {
         cols: u16,
         rows: u16,
         #[allow(dead_code)] _flag: u32,
-    ) -> Result<std::sync::Arc<dyn PtyBase + Send + Sync>, String> {
+    ) -> PtyResult<Arc<dyn PtyBase + Send + Sync>> {
         let user = get_user_by_name(user_name).ok_or(format!("user {} not exist", user_name))?;
         let shell_path = user.shell();
         let shell_name = Path::new(shell_path)
@@ -179,7 +186,7 @@ impl UnixPtySession {
 }
 
 impl PtyBase for UnixPtySession {
-    fn resize(&self, cols: u16, rows: u16) -> Result<(), String> {
+    fn resize(&self, cols: u16, rows: u16) -> PtyResult<()> {
         let size = winsize {
             ws_row: rows,
             ws_col: cols,
@@ -202,62 +209,21 @@ impl PtyBase for UnixPtySession {
         }
     }
 
-    fn get_reader(&self) -> Result<std::fs::File, std::string::String> {
+    fn get_reader(&self) -> PtyResult<File> {
         self.get_writer()
     }
 
-    fn get_writer(&self) -> Result<std::fs::File, std::string::String> {
+    fn get_writer(&self) -> PtyResult<File> {
         let inner = self.inner.lock().unwrap();
         inner.master.try_clone().map_err(|e| format!("error: {e}"))
     }
 
-    fn get_pid(&self) -> Result<u32, String> {
+    fn get_pid(&self) -> PtyResult<u32> {
         let pid = self.inner.lock().unwrap().child.id();
         Ok(pid)
     }
 
-    fn execute(&self, f: &dyn Fn() -> Result<Vec<u8>, String>) -> Result<Vec<u8>, String> {
-        let user = self.inner.lock().expect("inner lock failed").user.clone();
-        let cwd_path = self.get_cwd();
-        unsafe {
-            let mut pipefd: [i32; 2] = [0, 0];
-            libc::pipe(pipefd.as_mut_ptr());
-            let pid = libc::fork();
-            if pid == 0 {
-                let _ = env::set_current_dir(cwd_path);
-                libc::setgid(user.primary_group_id());
-                libc::setuid(user.uid());
-                let mut stdin = File::from_raw_fd(pipefd[1]);
-                match f() {
-                    Ok(output) => {
-                        let _ = stdin.write_all(&output);
-                        libc::exit(0);
-                    }
-                    Err(err_msg) => {
-                        //error!("[child] work_as_user func exit failed: {}", err_msg);
-                        let _ = stdin.write_all(err_msg.as_bytes());
-                        libc::exit(1);
-                    }
-                }
-            } else {
-                libc::close(pipefd[1]);
-                let mut output: Vec<u8> = Vec::new();
-                let mut stdout = File::from_raw_fd(pipefd[0]);
-                let _ = stdout.read_to_end(&mut output);
-                let mut exit_code = 0 as i32;
-                libc::waitpid(pid, &mut exit_code, 0);
-                if exit_code == 0 {
-                    return Ok(output);
-                } else {
-                    let err_msg = String::from_utf8_lossy(&output).to_string();
-                    error!("[parent] work_as_user func exit failed: {}", err_msg);
-                    return Err(err_msg);
-                }
-            }
-        }
-    }
-
-    fn inspect_access(&self, path: &str, access: u8) -> Result<(), String> {
+    fn inspect_access(&self, path: &str, access: u8) -> PtyResult<()> {
         let meta_data = metadata(path).map_err(|e| e.to_string())?;
 
         let user = self.inner.lock().unwrap().user.clone();
@@ -293,6 +259,112 @@ impl PtyBase for UnixPtySession {
         }
         Err("access denied".to_string())
     }
+
+    fn execute(&self, f: &dyn Fn() -> PtyResult<Vec<u8>>) -> PtyResult<Vec<u8>> {
+        let user = self.inner.lock().expect("inner lock failed").user.clone();
+        let cwd_path = self.get_cwd();
+        unsafe {
+            let mut pipefd: [i32; 2] = [0, 0];
+            libc::pipe(pipefd.as_mut_ptr());
+            let pid = libc::fork();
+            if pid == 0 {
+                let _ = env::set_current_dir(cwd_path);
+                libc::setgid(user.primary_group_id());
+                libc::setuid(user.uid());
+                let mut stdin = File::from_raw_fd(pipefd[1]);
+                match f() {
+                    Ok(output) => {
+                        let _ = stdin.write_all(&output);
+                        libc::exit(0);
+                    }
+                    Err(err_msg) => {
+                        //error!("[child] work_as_user func exit failed: {}", err_msg);
+                        let _ = stdin.write_all(err_msg.as_bytes());
+                        libc::exit(1);
+                    }
+                }
+            } else {
+                libc::close(pipefd[1]);
+                let mut output: Vec<u8> = Vec::new();
+                let mut stdout = File::from_raw_fd(pipefd[0]);
+                let _ = stdout.read_to_end(&mut output);
+                let mut exit_code = 0 as i32;
+                libc::waitpid(pid, &mut exit_code, 0);
+                if exit_code == 0 {
+                    return Ok(output);
+                }
+                let err_msg = String::from_utf8_lossy(&output).to_string();
+                error!("[parent] work_as_user func exit failed: {}", err_msg);
+                return Err(err_msg);
+            }
+        }
+    }
+
+    fn execute_stream(
+        &self,
+        cmd: Command,
+        callback: Option<PtyExecCallback>,
+        timeout: Option<u64>,
+    ) -> PtyResult<()> {
+        let user = self.inner.lock().expect("inner lock failed").user.clone();
+        let cwd_path = self.get_cwd();
+        tokio::runtime::Builder::new()
+            .basic_scheduler()
+            .enable_all()
+            .build()
+            .expect("runtime build failed")
+            .block_on(async move {
+                let mut idx = 0u32;
+                let mut is_last;
+                let callback = callback.unwrap_or(Box::new(|_, _, _, _| ()));
+                let timeout_at = Instant::now() + Duration::from_secs(timeout.unwrap_or(60));
+                let mut child = unsafe {
+                    tokio::process::Command::from(cmd)
+                        .stdout(Stdio::piped())
+                        .current_dir(cwd_path)
+                        .uid(user.uid())
+                        .gid(user.primary_group_id())
+                        .pre_exec(|| {
+                            libc::dup2(1, 2);
+                            Ok(())
+                        })
+                        .spawn()
+                        .map_err(|_| "command start failed")
+                }?;
+                let mut reader = BufReader::new(child.stdout.take().unwrap());
+                loop {
+                    let mut buf = [0u8; PTY_EXEC_DATA_SIZE];
+                    tokio::select! {
+                        _ = tokio::time::delay_until(timeout_at) => {
+                            error!("work_as_user func timeout");
+                            child.kill().map_err(|_| "command timeout, kill failed")?;
+                            Err(  "command timeout, process killed" )?;
+                        }
+                        len = reader.read(&mut buf) => {
+                            let len = len.map_err(|_| "buffer read failed")?;
+                            is_last = len == 0;
+                            if is_last {
+                                break;
+                            }
+                            callback(idx, is_last, None, Vec::from(&buf[..len]));
+                            idx += 1;
+                        }
+                    };
+                }
+
+                let exit_status = child
+                    .wait_with_output()
+                    .await
+                    .map_err(|_| "wait command failed")?
+                    .status;
+                if !exit_status.success() {
+                    error!("work_as_user func exit failed: {}", exit_status);
+                }
+                let exit_code = exit_status.code().ok_or("command terminated abnormally")?;
+                callback(idx, is_last, Some(exit_code), Vec::new());
+                Ok(())
+            })
+    }
 }
 
 impl Drop for UnixPtySession {
@@ -315,7 +387,9 @@ impl Drop for UnixPtySession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
     use users::get_current_username;
+
     #[test]
     fn test_work_as_user() {
         let name = get_current_username().unwrap();
@@ -329,5 +403,110 @@ mod tests {
 
         let foo = String::from_utf8_lossy(&result).to_string();
         assert_eq!(foo, "foo");
+    }
+
+    #[test]
+    fn test_work_as_user_stream() {
+        let params = vec![
+            (
+                // Below data length with stderr
+                "echo -n foo >&2 ",
+                None,
+                HashMap::from([
+                    (0, (false, None, b"foo".to_vec())),
+                    (1, (true, Some(0), vec![])),
+                ]),
+                Ok(()),
+            ),
+            (
+                // Below data length multiple outputs
+                "echo -n foo; sleep 0.5; echo -n foo;",
+                None,
+                HashMap::from([
+                    (0, (false, None, b"foo".to_vec())),
+                    (1, (false, None, b"foo".to_vec())),
+                    (2, (true, Some(0), vec![])),
+                ]),
+                Ok(()),
+            ),
+            (
+                // Exceeding data length
+                "echo -n foo; echo -n foo;",
+                None,
+                HashMap::from([
+                    (0, (false, None, b"foofo".to_vec())),
+                    (1, (false, None, b"o".to_vec())),
+                    (2, (true, Some(0), vec![])),
+                ]),
+                Ok(()),
+            ),
+            (
+                // Timeout without output
+                "while true; do sleep 100; done",
+                Some(1),
+                HashMap::new(),
+                Err("command timeout, process killed".to_owned()),
+            ),
+            (
+                // Timeout with exceeding data length multiple output
+                "while true; do echo -n foofoo; sleep 0.5; done",
+                Some(1),
+                HashMap::from([
+                    (0, (false, None, b"foofo".to_vec())),
+                    (1, (false, None, b"o".to_vec())),
+                    (2, (false, None, b"foofo".to_vec())),
+                    (3, (false, None, b"o".to_vec())),
+                ]),
+                Err("command timeout, process killed".to_owned()),
+            ),
+            (
+                // Failed without output
+                "exit 1",
+                None,
+                HashMap::from([(0, (true, Some(1), vec![]))]),
+                Ok(()),
+            ),
+            (
+                // Failed with output
+                "echo -n foo; exit 1",
+                None,
+                HashMap::from([
+                    (0, (false, None, b"foo".to_vec())),
+                    (1, (true, Some(1), vec![])),
+                ]),
+                Ok(()),
+            ),
+        ];
+
+        for p in params {
+            test_execute_stream_template(p.0, p.1, p.2, p.3);
+        }
+    }
+
+    fn test_execute_stream_template(
+        script: &str,
+        timeout: Option<u64>,
+        data_map: HashMap<u32, (bool, Option<i32>, Vec<u8>)>,
+        expect_result: PtyResult<()>,
+    ) {
+        let name = get_current_username().unwrap();
+        let user_name = String::from(name.to_str().unwrap());
+        let pty_session = ConPtyAdapter::default()
+            .openpty(&user_name, 100, 100, 0)
+            .unwrap();
+        let mut cmd = Command::new("sh");
+        cmd.args(&["-c", script]);
+        let cb = Box::new(
+            move |idx: u32, is_last: bool, exit_code: Option<i32>, data: Vec<u8>| {
+                let (expect_is_last, expect_exit_code, expect_data) = data_map
+                    .get(&idx)
+                    .expect(&format!("idx `{idx}` not expect"));
+                assert_eq!(*expect_is_last, is_last);
+                assert_eq!(*expect_exit_code, exit_code);
+                assert_eq!(*expect_data, data);
+            },
+        );
+        let res = pty_session.execute_stream(cmd, Some(cb), timeout);
+        assert_eq!(expect_result, res);
     }
 }

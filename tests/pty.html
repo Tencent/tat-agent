@@ -17,19 +17,29 @@
 </head>
 
 <body>
-  <input type="text" id="id_path" value="/tmp/test_file.txt">
-  <input type="text" id="id_data" value="test_data">
-  <button type="submit" id="create">create</button>
-  <button type="submit" id="delete">delete</button>
-  <button type="submit" id="write">write</button>
-  <button type="submit" id="read">read</button>
-  <button type="submit" id="list">list</button>
-  <button type="submit" id="exec">exec</button>
-  <button type="submit" id="stop">stop</button>
+  <div>
+    <input type="text" id="id_path" value="/tmp/test_file.txt">
+    <input type="text" id="id_data" value="test_data">
+    <button type="submit" id="create">create</button>
+    <button type="submit" id="delete">delete</button>
+    <button type="submit" id="write">write</button>
+    <button type="submit" id="read">read</button>
+    <button type="submit" id="list">list</button>
+  </div>
+
+  <div>
+    <input type="text" id="id_cmd" value="pwd">
+    <input type="number" id="id_timeout" value=60>
+    <button type="submit" id="exec">exec</button>
+    <button type="submit" id="execStream">execStream</button>
+  </div>
+
+  <div>
+    <button type="submit" id="stop">stop</button>
+  </div>
 
   <div id="terminal"></div>
   <script type="text/javascript">
-
     function randomString(len) {
       len = len || 32;
       var $chars = 'ABCDEFGHJKMNPQRSTWXYZabcdefhijkmnprstwxyz2345678';    /****默认去掉了容易混淆的字符oOLl,9gq,Vv,Uu,I1****/
@@ -141,14 +151,14 @@
     }
 
 
-    function listPath() {
+    function listPath(path) {
       const doc = {
         Type: 'PtyListPath',
         Data: {
           SessionId: session_id,
           CustomData: 'd',
           Data: {
-            Path: "/tmp",
+            Path: path,
             Filter: "*",
           },
         }
@@ -158,14 +168,31 @@
       ws.send(msg);
     }
 
-    function execCmd() {
+    function execCmd(cmd) {
       const doc = {
         Type: 'PtyExecCmd',
         Data: {
           SessionId: session_id,
           CustomData: 'd',
           Data: {
-            Cmd: "pwd",
+            Cmd: cmd,
+          },
+        }
+      };
+      const msg = BSON.serialize(doc);
+      console.log('ReadMsg:', msg);
+      ws.send(msg);
+    }
+
+    function execCmdStream(cmd, timeout) {
+      const doc = {
+        Type: 'PtyExecCmdStream',
+        Data: {
+          SessionId: session_id,
+          CustomData: 'd',
+          Data: {
+            Cmd: cmd,
+            Timeout: Number(timeout),
           },
         }
       };
@@ -196,11 +223,19 @@
     })
 
     document.getElementById("list").addEventListener("click", function handle_create() {
-      listPath()
+      let path = document.getElementById("id_path").value;
+      listPath(path)
     })
 
     document.getElementById("exec").addEventListener("click", function handle_create() {
-      execCmd()
+      let cmd = document.getElementById("id_cmd").value;
+      execCmd(cmd)
+    })
+
+    document.getElementById("execStream").addEventListener("click", function handle_create() {
+      let cmd = document.getElementById("id_cmd").value;
+      let timeout = document.getElementById("id_timeout").value;
+      execCmdStream(cmd, timeout)
     })
 
     document.getElementById("stop").addEventListener("click", function handle_create() {
@@ -220,7 +255,7 @@
     })
 
 
-    const ws = new WebSocket(`ws://43.133.179.35:3333`, "rust-websocket");
+    const ws = new WebSocket(`ws://<server-address>:3333`);
     ws.addEventListener('open', function () {
       console.info('WebSocket connected');
       let json = JSON.stringify({

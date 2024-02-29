@@ -83,15 +83,13 @@ impl Handler for BsonHandler<CreateFileReq> {
         if Path::new(&req_data.path).exists() && !req_data.overwrite {
             return self.reply(PtyBinErrMsg::new("file exists"));
         }
-
-        let parent_path = Path::new(&req_data.path).parent();
-        if parent_path.is_none() {
+        let Some(parent_path) = Path::new(&req_data.path).parent() else {
             return self.reply(PtyBinErrMsg::new("invalid path"));
-        }
+        };
 
         //create file as user
         let create_result = self.associate_pty.execute(&|| -> Result<Vec<u8>, String> {
-            create_dir_all(parent_path.unwrap()).map_err(|e| e.to_string())?;
+            create_dir_all(parent_path).map_err(|e| e.to_string())?;
             let _file = File::create(&req_data.path).map_err(|e| e.to_string())?;
             #[cfg(unix)]
             if let Ok(meta) = _file.metadata() {
@@ -323,7 +321,9 @@ fn list_path(path: &str, filter: Pattern) -> Result<Vec<FileInfoResp>, String> {
 
     let items = fs::read_dir(path).map_err(|e| e.to_string())?;
     for item in items {
-        let Ok(entry) = item else { continue; };
+        let Ok(entry) = item else {
+            continue;
+        };
         let name = entry.file_name().to_string_lossy().to_string();
         if !filter.matches(&name) {
             continue;

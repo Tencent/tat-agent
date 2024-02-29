@@ -208,14 +208,13 @@ fn wait_image_state_complete(timeout: u64) {
             }
             if state == IMAGE_STATE_COMPLETE {
                 break;
-            }   
+            }
         }
         std::thread::sleep(Duration::from_secs(2));
         if elapsed > timeout {
             info!("wait_image_state timeout");
             break;
         }
-      
     }
 }
 

@@ -272,10 +272,7 @@ impl BaseCommand {
     }
 
     pub fn is_started(&self) -> bool {
-        return match *self.pid.lock().unwrap() {
-            None => false,
-            _ => true,
-        };
+        self.pid.lock().unwrap().is_some()
     }
 
     pub fn is_finished(&self) -> bool {
@@ -283,15 +280,13 @@ impl BaseCommand {
     }
 
     pub fn exit_code(&self) -> i32 {
-        let pid = *self.pid.lock().unwrap();
-        if let None = pid {
+        if !self.is_started() {
             return 0;
         }
-        let exit_code = self.exit_code.lock().expect("exit_code get lock failed");
-        match *exit_code {
-            Some(code) => code,
-            None => -1,
-        }
+        self.exit_code
+            .lock()
+            .expect("exit_code get lock failed")
+            .unwrap_or(-1)
     }
 
     pub fn cmd_path(&self) -> &String {
@@ -299,11 +294,7 @@ impl BaseCommand {
     }
 
     pub fn pid(&self) -> u32 {
-        let pid = *self.pid.lock().unwrap();
-        match pid {
-            Some(pid) => pid,
-            None => 0,
-        }
+        self.pid.lock().unwrap().unwrap_or(0)
     }
 
     pub fn is_timeout(&self) -> bool {
@@ -311,8 +302,7 @@ impl BaseCommand {
     }
 
     pub fn finish_result(&self) -> String {
-        let pid = *self.pid.lock().unwrap();
-        if let None = pid {
+        if !self.is_started() {
             return FINISH_RESULT_START_FAILED.to_string();
         }
         if self.is_timeout() {
@@ -332,7 +322,7 @@ impl BaseCommand {
 
     pub fn err_info(&self) -> String {
         let err_info = self.err_info.lock().unwrap();
-        return String::from(err_info.as_str());
+        String::from(err_info.as_str())
     }
 
     pub fn finish_time(&self) -> u64 {

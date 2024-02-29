@@ -1,6 +1,8 @@
 use super::gather::PtyGather;
 use super::parser::{do_parse, AnsiItem, EscapeItem};
-use super::{PtyAdapter, PtyBase, PTY_FLAG_ENABLE_BLOCK, PTY_INSPECT_WRITE};
+use super::{
+    PtyAdapter, PtyBase, PtyExecCallback, PtyResult, PTY_FLAG_ENABLE_BLOCK, PTY_INSPECT_WRITE,
+};
 use crate::common::utils::{str2wsz, wsz2string};
 use crate::conpty::bind::{
     winpty_agent_process, winpty_config_free, winpty_config_new, winpty_config_set_initial_size,
@@ -19,6 +21,7 @@ use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::FromRawHandle;
 use std::os::windows::prelude::AsRawHandle;
 use std::os::windows::raw::HANDLE;
+use std::process::Command;
 use std::ptr::null_mut;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -79,7 +82,7 @@ fn get_cwd(token: HANDLE) -> Vec<u16> {
     cwd
 }
 
-fn openpty(user_name: &str, cols: u16, rows: u16) -> Result<Inner, String> {
+fn openpty(user_name: &str, cols: u16, rows: u16) -> PtyResult<Inner> {
     unsafe {
         let token = get_user_token(user_name)?;
         let mut err_ptr: *mut winpty_error_ptr_t = ptr::null_mut();
@@ -168,7 +171,7 @@ impl PtyAdapter for ConPtyAdapter {
         cols: u16,
         rows: u16,
         flag: u32,
-    ) -> Result<Arc<dyn PtyBase + Send + Sync>, String> {
+    ) -> PtyResult<Arc<dyn PtyBase + Send + Sync>> {
         let inner = openpty(user_name, cols, rows)?;
         let session = Arc::new(WinPtySession {
             inner: Arc::new(Mutex::new(inner)),
@@ -184,7 +187,7 @@ pub struct WinPtySession {
 }
 
 impl PtyBase for WinPtySession {
-    fn resize(&self, cols: u16, rows: u16) -> Result<(), String> {
+    fn resize(&self, cols: u16, rows: u16) -> PtyResult<()> {
         let err_ptr: *mut winpty_error_ptr_t = ptr::null_mut();
         unsafe {
             winpty_set_size(
@@ -197,7 +200,7 @@ impl PtyBase for WinPtySession {
         return Ok(());
     }
 
-    fn get_reader(&self) -> Result<std::fs::File, std::string::String> {
+    fn get_reader(&self) -> PtyResult<File> {
         unsafe {
             let conin_name =
                 winpty_conout_name(self.inner.lock().unwrap().pty_ptr.lock().unwrap().as_mut());
@@ -227,7 +230,7 @@ impl PtyBase for WinPtySession {
         }
     }
 
-    fn get_writer(&self) -> Result<std::fs::File, std::string::String> {
+    fn get_writer(&self) -> PtyResult<File> {
         unsafe {
             let conin_name =
                 winpty_conin_name(self.inner.lock().unwrap().pty_ptr.lock().unwrap().as_mut());
@@ -246,7 +249,7 @@ impl PtyBase for WinPtySession {
         }
     }
 
-    fn get_pid(&self) -> Result<u32, String> {
+    fn get_pid(&self) -> PtyResult<u32> {
         unsafe {
             let process =
                 winpty_agent_process(self.inner.lock().unwrap().pty_ptr.lock().unwrap().as_mut())
@@ -256,7 +259,7 @@ impl PtyBase for WinPtySession {
         }
     }
 
-    fn inspect_access(&self, path: &str, access: u8) -> Result<(), String> {
+    fn inspect_access(&self, path: &str, access: u8) -> PtyResult<()> {
         unsafe {
             let desired_access = if access == PTY_INSPECT_WRITE {
                 FILE_GENERIC_WRITE
@@ -284,7 +287,7 @@ impl PtyBase for WinPtySession {
         }
     }
 
-    fn execute(&self, f: &dyn Fn() -> Result<Vec<u8>, String>) -> Result<Vec<u8>, String> {
+    fn execute(&self, f: &dyn Fn() -> PtyResult<Vec<u8>>) -> PtyResult<Vec<u8>> {
         unsafe {
             let handle = self.inner.lock().unwrap().token.as_raw_handle();
             ImpersonateLoggedOnUser(handle);
@@ -292,6 +295,16 @@ impl PtyBase for WinPtySession {
             RevertToSelf();
             return result;
         };
+    }
+
+    fn execute_stream(
+        &self,
+        _cmd: Command,
+        _callback: Option<PtyExecCallback>,
+        _timeout: Option<u64>,
+    ) -> PtyResult<()> {
+        // Windows system not supported currently.
+        todo!()
     }
 }
 

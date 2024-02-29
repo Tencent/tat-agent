@@ -29,8 +29,10 @@ where
         BsonHandler<T>: Handler,
     {
         let Ok(doc) = Document::from_reader(&mut Cursor::new(&msg[..]))
-            .map_err(|e| error!("dispatch_operation from_reader failed: {}", e ))
-        else { return; };
+            .map_err(|e| error!("dispatch_operation from_reader failed: {}", e))
+        else {
+            return;
+        };
 
         let msg = match bson::from_document::<WsMsg<PtyBinBase<T>>>(doc) {
             Ok(msg) => msg,

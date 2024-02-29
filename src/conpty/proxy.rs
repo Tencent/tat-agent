@@ -117,7 +117,7 @@ impl PtyProxy {
 
         let mut data_send_size = 0;
         let mut data_send_cnt = 0;
-        info!("{}  start loop for proxy responses", self.proxy_id);
+        info!("{} start loop for proxy responses", self.proxy_id);
         loop {
             if self.is_stopped.load(SeqCst) {
                 break info!("{} proxy is_stopped break", self.proxy_id);

@@ -146,11 +146,11 @@ pub struct ReadFileReq {
 }
 
 fn default_read_size() -> usize {
-    return usize::MAX;
+    usize::MAX
 }
 
 fn default_read_offset() -> usize {
-    return 0;
+    0
 }
 
 #[derive(Default, Serialize, Deserialize, Debug)]
@@ -173,7 +173,7 @@ pub struct WriteFileReq {
     pub data: Vec<u8>,
 }
 fn default_write_offset() -> usize {
-    return usize::MAX;
+    usize::MAX
 }
 
 #[derive(Default, Serialize, Deserialize, Debug)]
@@ -245,7 +245,7 @@ pub struct ListPathResp {
 }
 
 //exec msg
-#[derive(Default, Serialize, Deserialize, Debug)]
+#[derive(Default, Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "PascalCase")]
 pub struct ExecCmdReq {
     pub cmd: String,
@@ -255,6 +255,24 @@ pub struct ExecCmdReq {
 #[serde(rename_all = "PascalCase")]
 pub struct ExecCmdResp {
     pub output: String,
+}
+
+//exec msg
+#[derive(Default, Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "PascalCase")]
+pub struct ExecCmdStreamReq {
+    pub cmd: String,
+    pub timeout: Option<u64>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "PascalCase")]
+pub struct ExecCmdStreamResp {
+    pub index: u32,
+    pub is_last: bool,
+    pub exit_code: Option<i32>,
+    #[serde(with = "serde_bytes")]
+    pub data: Vec<u8>,
 }
 
 //proxy msg

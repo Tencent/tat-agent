@@ -23,7 +23,7 @@ pub fn run(dispatcher: &Arc<EventBus>, running_task_num: &Arc<AtomicU64>) {
     let runtime = Runtime::new().expect("executor-runime build failed");
     let running_task_num = running_task_num.clone();
     let running_tasks = Arc::new(Mutex::new(HashMap::new()));
-    
+
     dispatcher.register(WS_MSG_TYPE_KICK, move |source| {
         let source = String::from_utf8_lossy(&source).to_string(); //from vec to string
         let running_task_num = running_task_num.clone();

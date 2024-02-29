@@ -1,0 +1,21 @@
+{
+    "name": "tcp_proxy",
+    "version": "1.0.0",
+    "description": "",
+    "main": "server.js",
+    "scripts": {
+        "test": "echo \"Error: no test specified\" && exit 1"
+    },
+    "keywords": [],
+    "author": "",
+    "license": "ISC",
+    "dependencies": {
+        "blob": "^0.1.0",
+        "bson": "^5.2.0",
+        "events": "^3.3.0",
+        "net": "^1.0.2",
+        "package.json": "^2.0.1",
+        "ws": "^8.13.0",
+        "log-timestamp": "^0.3.0"
+    }
+}

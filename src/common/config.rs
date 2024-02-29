@@ -1,7 +1,7 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
 use std::error::Error;
-use std::fs::{File, self};
+use std::fs::{self, File};
 use std::io::{ErrorKind, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -60,7 +60,7 @@ pub fn get_register_info() -> Option<RegisterInfo> {
         Some(info) => Some(info),
         None => match get_register_info_old() {
             Some(info) => {
-                if save_register_info(info.clone()).is_ok(){
+                if save_register_info(info.clone()).is_ok() {
                     let _ = fs::remove_file(REGISTER_FILE);
                 };
                 Some(info)

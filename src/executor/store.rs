@@ -108,22 +108,18 @@ impl TaskFileStore {
     }
 
     #[cfg(unix)]
-    fn set_permissions_recursively(&self, path: &Path) -> std::io::Result<()> {
+    fn set_permissions_recursively(&self, mut path: &Path) -> std::io::Result<()> {
         use crate::executor::FILE_EXECUTE_PERMISSION_MODE;
         use std::fs::{set_permissions, Permissions};
         use std::os::unix::fs::PermissionsExt;
 
-        let mut path = path.clone();
         while path.to_str() != Some("/tmp") {
             match set_permissions(path, Permissions::from_mode(FILE_EXECUTE_PERMISSION_MODE)) {
                 Err(e) => {
                     info!("failed to chmod path `{:?}`: {}", path, e);
                     return Err(e);
                 }
-                _ => match path.parent() {
-                    Some(parent) => path = parent,
-                    None => Err("").expect("should never come here"),
-                },
+                _ => path = path.parent().unwrap(),
             };
         }
         Ok(())
