@@ -1,6 +1,11 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [1.0.14] - 2024-03-11
+
+### Changed
+
+- Optimize url choose logic.
 
 ## [1.0.13] - 2024-02-24
 

@@ -63,7 +63,6 @@ pub fn try_update(self_updating: Arc<AtomicBool>, need_restart: Arc<AtomicBool>)
     }
 
     info!("new agent version found:{check_update_rsp:?}, going to download");
-
     let download_ret = download_file(
         &mut rt,
         check_update_rsp.download_url().clone().unwrap(),

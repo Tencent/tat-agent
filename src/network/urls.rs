@@ -1,10 +1,14 @@
+use self::UrlType::{InvokeApis, WsUrls};
+use super::MetadataAPIAdapter;
 use crate::common::config;
 use crate::network::mock_enabled;
-use std::net::ToSocketAddrs;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering::SeqCst;
+
+use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+use std::sync::{Condvar, Mutex};
+use std::{net::ToSocketAddrs, sync::Arc};
 
 use log::info;
+use once_cell::sync::Lazy;
 use url::Url;
 
 const METADATA_API_MOCK: &str = "http://mock-server:8000";
@@ -24,15 +28,34 @@ const INVOKE_APIS: [&'static str; 4] = [
     "https://invoke.tat.tencent-cloud.com",
 ];
 
+pub enum UrlType {
+    WsUrls,
+    InvokeApis,
+}
+
+impl UrlType {
+    fn intranet_urls(&self) -> Vec<&str> {
+        match self {
+            WsUrls => WS_URLS.to_vec(),
+            InvokeApis => INVOKE_APIS.to_vec(),
+        }
+    }
+
+    fn public_url(&self, region: &str) -> String {
+        match self {
+            WsUrls => format!("wss://{}.notify.tat-tc.tencent.cn:8186/ws", region),
+            InvokeApis => format!("https://{}.invoke.tat-tc.tencent.cn", region),
+        }
+    }
+}
+
 pub fn get_ws_url() -> String {
     let result = if let Some(url) = config::get_ws_url() {
         url
     } else if mock_enabled() {
         WS_URL_MOCK.to_string()
-    } else if let Some(region) = get_register_region() {
-        format!("wss://{}.notify.tat-tc.tencent.cn:8186/ws", region)
     } else {
-        find_available_url(Vec::from(WS_URLS), dns_resolve)
+        get_available_url(None, UrlType::WsUrls)
     };
     info!("get_ws_url {}", result);
     return result;
@@ -43,10 +66,8 @@ pub fn get_invoke_url() -> String {
         url
     } else if mock_enabled() {
         INVOKE_API_MOCK.to_string()
-    } else if let Some(region) = get_register_region() {
-        format!("https://{}.invoke.tat-tc.tencent.cn", region)
     } else {
-        find_available_url(Vec::from(INVOKE_APIS), dns_resolve)
+        get_available_url(None, UrlType::InvokeApis)
     };
     info!("get_invoke_url {}", result);
     return result;
@@ -101,10 +122,54 @@ pub fn get_register_url(region: &str) -> String {
     } else if mock_enabled() {
         INVOKE_API_MOCK.to_string()
     } else {
-        format!("https://{}.invoke.tat-tc.tencent.cn", region)
+        get_available_url(Some(region), UrlType::InvokeApis)
     };
     info!("get_register_url {}", result);
     return result;
+}
+
+pub fn get_current_region() -> String {
+    static REGION: Lazy<Arc<String>> = Lazy::new(|| {
+        let region: Arc<Mutex<String>> = Arc::new(Mutex::new("".to_string()));
+        let convar: Arc<Condvar> = Arc::new(Condvar::new());
+
+        let region_0 = region.clone();
+        let convar_0 = convar.clone();
+
+        // Run the following code in a new thread, as it may be called inside or outside the tokio runtime.
+        // Creating a tokio runtime multiple times will result in an error due to multiple runtime creation.
+        std::thread::spawn(move || {
+            *region_0.lock().expect("lock fail") = tokio::runtime::Builder::new()
+                .basic_scheduler()
+                .enable_all()
+                .build()
+                .expect("register runtime failed")
+                .block_on(async {
+                    MetadataAPIAdapter::build(&get_meta_url())
+                        .region()
+                        .await
+                        .unwrap_or_default()
+                });
+
+            convar_0.notify_one()
+        });
+        let mut guard = region.lock().expect("lock fail");
+        guard = convar.wait(guard).expect("wait fail");
+        Arc::new(guard.to_string())
+    });
+
+    info!("=>get_current_region: {}", REGION.to_string());
+    REGION.to_string()
+}
+
+pub fn get_available_url(region: Option<&str>, url_type: UrlType) -> String {
+    let region = region
+        .map(|s| s.to_owned())
+        .unwrap_or(get_register_region().unwrap_or_default());
+    if region.is_empty() || region == get_current_region() {
+        return find_available_url(url_type.intranet_urls(), dns_resolve);
+    }
+    url_type.public_url(&region)
 }
 
 #[cfg(test)]

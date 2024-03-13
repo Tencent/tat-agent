@@ -1,4 +1,3 @@
-// 用于封装访问HTTP API的方法
 use crate::network::types::{GetTmpCredentialResponse, HttpMethod};
 use crate::network::HttpRequester;
 
@@ -11,6 +10,7 @@ pub struct MetadataAPIAdapter {
 
 const CREDENTIAL_URI: &str = "/latest/meta-data/cam/security-credentials";
 const INSTANCE_ID_URI: &str = "/latest/meta-data/instance-id";
+const REGION_URI: &str = "/latest/meta-data/placement/region";
 
 impl MetadataAPIAdapter {
     pub fn build(url: &str) -> Self {
@@ -44,6 +44,26 @@ impl MetadataAPIAdapter {
             Err(e) => {
                 error!("failed to read response: {:?}", e);
                 format!("")
+            }
+        }
+    }
+
+    pub async fn region(&self) -> Option<String> {
+        let resp = HttpRequester::new(&self.url)
+            .with_time_out(3)
+            .send_request::<String>(HttpMethod::GET, REGION_URI, None, None)
+            .await
+            .map_err(|e| error!("request region error: {:?}", e))
+            .ok()?;
+
+        match resp.text().await {
+            Ok(txt) => {
+                info!("region text: {:?}", txt);
+                Some(txt)
+            }
+            Err(e) => {
+                error!("failed to read region: {:?}", e);
+                None
             }
         }
     }
