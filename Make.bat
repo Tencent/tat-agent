@@ -36,16 +36,25 @@ goto end
     goto end
 
 :win64-install-pkg 
-    cd .\release\win-64
-    FOR /F "tokens=2*" %%g IN ('.\tat_agent.exe --version') do (SET VERSION=%%g)
+    cd .\release\
+    FOR /F "tokens=2*" %%g IN ('.\win-64\tat_agent.exe --version') do (SET VERSION=%%g)
     if not exist "C:\Program Files\7-Zip\7z.exe" (
         echo "7z.exe not found, which is used for tar release files, exit now"
         exit
     )
     set COMPRESS_PROC="C:\Program Files\7-Zip\7z.exe"
-    SET FILE="..\tat_agent_windows_install_%VERSION%.tar.gz"
-    %COMPRESS_PROC% a -ttar -so  * |  %COMPRESS_PROC% a -si %FILE%
-    cd ..\..\
+    SET FILE="tat_agent_windows_install_%VERSION%.tar.gz"
+    del %FILE%
+
+    SET PKG_DIR=tat_agent_windows_install_%VERSION%
+    rd /s/q %PKG_DIR%
+
+    mkdir  %PKG_DIR%
+    copy win-64\*  "%PKG_DIR%\"
+    %COMPRESS_PROC% a -ttar -so -r %PKG_DIR%\*  |  %COMPRESS_PROC% a -si %FILE%
+    rd /s/q %PKG_DIR%
+
+    cd ..\
     goto end
 
 
