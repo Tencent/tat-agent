@@ -17,6 +17,7 @@ goto end
     SET RUSTFLAGS=-C target-feature=+crt-static
     rustup target add x86_64-pc-windows-msvc
     cargo build --release --target x86_64-pc-windows-msvc
+    rd /s/q release\win-64
     mkdir release\win-64
     copy /Y target\x86_64-pc-windows-msvc\release\tat_agent.exe release\win-64\tat_agent.exe
     copy /Y winpty\winpty.dll release\win-64\winpty.dll
@@ -36,25 +37,26 @@ goto end
     goto end
 
 :win64-install-pkg 
-    cd .\release\
-    FOR /F "tokens=2*" %%g IN ('.\win-64\tat_agent.exe --version') do (SET VERSION=%%g)
     if not exist "C:\Program Files\7-Zip\7z.exe" (
         echo "7z.exe not found, which is used for tar release files, exit now"
         exit
     )
-    set COMPRESS_PROC="C:\Program Files\7-Zip\7z.exe"
-    SET FILE="tat_agent_windows_install_%VERSION%.tar.gz"
-    del %FILE%
-
+    SET COMPRESS_PROC="C:\Program Files\7-Zip\7z.exe"
+    FOR /f "delims=@ tokens=2" %%a in ('cargo pkgid') do set VERSION=%%a
+   
     SET PKG_DIR=tat_agent_windows_install_%VERSION%
-    rd /s/q %PKG_DIR%
+    rd /s/q .\release\%PKG_DIR%
+    mkdir .\release\%PKG_DIR%
+    cd .\release\%PKG_DIR%
 
-    mkdir  %PKG_DIR%
-    copy win-64\*  "%PKG_DIR%\"
-    %COMPRESS_PROC% a -ttar -so -r %PKG_DIR%\*  |  %COMPRESS_PROC% a -si %FILE%
-    rd /s/q %PKG_DIR%
+    SET FILE="tat_agent_windows_install_%VERSION%.tar.gz"
+    del ..\%FILE%
 
-    cd ..\
+    copy ..\win-64\*  .\
+    %COMPRESS_PROC% a -ttar -so -r *  |  %COMPRESS_PROC% a -si ..\%FILE%
+
+    cd ..\..\
+    rd /s/q .\release\%PKG_DIR%
     goto end
 
 
