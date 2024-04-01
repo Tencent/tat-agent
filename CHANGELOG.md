@@ -1,6 +1,15 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+
+## [1.0.15] - 2024-03-26
+
+### Changed
+
+- Support streaming output of pty execute command on Windows system.
+- Optimized the timeout logic for command execution.
+- Add retries for register instance.
+
 ## [1.0.14] - 2024-03-11
 
 ### Changed

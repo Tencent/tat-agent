@@ -1,5 +1,3 @@
-// 用于封装访问HTTP API的方法
-
 use super::build_extra_headers;
 use super::urls::{get_invoke_url, get_register_url};
 use crate::common::config::RegisterInfo;
@@ -15,13 +13,15 @@ use crate::network::types::{
 use crate::network::HttpRequester;
 use crate::sysinfo::{get_hostname, get_local_ip, get_machine_id};
 
+use std::time::Duration;
+
 use log::{error, info};
 use reqwest::Response;
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::from_str;
 
-const HTTP_REQUEST_RETRIES: u64 = 3;
-const HTTP_REQUEST_NO_RETRIES: u64 = 1;
+const HTTP_REQUEST_RETRIES: u64 = 2;
+const HTTP_REQUEST_NO_RETRIES: u64 = 0;
 
 #[cfg_attr(test, faux::create)]
 pub struct InvokeAPIAdapter;
@@ -54,7 +54,7 @@ impl InvokeAPIAdapter {
 
         let url = get_register_url(region);
         let resp: RegisterInstanceResponse = self
-            .send("RegisterInstance", &url, body, HTTP_REQUEST_NO_RETRIES)
+            .send("RegisterInstance", &url, body, HTTP_REQUEST_RETRIES)
             .await
             .map_err(|err| err.message)?;
 
@@ -227,6 +227,7 @@ impl InvokeAPIAdapter {
                 Err(ref e) => {
                     if retry_cnt < retries {
                         retry_cnt = retry_cnt + 1;
+                        tokio::time::delay_for(Duration::from_millis(500)).await;
                         info!("request error: {:?}, retry {}", e, retry_cnt);
                         continue;
                     }

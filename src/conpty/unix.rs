@@ -1,26 +1,22 @@
-use super::{
-    PtyAdapter, PtyBase, PtyExecCallback, PtyResult, PTY_EXEC_DATA_SIZE, PTY_INSPECT_READ,
-};
-use crate::executor::unix::build_envs;
+use super::pty::execute_stream;
+use super::{PtyAdapter, PtyBase, PtyExecCallback, PtyResult, PTY_INSPECT_READ};
+use crate::executor::unix::{build_envs, prepare_cmd};
 
 use std::ffi::CStr;
 use std::fs::{metadata, File};
-use std::io::{Read as _, Write as _};
+use std::io::{Read, Write};
 use std::os::linux::fs::MetadataExt;
 use std::os::unix::prelude::{AsRawFd, CommandExt, FromRawFd, RawFd};
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command};
 use std::ptr::null_mut;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 use std::{env, io, ptr};
 
 use libc::{
     self, getsid, pid_t, ttyname, uid_t, waitpid, winsize, SIGHUP, STDIN_FILENO, TIOCSCTTY,
 };
 use log::{error, info};
-use tokio::io::{AsyncReadExt as _, BufReader};
-use tokio::time::Instant;
 use unix_mode::{is_allowed, Access, Accessor};
 use users::os::unix::UserExt;
 use users::{get_user_by_name, User};
@@ -101,12 +97,10 @@ fn openpty(user: User, cols: u16, rows: u16) -> PtyResult<(File, File)> {
     Ok((master, slave))
 }
 
-#[derive(Default)]
-pub struct ConPtyAdapter {}
+pub struct ConPtyAdapter;
 
 impl PtyAdapter for ConPtyAdapter {
     fn openpty(
-        &self,
         user_name: &str,
         cols: u16,
         rows: u16,
@@ -302,68 +296,17 @@ impl PtyBase for UnixPtySession {
 
     fn execute_stream(
         &self,
-        cmd: Command,
+        cmd: tokio::process::Command,
         callback: Option<PtyExecCallback>,
         timeout: Option<u64>,
     ) -> PtyResult<()> {
         let user = self.inner.lock().expect("inner lock failed").user.clone();
         let cwd_path = self.get_cwd();
-        tokio::runtime::Builder::new()
-            .basic_scheduler()
-            .enable_all()
-            .build()
-            .expect("runtime build failed")
-            .block_on(async move {
-                let mut idx = 0u32;
-                let mut is_last;
-                let callback = callback.unwrap_or(Box::new(|_, _, _, _| ()));
-                let timeout_at = Instant::now() + Duration::from_secs(timeout.unwrap_or(60));
-                let mut child = unsafe {
-                    tokio::process::Command::from(cmd)
-                        .stdout(Stdio::piped())
-                        .current_dir(cwd_path)
-                        .uid(user.uid())
-                        .gid(user.primary_group_id())
-                        .pre_exec(|| {
-                            libc::dup2(1, 2);
-                            Ok(())
-                        })
-                        .spawn()
-                        .map_err(|_| "command start failed")
-                }?;
-                let mut reader = BufReader::new(child.stdout.take().unwrap());
-                loop {
-                    let mut buf = [0u8; PTY_EXEC_DATA_SIZE];
-                    tokio::select! {
-                        _ = tokio::time::delay_until(timeout_at) => {
-                            error!("work_as_user func timeout");
-                            child.kill().map_err(|_| "command timeout, kill failed")?;
-                            Err(  "command timeout, process killed" )?;
-                        }
-                        len = reader.read(&mut buf) => {
-                            let len = len.map_err(|_| "buffer read failed")?;
-                            is_last = len == 0;
-                            if is_last {
-                                break;
-                            }
-                            callback(idx, is_last, None, Vec::from(&buf[..len]));
-                            idx += 1;
-                        }
-                    };
-                }
+        let cmd = prepare_cmd(cmd, &user, &cwd_path);
 
-                let exit_status = child
-                    .wait_with_output()
-                    .await
-                    .map_err(|_| "wait command failed")?
-                    .status;
-                if !exit_status.success() {
-                    error!("work_as_user func exit failed: {}", exit_status);
-                }
-                let exit_code = exit_status.code().ok_or("command terminated abnormally")?;
-                callback(idx, is_last, Some(exit_code), Vec::new());
-                Ok(())
-            })
+        let callback = callback.unwrap_or_else(|| Box::new(|_, _, _, _| ()));
+        let timeout = timeout.unwrap_or(60);
+        execute_stream(cmd, &callback, timeout)
     }
 }
 
@@ -387,126 +330,17 @@ impl Drop for UnixPtySession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
-    use users::get_current_username;
+    use crate::common::utils::get_current_username;
 
     #[test]
     fn test_work_as_user() {
-        let name = get_current_username().unwrap();
-        let user_name = String::from(name.to_str().unwrap());
-        let pty_session = ConPtyAdapter::default()
-            .openpty(&user_name, 100, 100, 0)
-            .unwrap();
+        let name = get_current_username();
+        let pty_session = ConPtyAdapter::openpty(&name, 100, 100, 0).unwrap();
         let result = pty_session
             .execute(&|| Ok("foo".to_string().into_bytes()))
             .unwrap();
 
         let foo = String::from_utf8_lossy(&result).to_string();
         assert_eq!(foo, "foo");
-    }
-
-    #[test]
-    fn test_work_as_user_stream() {
-        let params = vec![
-            (
-                // Below data length with stderr
-                "echo -n foo >&2 ",
-                None,
-                HashMap::from([
-                    (0, (false, None, b"foo".to_vec())),
-                    (1, (true, Some(0), vec![])),
-                ]),
-                Ok(()),
-            ),
-            (
-                // Below data length multiple outputs
-                "echo -n foo; sleep 0.5; echo -n foo;",
-                None,
-                HashMap::from([
-                    (0, (false, None, b"foo".to_vec())),
-                    (1, (false, None, b"foo".to_vec())),
-                    (2, (true, Some(0), vec![])),
-                ]),
-                Ok(()),
-            ),
-            (
-                // Exceeding data length
-                "echo -n foo; echo -n foo;",
-                None,
-                HashMap::from([
-                    (0, (false, None, b"foofo".to_vec())),
-                    (1, (false, None, b"o".to_vec())),
-                    (2, (true, Some(0), vec![])),
-                ]),
-                Ok(()),
-            ),
-            (
-                // Timeout without output
-                "while true; do sleep 100; done",
-                Some(1),
-                HashMap::new(),
-                Err("command timeout, process killed".to_owned()),
-            ),
-            (
-                // Timeout with exceeding data length multiple output
-                "while true; do echo -n foofoo; sleep 0.5; done",
-                Some(1),
-                HashMap::from([
-                    (0, (false, None, b"foofo".to_vec())),
-                    (1, (false, None, b"o".to_vec())),
-                    (2, (false, None, b"foofo".to_vec())),
-                    (3, (false, None, b"o".to_vec())),
-                ]),
-                Err("command timeout, process killed".to_owned()),
-            ),
-            (
-                // Failed without output
-                "exit 1",
-                None,
-                HashMap::from([(0, (true, Some(1), vec![]))]),
-                Ok(()),
-            ),
-            (
-                // Failed with output
-                "echo -n foo; exit 1",
-                None,
-                HashMap::from([
-                    (0, (false, None, b"foo".to_vec())),
-                    (1, (true, Some(1), vec![])),
-                ]),
-                Ok(()),
-            ),
-        ];
-
-        for p in params {
-            test_execute_stream_template(p.0, p.1, p.2, p.3);
-        }
-    }
-
-    fn test_execute_stream_template(
-        script: &str,
-        timeout: Option<u64>,
-        data_map: HashMap<u32, (bool, Option<i32>, Vec<u8>)>,
-        expect_result: PtyResult<()>,
-    ) {
-        let name = get_current_username().unwrap();
-        let user_name = String::from(name.to_str().unwrap());
-        let pty_session = ConPtyAdapter::default()
-            .openpty(&user_name, 100, 100, 0)
-            .unwrap();
-        let mut cmd = Command::new("sh");
-        cmd.args(&["-c", script]);
-        let cb = Box::new(
-            move |idx: u32, is_last: bool, exit_code: Option<i32>, data: Vec<u8>| {
-                let (expect_is_last, expect_exit_code, expect_data) = data_map
-                    .get(&idx)
-                    .expect(&format!("idx `{idx}` not expect"));
-                assert_eq!(*expect_is_last, is_last);
-                assert_eq!(*expect_exit_code, exit_code);
-                assert_eq!(*expect_data, data);
-            },
-        );
-        let res = pty_session.execute_stream(cmd, Some(cb), timeout);
-        assert_eq!(expect_result, res);
     }
 }

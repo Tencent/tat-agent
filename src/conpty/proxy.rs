@@ -124,7 +124,7 @@ impl PtyProxy {
             }
 
             let elapse = get_now_secs() - self.last_time.load(SeqCst);
-            if elapse > 1000 * 60 * 5 {
+            if elapse > 60 * 5 {
                 break info!("proxy {} no data 5 minute break", self.proxy_id); //time out
             }
             let timeout_read =

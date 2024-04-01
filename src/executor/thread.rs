@@ -62,7 +62,7 @@ impl HttpWorker {
             adapter,
             task_store,
             running_task_num,
-            running_tasks: running_tasks,
+            running_tasks,
         }
     }
 
@@ -113,7 +113,7 @@ impl HttpWorker {
                 delay_for(Duration::from_millis(50)).await;
                 finished = cmd_arc.lock().await.is_finished();
             }
-            let mut cmd = cmd_arc.lock().await;
+            let cmd = cmd_arc.lock().await;
             if cmd.cur_output_len() != 0 && !stop_upload {
                 let (out, idx, dropped) = cmd.next_output();
                 final_log_index = idx;

@@ -1,4 +1,6 @@
-use std::{fs::File, process::Command, sync::Arc};
+use std::{fs::File, sync::Arc};
+
+use tokio::process::Command;
 
 mod file;
 pub mod gather;
@@ -8,8 +10,10 @@ mod pty;
 
 cfg_if::cfg_if! {
     if #[cfg(unix)] {
+        pub use unix::ConPtyAdapter;
         mod unix;
     } else if #[cfg(windows)] {
+        pub use windows::ConPtyAdapter;
         mod windows;
         mod bind;
         mod parser;
@@ -42,13 +46,13 @@ type PtyResult<T> = Result<T, String>;
 
 pub trait PtyAdapter {
     fn openpty(
-        &self,
         user_name: &str,
         cols: u16,
         rows: u16,
         flag: u32,
     ) -> PtyResult<Arc<dyn PtyBase + Send + Sync>>;
 }
+
 pub trait PtyBase {
     fn resize(&self, cols: u16, rows: u16) -> PtyResult<()>;
     fn get_reader(&self) -> PtyResult<File>;

@@ -1,11 +1,12 @@
-use super::gather::PtyGather;
 use super::handler::{BsonHandler, Handler, JsonHandler};
+use super::{gather::PtyGather, ConPtyAdapter};
 use crate::common::evbus::EventBus;
 use crate::common::utils::{get_current_username, get_now_secs};
-use crate::conpty::{PtyAdapter, PtyBase, WS_MSG_TYPE_PTY_OUTPUT, WS_MSG_TYPE_PTY_READY};
+use crate::conpty::{PtyAdapter, PtyBase, PtyExecCallback, PtyResult};
+use crate::executor::{decode_output, init_cmd, kill_process_group};
 use crate::network::types::ws_msg::{
-    ExecCmdReq, ExecCmdStreamReq, PtyBinErrMsg, PtyError, PtyInput, PtyOutput, PtyReady, PtyResize,
-    PtyStart, PtyStop,
+    ExecCmdReq, ExecCmdStreamReq, ExecCmdStreamResp, PtyBinErrMsg, PtyError, PtyInput, PtyOutput,
+    PtyReady, PtyResize, PtyStart, PtyStop,
 };
 
 use std::fs::File;
@@ -17,27 +18,25 @@ use std::time::Duration;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use log::{error, info};
 use tokio::io::AsyncReadExt;
-use tokio::time::timeout;
+use tokio::time::{timeout, Instant};
 
 use super::{
-    PTY_FLAG_ENABLE_BLOCK, SLOT_PTY_BIN, WS_MSG_TYPE_PTY_ERROR, WS_MSG_TYPE_PTY_EXEC_CMD,
-    WS_MSG_TYPE_PTY_EXEC_CMD_STREAM, WS_MSG_TYPE_PTY_INPUT, WS_MSG_TYPE_PTY_RESIZE,
-    WS_MSG_TYPE_PTY_START, WS_MSG_TYPE_PTY_STOP,
+    PTY_EXEC_DATA_SIZE, PTY_FLAG_ENABLE_BLOCK, SLOT_PTY_BIN, WS_MSG_TYPE_PTY_ERROR,
+    WS_MSG_TYPE_PTY_EXEC_CMD, WS_MSG_TYPE_PTY_EXEC_CMD_STREAM, WS_MSG_TYPE_PTY_INPUT,
+    WS_MSG_TYPE_PTY_OUTPUT, WS_MSG_TYPE_PTY_READY, WS_MSG_TYPE_PTY_RESIZE, WS_MSG_TYPE_PTY_START,
+    WS_MSG_TYPE_PTY_STOP,
 };
 const SLOT_PTY_CMD: &str = "event_slot_pty_cmd";
-
 const PTY_REMOVE_INTERVAL: u64 = 3 * 60;
 
-#[cfg(unix)]
-use super::unix::ConPtyAdapter;
 #[cfg(windows)]
-use super::windows::ConPtyAdapter;
+use crate::executor::windows::resume_as_user;
 #[cfg(unix)]
-use crate::network::types::ws_msg::{ExecCmdResp, ExecCmdStreamResp};
+use crate::network::types::ws_msg::ExecCmdResp;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 #[cfg(unix)]
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 pub fn register_pty_handlers(event_bus: &Arc<EventBus>) {
     event_bus
@@ -83,23 +82,19 @@ impl Handler for JsonHandler<PtyStart> {
 
         let session_id = pty_start.session_id.clone();
 
-        let pty_base = match ConPtyAdapter::default().openpty(
-            &user_name,
-            pty_start.cols,
-            pty_start.rows,
-            flag,
-        ) {
-            Ok(session) => session,
-            Err(e) => {
-                error!("=>open pty err: {}", e);
-                let pty_error = PtyError {
-                    session_id,
-                    reason: e.to_string(),
-                };
-                PtyGather::reply_json_msg(WS_MSG_TYPE_PTY_ERROR, pty_error);
-                return;
-            }
-        };
+        let pty_base =
+            match ConPtyAdapter::openpty(&user_name, pty_start.cols, pty_start.rows, flag) {
+                Ok(session) => session,
+                Err(e) => {
+                    error!("=>open pty err: {}", e);
+                    let pty_error = PtyError {
+                        session_id,
+                        reason: e.to_string(),
+                    };
+                    PtyGather::reply_json_msg(WS_MSG_TYPE_PTY_ERROR, pty_error);
+                    return;
+                }
+            };
 
         let writer = pty_base.get_writer().expect("GetWriterFailed");
         let session = Arc::new(PtySession {
@@ -236,13 +231,6 @@ impl Handler for BsonHandler<ExecCmdReq> {
     }
 }
 
-#[cfg(windows)]
-impl Handler for BsonHandler<ExecCmdStreamReq> {
-    fn process(self) {
-        self.reply(PtyBinErrMsg::new("not support on windows"));
-    }
-}
-
 #[cfg(unix)]
 impl Handler for BsonHandler<ExecCmdReq> {
     fn process(self) {
@@ -250,7 +238,7 @@ impl Handler for BsonHandler<ExecCmdReq> {
         let session_id = self.request.session_id.clone();
         info!("=>pty exec {} {}", session_id, param.cmd);
         let exec_result = self.associate_pty.execute(&|| -> Result<Vec<u8>, String> {
-            let mut command = Command::new("bash");
+            let mut command = std::process::Command::new("bash");
             unsafe {
                 command
                     .args(&["-c", param.cmd.as_str()])
@@ -283,15 +271,13 @@ impl Handler for BsonHandler<ExecCmdReq> {
     }
 }
 
-#[cfg(unix)]
 impl Handler for BsonHandler<ExecCmdStreamReq> {
     fn process(self) {
         let param = &self.request.data;
         let session_id = self.request.session_id.clone();
+
         info!("=>pty exec {} {}", session_id, param.cmd);
         let self_c = self.clone();
-        let mut cmd = Command::new("bash");
-        cmd.args(&["-c", param.cmd.as_str()]);
         let cb = Box::new(move |index, is_last, exit_code, data: Vec<u8>| {
             self_c.reply(ExecCmdStreamResp {
                 index,
@@ -300,6 +286,8 @@ impl Handler for BsonHandler<ExecCmdStreamReq> {
                 data,
             })
         });
+
+        let cmd = init_cmd(&param.cmd);
         let exec_result = self
             .associate_pty
             .execute_stream(cmd, Some(cb), param.timeout);
@@ -310,26 +298,89 @@ impl Handler for BsonHandler<ExecCmdStreamReq> {
     }
 }
 
+pub fn execute_stream(
+    mut cmd: tokio::process::Command,
+    callback: &PtyExecCallback,
+    timeout: u64,
+    #[cfg(windows)] token: &File,
+    #[cfg(windows)] pipe: File,
+    #[cfg(windows)] username: &str,
+) -> PtyResult<()> {
+    tokio::runtime::Builder::new()
+        .basic_scheduler()
+        .enable_all()
+        .build()
+        .expect("runtime build failed")
+        .block_on(async move {
+            let mut idx = 0u32;
+            let mut is_last;
+            let timeout_at = Instant::now() + Duration::from_secs(timeout);
+            let mut buf = [0u8; PTY_EXEC_DATA_SIZE];
+
+            #[allow(unused_mut)] // Unix needs MUT, Windows does not.
+            let mut child = cmd.spawn().map_err(|_| "command start failed")?;
+            let pid = child.id();
+
+            #[cfg(windows)]
+            let mut reader = {
+                drop(cmd); // move pipe sender
+                resume_as_user(pid, username, &token);
+                tokio::fs::File::from_std(pipe)
+            };
+            #[cfg(unix)]
+            let mut reader = child.stdout.take().unwrap();
+
+            loop {
+                tokio::select! {
+                    len = reader.read(&mut buf) => {
+                        let len = len.map_err(|_| "buffer read failed")?;
+                        is_last = len == 0;
+                        if is_last {
+                            break;
+                        }
+                        let output = decode_output(&buf[..len]);
+                        callback(idx, is_last, None, output.into());
+                        idx += 1;
+                    }
+                    _ = tokio::time::delay_until(timeout_at) => {
+                        error!("work_as_user func timeout");
+                        kill_process_group(pid);
+                        Err("command timeout, process killed")?;
+                    }
+                };
+            }
+
+            let exit_status = child
+                .wait_with_output()
+                .await
+                .map_err(|_| "wait command failed")?
+                .status;
+            if !exit_status.success() {
+                error!("work_as_user func exit failed: {}", exit_status);
+            }
+            let exit_code = exit_status.code().ok_or("command terminated abnormally")?;
+            callback(idx, is_last, Some(exit_code), Vec::new());
+            Ok(())
+        })
+}
+
 #[cfg(test)]
 mod test {
     use crate::common::utils::get_current_username;
-    #[cfg(unix)]
-    use crate::conpty::unix::ConPtyAdapter;
-    #[cfg(windows)]
-    use crate::conpty::windows::ConPtyAdapter;
-    use crate::conpty::PtyAdapter;
-    use log::info;
+    use crate::conpty::*;
+    use crate::executor::init_cmd;
+
+    use std::collections::HashMap;
     use std::time::Duration;
+
+    use log::info;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::time::timeout;
 
     #[tokio::test]
-    async fn test() {
+    async fn test_pty_session() {
         let user_name = get_current_username();
-
-        let session = ConPtyAdapter::default()
-            .openpty(&user_name, 200, 100, 0)
-            .unwrap();
+        let session = ConPtyAdapter::openpty(&user_name, 200, 100, 0).unwrap();
 
         let mut reader = tokio::fs::File::from_std(session.get_reader().unwrap());
         let mut writer = tokio::fs::File::from_std(session.get_writer().unwrap());
@@ -363,5 +414,149 @@ mod test {
         let result = output.to_string().contains("test");
         std::mem::drop(session);
         assert!(result);
+    }
+
+    #[test]
+    fn test_execute_stream() {
+        let params = test_execute_stream_data();
+        for p in params {
+            test_execute_stream_template(p.0, p.1, p.2, p.3);
+        }
+    }
+
+    fn test_execute_stream_template(
+        script: &str,
+        timeout: Option<u64>,
+        data_map: HashMap<u32, (bool, Option<i32>, Vec<u8>)>,
+        expect_result: PtyResult<()>,
+    ) {
+        let name = get_current_username();
+        let pty_session = ConPtyAdapter::openpty(&name, 100, 100, 0).unwrap();
+
+        let cb = Box::new(
+            move |idx: u32, is_last: bool, exit_code: Option<i32>, data: Vec<u8>| {
+                let (expect_is_last, expect_exit_code, expect_data) = data_map
+                    .get(&idx)
+                    .expect(&format!("idx `{idx}` not expect"));
+                // info!("idx:{idx}, is_last:{is_last}, exit_code:{exit_code:?}, data:{data:?}");
+                assert_eq!(*expect_is_last, is_last);
+                assert_eq!(*expect_exit_code, exit_code);
+                assert_eq!(*expect_data, data);
+            },
+        );
+        let cmd = init_cmd(script);
+        let res = pty_session.execute_stream(cmd, Some(cb), timeout);
+        assert_eq!(expect_result, res);
+    }
+
+    fn test_execute_stream_data() -> Vec<(
+        &'static str,
+        Option<u64>,
+        HashMap<u32, (bool, Option<i32>, Vec<u8>)>,
+        PtyResult<()>,
+    )> {
+        #[cfg(unix)]
+        let cmd_timeout = [
+            // Below data length with stderr
+            ("echo -n foo >&2", None),
+            // Below data length multiple outputs
+            ("echo -n foo; sleep 0.5; echo -n foo", None),
+            // Exceeding data length
+            ("echo -n foo; echo -n foo", None),
+            // Timeout without output
+            ("while true; do sleep 100; done", Some(1)),
+            // Timeout with exceeding data length multiple output
+            ("while true; do echo -n foofoo; sleep 0.7; done", Some(1)),
+            // Failed without output
+            ("exit 1", None),
+            // Failed with output
+            ("echo -n foo; exit 1", None),
+        ];
+        #[cfg(windows)]
+        let cmd_timeout = [
+            // Below data length with stderr
+            (r#"[Console]::Error.Write("foo")"#, None),
+            // Below data length multiple outputs
+            (
+                r#"[Console]::Write("foo"); Start-Sleep -Seconds 0.5; [Console]::Error.Write("foo")"#,
+                None,
+            ),
+            // Exceeding data length
+            (r#"[Console]::Write("foofoo")"#, None),
+            // Timeout without output
+            ("while ($true) { Start-Sleep -Seconds 100 }", Some(1)),
+            // Timeout with exceeding data length multiple output
+            (
+                r#"while ($true) { [Console]::Write("foofoo"); Start-Sleep -Seconds 0.7 }"#,
+                Some(1),
+            ),
+            // Failed without output
+            ("exit 1", None),
+            // Failed with output
+            (r#"[Console]::Write("foo"); exit 1"#, None),
+        ];
+
+        let expect = vec![
+            (
+                // Below data length with stderr
+                HashMap::from([
+                    (0, (false, None, b"foo".to_vec())),
+                    (1, (true, Some(0), vec![])),
+                ]),
+                Ok(()),
+            ),
+            (
+                // Below data length multiple outputs
+                HashMap::from([
+                    (0, (false, None, b"foo".to_vec())),
+                    (1, (false, None, b"foo".to_vec())),
+                    (2, (true, Some(0), vec![])),
+                ]),
+                Ok(()),
+            ),
+            (
+                // Exceeding data length
+                HashMap::from([
+                    (0, (false, None, b"foofo".to_vec())),
+                    (1, (false, None, b"o".to_vec())),
+                    (2, (true, Some(0), vec![])),
+                ]),
+                Ok(()),
+            ),
+            (
+                // Timeout without output
+                HashMap::new(),
+                Err("command timeout, process killed".to_owned()),
+            ),
+            (
+                // Timeout with exceeding data length multiple output
+                HashMap::from([
+                    (0, (false, None, b"foofo".to_vec())),
+                    (1, (false, None, b"o".to_vec())),
+                    (2, (false, None, b"foofo".to_vec())),
+                    (3, (false, None, b"o".to_vec())),
+                ]),
+                Err("command timeout, process killed".to_owned()),
+            ),
+            (
+                // Failed without output
+                HashMap::from([(0, (true, Some(1), vec![]))]),
+                Ok(()),
+            ),
+            (
+                // Failed with output
+                HashMap::from([
+                    (0, (false, None, b"foo".to_vec())),
+                    (1, (true, Some(1), vec![])),
+                ]),
+                Ok(()),
+            ),
+        ];
+
+        cmd_timeout
+            .iter()
+            .zip(expect)
+            .map(|(&(a, b), (c, d))| (a, b, c, d))
+            .collect()
     }
 }

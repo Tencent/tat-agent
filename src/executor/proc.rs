@@ -1,97 +1,51 @@
 #[cfg(unix)]
-use crate::executor::{unix::UnixCommand, CMD_TYPE_SHELL};
+use crate::executor::CMD_TYPE_SHELL;
 #[cfg(windows)]
-use crate::executor::{windows::WindowsCommand, CMD_TYPE_BAT, CMD_TYPE_POWERSHELL};
+use crate::executor::{CMD_TYPE_BAT, CMD_TYPE_POWERSHELL};
+#[cfg(windows)]
+use crate::network::types::UTF8_BOM_HEADER;
 
 use crate::common::utils::get_now_secs;
+use crate::executor::{decode_output, kill_process_group, SystemCommand};
 use crate::network::cos::{ObjectAPI, COS};
 use crate::network::urls::get_meta_url;
 use crate::network::{InvokeAPIAdapter, MetadataAPIAdapter};
-use crate::ontime::timer::Timer;
 
-use std::fmt;
+#[cfg(test)]
+use std::fmt::{self, Debug};
+
 use std::fs::{create_dir_all, File, OpenOptions};
 use std::io::Write;
+use std::ops::Deref;
 use std::path::Path;
-use std::sync::atomic::Ordering::SeqCst;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering::SeqCst};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use log::{debug, error, info, warn};
+use tokio::io::AsyncReadExt;
 use tokio::process::Child;
+use tokio::time::Instant;
 
 use super::FINISH_RESULT_TERMINATED;
+const BUF_SIZE: usize = 1024;
 const OUTPUT_BYTE_LIMIT_EACH_REPORT: usize = 30 * 1024;
 const FINISH_RESULT_TIMEOUT: &str = "TIMEOUT";
 const FINISH_RESULT_SUCCESS: &str = "SUCCESS";
 const FINISH_RESULT_FAILED: &str = "FAILED";
 const FINISH_RESULT_START_FAILED: &str = "START_FAILED";
 
+#[cfg(not(test))]
 #[async_trait]
-pub trait MyCommand {
+pub trait MyCommand: Deref<Target = BaseCommand> {
     async fn run(&mut self) -> Result<(), String>;
-    fn cancel(&self) -> Result<(), String> {
-        self.get_base().cancel()
-    }
-    fn cur_output_len(&self) -> usize {
-        self.get_base().cur_output_len()
-    }
+}
 
-    fn next_output(&mut self) -> (Vec<u8>, u32, u64) {
-        self.get_base().next_output()
-    }
-
-    fn is_finished(&self) -> bool {
-        self.get_base().is_finished()
-    }
-
-    fn is_started(&self) -> bool {
-        self.get_base().is_started()
-    }
-
-    fn exit_code(&self) -> i32 {
-        self.get_base().exit_code()
-    }
-
-    fn pid(&self) -> u32 {
-        self.get_base().pid()
-    }
-
-    fn is_timeout(&self) -> bool {
-        self.get_base().is_timeout()
-    }
-
-    fn finish_result(&self) -> String {
-        self.get_base().finish_result()
-    }
-
-    fn err_info(&self) -> String {
-        self.get_base().err_info()
-    }
-
-    fn finish_time(&self) -> u64 {
-        self.get_base().finish_time()
-    }
-
-    fn output_url(&self) -> String {
-        self.get_base().output_url()
-    }
-
-    fn output_err_info(&self) -> String {
-        self.get_base().output_err_info()
-    }
-
-    fn open_log_file(&self) -> Result<File, String> {
-        self.get_base().open_log_file()
-    }
-
-    fn store_path_check(&self) -> Result<(), String> {
-        self.get_base().store_path_check()
-    }
-
-    fn debug(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result;
-    fn get_base(&self) -> Arc<BaseCommand>;
+#[cfg(test)]
+#[async_trait]
+pub trait MyCommand: Deref<Target = BaseCommand> + Debug {
+    async fn run(&mut self) -> Result<(), String>;
 }
 
 pub fn new(
@@ -106,39 +60,25 @@ pub fn new(
     cos_prefix: &str,
     task_id: &str,
 ) -> Result<Box<dyn MyCommand + Send>, String> {
-    match cmd_type {
-        #[cfg(unix)]
-        CMD_TYPE_SHELL => Ok(Box::new(UnixCommand::new(
-            cmd_path,
-            username,
-            work_dir,
-            timeout,
-            bytes_max_report,
-            log_file_path,
-            cos_bucket,
-            cos_prefix,
-            task_id,
-        ))),
-        #[cfg(windows)]
-        CMD_TYPE_POWERSHELL | CMD_TYPE_BAT => Ok(Box::new(WindowsCommand::new(
-            cmd_path,
-            username,
-            work_dir,
-            timeout,
-            bytes_max_report,
-            log_file_path,
-            cos_bucket,
-            cos_prefix,
-            task_id,
-        ))),
-        _ => Err(format!("invalid cmd_type: {}", cmd_type)),
-    }
-}
+    #[cfg(unix)]
+    let is_matches = matches!(cmd_type, CMD_TYPE_SHELL);
+    #[cfg(windows)]
+    let is_matches = matches!(cmd_type, CMD_TYPE_POWERSHELL | CMD_TYPE_BAT);
 
-impl std::fmt::Debug for std::boxed::Box<dyn MyCommand + Send> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.debug(f)
+    if is_matches {
+        return Ok(Box::new(SystemCommand::new(
+            cmd_path,
+            username,
+            work_dir,
+            timeout,
+            bytes_max_report,
+            log_file_path,
+            cos_bucket,
+            cos_prefix,
+            task_id,
+        )));
     }
+    Err(format!("invalid cmd_type: {}", cmd_type))
 }
 
 pub struct BaseCommand {
@@ -180,8 +120,6 @@ pub struct BaseCommand {
     pub finish_time: Arc<AtomicU64>,
     // err_info when command start fail
     pub err_info: Mutex<String>,
-    //timer_key and timer_id
-    pub timer_info: Mutex<(u128, u64)>,
 }
 
 impl BaseCommand {
@@ -220,9 +158,9 @@ impl BaseCommand {
             is_timeout: Arc::new(AtomicBool::new(false)),
             finish_time: Arc::new(AtomicU64::new(timestamp)),
             err_info: Mutex::new("".to_string()),
-            timer_info: Mutex::new((0, 0)),
         }
     }
+
     // length of bytes, not chars
     pub fn cur_output_len(&self) -> usize {
         self.output.lock().expect("lock failed").len()
@@ -289,10 +227,7 @@ impl BaseCommand {
             .unwrap_or(-1)
     }
 
-    pub fn cmd_path(&self) -> &String {
-        &self.cmd_path
-    }
-
+    #[cfg(test)]
     pub fn pid(&self) -> u32 {
         self.pid.lock().unwrap().unwrap_or(0)
     }
@@ -331,46 +266,77 @@ impl BaseCommand {
 
     pub fn output_url(&self) -> String {
         let output_url = self.output_url.lock().unwrap();
-        return String::from(output_url.as_str());
+        String::from(output_url.as_str())
     }
 
     pub fn output_err_info(&self) -> String {
         let err_info = self.output_err_info.lock().unwrap();
-        return String::from(err_info.as_str());
+        String::from(err_info.as_str())
     }
 
-    pub fn add_timeout_timer(&self) {
+    pub fn on_timeout(&self) {
         let pid = self.pid.lock().unwrap().unwrap();
-        let timeout = self.timeout;
         let killed = self.killed.clone();
         let is_timeout = self.is_timeout.clone();
 
-        *self.timer_info.lock().unwrap() =
-            Timer::get_instance()
-                .lock()
-                .unwrap()
-                .add_task(timeout, move || {
-                    info!("process `{}` timeout, timeout value: {}", pid, timeout);
-                    let ret = killed.compare_exchange(false, true, SeqCst, SeqCst);
-                    if ret.is_err() {
-                        info!("pid `{}` already killed, ignore this timer task", pid);
-                    } else {
-                        is_timeout.store(true, SeqCst);
-                        BaseCommand::kill_process_group(pid);
-                        info!("pid `{}` killed because of timeout", pid);
-                    }
-                });
+        info!("process `{}` timeout, timeout value: {}", pid, self.timeout);
+        let ret = killed.compare_exchange(false, true, SeqCst, SeqCst);
+        if ret.is_err() {
+            return info!("pid `{}` already killed", pid);
+        }
+        is_timeout.store(true, SeqCst);
+        kill_process_group(pid);
+        info!("pid `{}` killed because of timeout", pid);
     }
 
-    pub fn del_timeout_timer(&self) {
-        let (key, id) = *self.timer_info.lock().unwrap();
-        let deleted = Timer::get_instance().lock().unwrap().del_task(key, id);
-        if deleted {
-            debug!("timer task deleted, task_key:{key}, task_id:{id}");
-        } else {
-            debug!(
-                "timer task NOT deleted, maybe task already scheduled, task_key:{key}, task_id:{id}"
-            );
+    pub async fn read_output<T>(&self, mut reader: T, mut log_file: File)
+    where
+        T: AsyncReadExt + Unpin,
+    {
+        let timeout_at = Instant::now() + Duration::from_secs(self.timeout);
+        let pid = self.pid.lock().unwrap().unwrap();
+        let need_cos = !self.cos_bucket.is_empty();
+        let mut buffer = [0u8; BUF_SIZE];
+        #[cfg(windows)]
+        let mut utf8_bom_checked = false;
+
+        loop {
+            tokio::select! {
+                len = reader.read(&mut buffer) => {
+                    #[allow(unused_mut)] // Windows needs MUT, Unix does not.
+                    let mut buf = match len {
+                        Err(err) => break error!("read output error:{}, pid:{}", err, pid),
+                        Ok(0) => break info!("read output finished normally, pid:{}", pid),
+                        Ok(len) => &buffer[..len],
+                    };
+
+                    // win2008 check utf8 bom header, start with 0xEF, 0xBB, 0xBF,
+                    #[cfg(windows)]
+                    if !utf8_bom_checked {
+                        utf8_bom_checked = true;
+                        if buffer.starts_with(&UTF8_BOM_HEADER) {
+                            buf = &buf[3..];
+                        }
+                    }
+
+                    let output = &decode_output(buf);
+                    self.append_output(output);
+                    if need_cos {
+                        if let Err(e) = log_file.write(output) {
+                            error!("write output file failed: {:?}", e)
+                        }
+                    }
+                }
+                _ = tokio::time::delay_until(timeout_at) => {
+                    self.on_timeout();
+                    break;
+                }
+            }
+        }
+
+        if need_cos {
+            let invocation_task_id = self.task_id.clone();
+            self.upload_log_cos(invocation_task_id).await;
         }
     }
 
@@ -403,7 +369,7 @@ impl BaseCommand {
                 if ret.is_err() {
                     info!("pid `{}` already killed, ignore cancel request", pid);
                 } else {
-                    BaseCommand::kill_process_group(pid);
+                    kill_process_group(pid);
                     info!("pid `{}` killed because of cancel", pid);
                 }
                 Ok(())
@@ -412,7 +378,7 @@ impl BaseCommand {
         }
     }
 
-    fn store_path_check(&self) -> Result<(), String> {
+    pub fn store_path_check(&self) -> Result<(), String> {
         if self.cmd_path.is_empty() {
             let ret = format!("start failed because script file store failed.");
             *self.err_info.lock().unwrap() =
@@ -422,7 +388,7 @@ impl BaseCommand {
         Ok(())
     }
 
-    fn open_log_file(&self) -> Result<File, String> {
+    pub fn open_log_file(&self) -> Result<File, String> {
         let parent = Path::new(&self.log_file_path).parent();
         match parent {
             Some(parent) => create_dir_all(parent).map_err(|e| {
@@ -525,8 +491,11 @@ impl BaseCommand {
         object_name.push_str(format!("/{}.log", task_id).as_str());
         object_name
     }
+}
 
-    pub fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+#[cfg(test)]
+impl Debug for BaseCommand {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let output_clone;
         {
             let output = self.output.lock().expect("lock failed");
@@ -557,7 +526,6 @@ impl BaseCommand {
             .field("is_timeout", &self.is_timeout)
             .field("finish_time", &self.finish_time)
             .field("err_info", &self.err_info)
-            .field("timer_info", &self.timer_info)
             .field("cos_bucket", &self.cos_bucket)
             .field("cos_prefix", &self.cos_prefix)
             .field("task_id", &self.task_id)
@@ -569,12 +537,11 @@ impl BaseCommand {
 mod tests {
     use super::*;
     use crate::common::utils::{gen_rand_str_with, get_current_username};
-    use crate::ontime::timer::Timer;
 
     use std::fs;
     use std::fs::File;
     use std::io::Write;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     use base64::{engine::general_purpose::STANDARD, Engine};
     use log::info;
@@ -1042,24 +1009,8 @@ mod tests {
         assert!(ret.is_ok());
         let instant = Instant::now();
         info!("{} running, pid:{}", filename, cmd.pid());
-        let mut cnt = 0;
-        for _ in 0..5 {
-            {
-                let timer = Timer::get_instance();
-                let mut timer = timer.lock().unwrap();
-                info!("timer:{:?}", timer);
-                let tasks = timer.tasks_to_schedule();
-                cnt += tasks.len();
-                for task in tasks {
-                    task.run_task();
-                }
-            }
-            info!("total {} tasks run", cnt);
+        while !cmd.is_finished() {
             delay_for(Duration::from_secs(1)).await;
-            let finished = cmd.is_finished();
-            if finished {
-                break;
-            }
         }
         info!("cmd: {:?}", cmd);
         info!("finish result: {}", cmd.finish_result());

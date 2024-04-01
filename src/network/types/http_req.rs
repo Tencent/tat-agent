@@ -151,8 +151,8 @@ impl InvocationNormalTask {
             .decode(&self.command)
             .map_err(|e| format!("decode error: {:?}", e))?;
 
-        //powershell dont support utf8, but support utf8 with bom.
-        //utf8 bom start with 0xEE, 0xBB, 0xBF,
+        // powershell dont support utf8, but support utf8 with bom.
+        // utf8 bom start with 0xEF, 0xBB, 0xBF,
         if self.command_type == CMD_TYPE_POWERSHELL {
             command.splice(0..0, UTF8_BOM_HEADER);
         }

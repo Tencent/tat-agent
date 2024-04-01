@@ -279,21 +279,13 @@ impl Handler for BsonHandler<ReadFileReq> {
 
 #[cfg(windows)]
 fn get_win32_ready_drives() -> Vec<String> {
-    let mut logical_drives = Vec::new();
-    let mut driver_bit = unsafe { GetLogicalDrives() };
-    let mut label_base = 'A';
-    while driver_bit != 0 {
-        if driver_bit & 1 == 1 {
-            let disk_label = label_base.to_string() + ":/";
-            let disk_type = unsafe { GetDriveTypeW(str2wsz(&disk_label).as_ptr()) };
-            if disk_type == DRIVE_FIXED {
-                logical_drives.push(disk_label);
-            }
-        }
-        label_base = std::char::from_u32((label_base as u32) + 1).expect("invalid char");
-        driver_bit >>= 1;
-    }
-    logical_drives
+    let driver_bit = unsafe { GetLogicalDrives() };
+    ('A'..='Z')
+        .enumerate()
+        // construct label if the corresponding bit is set
+        .filter_map(|(n, lable)| ((driver_bit >> n) & 1 == 1).then(|| format!("{lable}:/")))
+        .filter(|l| unsafe { GetDriveTypeW(str2wsz(&l).as_ptr()) } == DRIVE_FIXED)
+        .collect()
 }
 
 //windows path format:  /d:/work

@@ -1,5 +1,5 @@
-use super::gather::PtyGather;
 use super::parser::{do_parse, AnsiItem, EscapeItem};
+use super::{gather::PtyGather, pty::execute_stream};
 use super::{
     PtyAdapter, PtyBase, PtyExecCallback, PtyResult, PTY_FLAG_ENABLE_BLOCK, PTY_INSPECT_WRITE,
 };
@@ -10,10 +10,10 @@ use crate::conpty::bind::{
     winpty_free, winpty_open, winpty_set_size, winpty_spawn, winpty_spawn_config_free,
     winpty_spawn_config_new, winpty_t,
 };
-use crate::executor::proc::BaseCommand;
-use crate::executor::windows::{anon_pipe, get_user_token, load_environment};
+use crate::executor::windows::{
+    anon_pipe, get_user_token, kill_process_group, load_environment, prepare_cmd,
+};
 
-use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::Write;
@@ -21,7 +21,6 @@ use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::FromRawHandle;
 use std::os::windows::prelude::AsRawHandle;
 use std::os::windows::raw::HANDLE;
-use std::process::Command;
 use std::ptr::null_mut;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -49,24 +48,22 @@ use winapi::um::winnt::{
 struct Inner {
     pty_ptr: Arc<Mutex<Box<winpty_t>>>,
     token: Arc<File>,
+    username: String,
 }
 
 fn build_envp(token: HANDLE) -> Vec<u16> {
-    let mut envp: Vec<u16> = Vec::new();
-    let mut env_map: HashMap<String, String> = HashMap::new();
-
-    load_environment(token, &mut env_map);
+    let mut envp = Vec::new();
+    let env_map = load_environment(token);
     if env_map.is_empty() {
         envp.push(0);
-    } else {
-        for (k, v) in env_map {
-            let mut kdata = OsStr::new(&k).encode_wide().collect::<Vec<_>>();
-            envp.append(&mut kdata);
-            envp.push('=' as u16);
-            let mut vdata = OsStr::new(&v).encode_wide().collect::<Vec<_>>();
-            envp.append(&mut vdata);
-            envp.push(0);
-        }
+    }
+    for (k, v) in env_map {
+        let mut kdata = OsStr::new(&k).encode_wide().collect();
+        envp.append(&mut kdata);
+        envp.push('=' as u16);
+        let mut vdata = OsStr::new(&v).encode_wide().collect();
+        envp.append(&mut vdata);
+        envp.push(0);
     }
     envp.push(0);
     envp
@@ -157,16 +154,15 @@ fn openpty(user_name: &str, cols: u16, rows: u16) -> PtyResult<Inner> {
         Ok(Inner {
             pty_ptr: Arc::new(Mutex::new(Box::from_raw(pty_ptr))),
             token: Arc::new(token),
+            username: user_name.to_owned(),
         })
     }
 }
 
-#[derive(Default)]
-pub struct ConPtyAdapter {}
+pub struct ConPtyAdapter;
 
 impl PtyAdapter for ConPtyAdapter {
     fn openpty(
-        &self,
         user_name: &str,
         cols: u16,
         rows: u16,
@@ -197,7 +193,7 @@ impl PtyBase for WinPtySession {
                 err_ptr,
             );
         }
-        return Ok(());
+        Ok(())
     }
 
     fn get_reader(&self) -> PtyResult<File> {
@@ -281,9 +277,8 @@ impl PtyBase for WinPtySession {
             if handle != INVALID_HANDLE_VALUE {
                 CloseHandle(handle);
                 return Ok(());
-            } else {
-                return Err("access deny".to_string());
             }
+            return Err("access deny".to_string());
         }
     }
 
@@ -299,12 +294,24 @@ impl PtyBase for WinPtySession {
 
     fn execute_stream(
         &self,
-        _cmd: Command,
-        _callback: Option<PtyExecCallback>,
-        _timeout: Option<u64>,
+        cmd: tokio::process::Command,
+        callback: Option<PtyExecCallback>,
+        timeout: Option<u64>,
     ) -> PtyResult<()> {
-        // Windows system not supported currently.
-        todo!()
+        let username = self
+            .inner
+            .lock()
+            .expect("inner lock failed")
+            .username
+            .clone();
+        let token = self.inner.lock().expect("inner lock failed").token.clone();
+        let work_dir = wsz2string(get_cwd(token.as_raw_handle()).as_ptr());
+        let (receiver, sender) = anon_pipe(true)?;
+        let cmd = prepare_cmd(cmd, &username, &work_dir, sender)?;
+
+        let callback = callback.unwrap_or_else(|| Box::new(|_, _, _, _| ()));
+        let timeout = timeout.unwrap_or(60);
+        execute_stream(cmd, &callback, timeout, &token, receiver, &username)
     }
 }
 
@@ -315,7 +322,7 @@ impl Drop for WinPtySession {
                 winpty_agent_process(self.inner.lock().unwrap().pty_ptr.lock().unwrap().as_mut())
                     as HANDLE;
             let pid = GetProcessId(process);
-            BaseCommand::kill_process_group(pid);
+            kill_process_group(pid);
             winpty_free(self.inner.lock().unwrap().pty_ptr.lock().unwrap().as_mut());
         }
     }

@@ -1,7 +1,6 @@
 use crate::common::evbus::EventBus;
 use crate::ontime::leak_check::check_resource_leak;
 use crate::ontime::self_update::{try_restart_agent, try_update};
-use crate::ontime::timer::Timer;
 
 use std::ops::AddAssign;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -49,8 +48,6 @@ pub fn run(
             check_ontime_kick(&mut instant_kick, dispatcher.clone());
             // do self update in a new thread, will not block current thread
             check_ontime_update(&mut instant_update, &self_updating, &need_restart);
-            // run the tasks whose timer is arrived, generally very quick task
-            schedule_timer_task();
             // check running tasks number and need_restart flag to do graceful restart when no running tasks
             check_running_task_num(&mut instant_check_tasks, &need_restart, &running_task_num);
             thread::sleep(Duration::from_secs(ONTIME_THREAD_INTERVAL));
@@ -72,24 +69,6 @@ fn register_update_handlers(
         }
         try_update(self_updating_clone.clone(), need_restart_clone.clone());
     });
-}
-
-fn schedule_timer_task() {
-    let tasks;
-    {
-        let timer = Timer::get_instance();
-        let mut timer = timer.lock().expect("sched lock failed");
-        debug!("current status of timer:{:?}", timer);
-        tasks = timer.tasks_to_schedule();
-    }
-    // release the lock and then run each task
-    let cnt = tasks.len();
-    for task in tasks {
-        task.run_task();
-    }
-    if cnt > 0 {
-        info!("total {} timer tasks scheduled", cnt);
-    }
 }
 
 fn check_interval_elapsed(instant_time: &mut SystemTime, secs: u64) -> bool {

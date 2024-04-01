@@ -165,7 +165,7 @@ pub fn get_current_region() -> String {
 pub fn get_available_url(region: Option<&str>, url_type: UrlType) -> String {
     let region = region
         .map(|s| s.to_owned())
-        .unwrap_or(get_register_region().unwrap_or_default());
+        .unwrap_or_else(|| get_register_region().unwrap_or_default());
     if region.is_empty() || region == get_current_region() {
         return find_available_url(url_type.intranet_urls(), dns_resolve);
     }

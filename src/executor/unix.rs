@@ -1,17 +1,15 @@
 use crate::executor::proc::{BaseCommand, MyCommand};
 use std::collections::HashMap;
-use std::fmt::Debug;
-use std::fs::{remove_file, File};
-use std::io::Write;
+use std::fs::{read_to_string, remove_file};
+use std::ops::Deref;
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
-use std::{env, fmt, io};
+use std::{env, io};
 
 use async_trait::async_trait;
 use libc;
-use log::{debug, error, info, warn};
-use tokio::io::{AsyncReadExt, BufReader};
+use log::warn;
 use tokio::process::{Child, Command};
 use users::os::unix::UserExt;
 use users::{get_user_by_name, User};
@@ -48,30 +46,30 @@ impl UnixCommand {
     }
 
     fn user_check(&self) -> Result<User, String> {
-        let user = get_user_by_name(self.base.username.as_str());
-        return match user {
+        let user = get_user_by_name(self.username.as_str());
+        match user {
             Some(user) => Ok(user),
             None => {
                 let ret = format!(
                     "UnixCommand {} start failed, working_directory: {}, username: {}, user not exists",
-                    self.base.cmd_path, self.base.work_dir, self.base.username
+                    self.cmd_path, self.work_dir, self.username
                 );
-                *self.base.err_info.lock().unwrap() =
-                    format!("UserNotExists: user `{}` not exists", self.base.username);
+                *self.err_info.lock().unwrap() =
+                    format!("UserNotExists: user `{}` not exists", self.username);
                 Err(ret)
             }
-        };
+        }
     }
 
     fn work_dir_check(&self) -> Result<(), String> {
-        if !working_directory_exists(self.base.work_dir.as_str()) {
+        if !working_directory_exists(self.work_dir.as_str()) {
             let ret = format!(
                 "UnixCommand {} start failed, working_directory: {}, username: {}, working directory not exists",
-                self.base.cmd_path, self.base.work_dir, self.base.username
+                self.cmd_path, self.work_dir, self.username
             );
-            *self.base.err_info.lock().unwrap() = format!(
+            *self.err_info.lock().unwrap() = format!(
                 "DirectoryNotExists: working_directory `{}` not exists",
-                self.base.work_dir
+                self.work_dir
             );
             return Err(ret);
         }
@@ -79,64 +77,24 @@ impl UnixCommand {
     }
 
     fn prepare_cmd(&self, user: User) -> Command {
-        // find shell
-        let mut shell_path = cmd_path("bash");
-        let (shell, login_init) = if shell_path.is_some() {
-            let login_init = ". /etc/profile 2> /dev/null ; \
-                              . ~/.bash_profile 2> /dev/null || . ~/.bashrc 2> /dev/null ; ";
-            ("bash", login_init)
-        } else {
-            shell_path = cmd_path("sh");
-            ("sh", "")
-        };
-
-        //build envs
-        let home_path = match user.home_dir().to_str() {
-            Some(dir) => dir.to_string(),
-            None => "/tmp".to_string(),
-        };
-        let envs = build_envs(
-            &self.base.username,
-            &home_path,
-            shell_path.unwrap().as_str(),
-        );
-
-        //build command
-        let entrypoint = format!("{}{}", login_init, self.base.cmd_path());
-        let mut cmd = Command::new(shell);
-        cmd.args(&["-c", entrypoint.as_str()])
-            .uid(user.uid())
-            .gid(user.primary_group_id())
-            .current_dir(self.base.work_dir.clone())
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .envs(envs);
-
-        unsafe {
-            // Redirect stderr to stdout, thus the output order will be exactly same with origin
-            cmd.pre_exec(dup2_1_2);
-            // The command and its sub-processes will be in an independent process group,
-            // thus we can kill them cleanly by kill the whole process group when we need.
-            cmd.pre_exec(own_process_group);
-        }
-        cmd
+        let cmd = init_cmd(&self.cmd_path);
+        prepare_cmd(cmd, &user, &self.work_dir)
     }
 
     fn spawn_cmd(&self, user: User) -> Result<Child, String> {
         let child = self.prepare_cmd(user).spawn().map_err(|e| {
-            *self.base.err_info.lock().unwrap() = e.to_string();
+            *self.err_info.lock().unwrap() = e.to_string();
             // remove log_file when process run failed.
-            if let Err(e) = remove_file(self.base.log_file_path.as_str()) {
+            if let Err(e) = remove_file(self.log_file_path.as_str()) {
                 warn!("remove log file failed: {:?}", e)
             }
             format!(
                 "UnixCommand {}, working_directory: {}, start failed: {}",
-                self.base.cmd_path, self.base.work_dir, e
+                self.cmd_path, self.work_dir, e
             )
         })?;
-        // *self.base.pid.lock().unwrap() = Some(child.id().unwrap());
-        *self.base.pid.lock().unwrap() = Some(child.id());
+        // *self.pid.lock().unwrap() = Some(child.id().unwrap());
+        *self.pid.lock().unwrap() = Some(child.id());
         Ok(child)
     }
 }
@@ -146,96 +104,82 @@ impl MyCommand for UnixCommand {
     async fn run(&mut self) -> Result<(), String> {
         // pre check before spawn cmd
         self.store_path_check()?;
-
         self.work_dir_check()?;
 
         let user = self.user_check()?;
-
         let log_file = self.open_log_file()?;
-
         let mut child = self.spawn_cmd(user)?;
-
         let base = self.base.clone();
         // async read output.
         tokio::spawn(async move {
-            base.add_timeout_timer();
-            base.read_output(&mut child, log_file).await;
-            base.del_timeout_timer();
+            let reader = child.stdout.take().unwrap();
+            base.read_output(reader, log_file).await;
             base.process_finish(&mut child).await;
         });
         Ok(())
     }
-
-    fn debug(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.fmt(f)
-    }
-
-    fn get_base(&self) -> Arc<BaseCommand> {
-        self.base.clone()
-    }
 }
 
-impl Debug for UnixCommand {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+#[cfg(test)]
+impl std::fmt::Debug for UnixCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.base.fmt(f)
     }
 }
 
-impl BaseCommand {
-    async fn read_output(&self, child: &mut Child, mut log_file: File) {
-        const BUF_SIZE: usize = 1024;
+impl Deref for UnixCommand {
+    type Target = BaseCommand;
 
-        // let pid = child.id().unwrap();
-        let pid = child.id();
-        let stdout = child.stdout.take();
-        let mut buffer: [u8; BUF_SIZE] = [0; BUF_SIZE];
-        let mut reader = BufReader::new(stdout.unwrap());
-        let need_cos = !self.cos_bucket.is_empty();
-
-        loop {
-            let len = match reader.read(&mut buffer[..]).await {
-                Err(err) => break error!("read stdout failed: {:?}", err),
-                Ok(0) => break info!("read output finished normally, pid:{}", pid),
-                Ok(len) => len,
-            };
-
-            debug!(
-                "output:[{}], may_contain_binary:{}, pid:{}, len:{}",
-                String::from_utf8_lossy(&buffer[..len]),
-                String::from_utf8(Vec::from(&buffer[..len])).is_err(),
-                pid,
-                len
-            );
-
-            self.append_output(&buffer[..len]);
-
-            if need_cos {
-                if let Err(e) = log_file.write(&buffer[..len]) {
-                    error!("write output file failed: {:?}", e)
-                }
-            }
-        }
-        if need_cos {
-            let invocation_task_id = self.task_id.clone();
-            self.upload_log_cos(invocation_task_id).await;
-        }
+    fn deref(&self) -> &Self::Target {
+        &self.base
     }
+}
 
-    pub fn kill_process_group(pid: u32) {
-        let pid = pid as i32;
-        unsafe {
-            // send SIGKILL to the process group of pid, note the -1
-            // see more details at man 2 kill
-            libc::kill(pid * -1, 9);
-        }
+pub fn init_cmd(script: &str) -> Command {
+    let (shell, _, login_init) = find_shell();
+    let entrypoint = format!("{} {}", login_init, script);
+    let mut cmd = Command::new(shell);
+    cmd.args(&["-c", &entrypoint]);
+    cmd
+}
+
+pub fn prepare_cmd(mut cmd: Command, user: &User, work_dir: &str) -> Command {
+    // let shell_path = cmd_path(cmd.as_std().get_program())
+    let (_, shell_path, _) = find_shell();
+    let home_path = user.home_dir().to_str().unwrap_or("/tmp").to_owned();
+    let envs = build_envs(user.name().to_str().unwrap(), &home_path, &shell_path);
+
+    cmd.uid(user.uid())
+        .gid(user.primary_group_id())
+        .current_dir(work_dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .envs(envs);
+    unsafe {
+        // Redirect stderr to stdout, thus the output order will be exactly same with origin
+        cmd.pre_exec(redirect_stderr_to_stdout);
+        // The command and its sub-processes will be in an independent process group,
+        // thus we can kill them cleanly by kill the whole process group when we need.
+        cmd.pre_exec(own_process_group);
+    }
+    cmd
+}
+
+pub fn kill_process_group(pid: u32) {
+    let pid = pid as i32;
+    unsafe {
+        // send SIGKILL to the process group of pid, note the -1
+        // see more details at man 2 kill
+        libc::kill(pid * -1, 9);
     }
 }
 
 fn working_directory_exists(path: &str) -> bool {
-    return Path::new(path).exists();
+    Path::new(path).exists()
 }
 
-fn dup2_1_2() -> Result<(), io::Error> {
+fn redirect_stderr_to_stdout() -> Result<(), io::Error> {
     if unsafe { libc::dup2(1, 2) } != -1 {
         Ok(())
     } else {
@@ -264,53 +208,50 @@ pub fn cmd_path(cmd: &str) -> Option<String> {
 }
 
 fn load_envs(content: String) -> HashMap<String, String> {
-    let mut envs: HashMap<String, String> = HashMap::new();
-    let lines: Vec<&str> = content.split('\n').collect();
-    for mut line in lines {
-        line = line.trim_start();
-        if line.len() == 0 || line.starts_with("#") {
-            continue;
-        }
-        if line.starts_with("export ") {
-            line = &line[7..];
-        }
-        let env_part: Vec<&str> = line.splitn(2, '=').collect();
-        if env_part.len() == 2 {
-            let key = env_part[0].trim_start().to_string();
-            let mut value = env_part[1].to_string();
-            if value.starts_with('"') && value.ends_with('"')
-                || value.ends_with('\'') && value.starts_with('\'')
-            {
-                value.remove(0);
-                value.pop();
+    content
+        .lines()
+        .map(|l| l.trim_start())
+        .filter(|l| !(l.starts_with('#') || l.is_empty()))
+        .map(|l| l.strip_prefix("export ").unwrap_or(l))
+        .map_while(|l| l.split_once('='))
+        .map(|(k, mut v)| {
+            if v.starts_with('"') && v.ends_with('"') || v.starts_with("'") && v.ends_with("'") {
+                v = &v[1..v.len() - 1]
             }
-            envs.insert(key, value);
-        }
-    }
-    envs
+            (k.trim_start().to_owned(), v.to_owned())
+        })
+        .collect()
 }
 
 pub fn build_envs(username: &str, home_path: &str, shell_path: &str) -> HashMap<String, String> {
-    let mut envs = HashMap::<String, String>::new();
-    envs.insert("SHELL".to_string(), shell_path.to_string());
-    envs.insert("HOME".to_string(), home_path.to_string());
-    envs.insert("USER".to_string(), username.to_string());
-    envs.insert("LOGNAME".to_string(), username.to_string());
-    envs.insert("USERNAME".to_string(), username.to_string());
-    envs.insert(
-        "MAIL".to_string(),
-        format!("/var/spool/mail/{}", username.to_string()),
-    );
-    envs.insert("TERM".to_string(), "xterm-color".to_string());
+    let envs = [
+        ("SHELL", shell_path),
+        ("HOME", home_path),
+        ("USER", username),
+        ("LOGNAME", username),
+        ("USERNAME", username),
+        ("MAIL", &format!("/var/spool/mail/{username}")),
+        ("TERM", "xterm-color"),
+    ];
+    let etc_envs = load_envs(read_to_string("/etc/environment").unwrap_or("".to_owned()));
+    envs.iter()
+        .map(|&(k, v)| (k.to_owned(), v.to_owned()))
+        .chain(etc_envs)
+        .collect()
+}
 
-    let etc_envs;
-    if let Ok(content) = std::fs::read_to_string("/etc/environment") {
-        etc_envs = load_envs(content);
-        for (key, value) in etc_envs.into_iter() {
-            envs.insert(key, value);
-        }
-    };
-    envs
+pub fn find_shell() -> (String, String, String) {
+    let bash_login_init =
+        ". /etc/profile 2> /dev/null; . ~/.bash_profile 2> /dev/null || . ~/.bashrc 2> /dev/null;";
+    let (shell, shell_path, login_init) = cmd_path("bash")
+        .map(|p| ("bash".to_owned(), p, bash_login_init.to_owned()))
+        .unwrap_or_else(|| ("sh".to_owned(), cmd_path("sh").unwrap(), "".to_owned()));
+    (shell, shell_path, login_init)
+}
+
+pub fn decode_output(v: &[u8]) -> &[u8] {
+    // Unix does not need decode
+    v
 }
 
 #[cfg(test)]

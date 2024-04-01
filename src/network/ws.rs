@@ -131,9 +131,9 @@ impl WsContext {
             let _ = runtime.block_on(runner);
             self.msg_sender.write().unwrap().take();
 
-            /*round 1: wait(WS_RECONNECT_INTERVAL_BASE + random(0,BASE + MIN))
+            /*round 1: wait(WS_RECONNECT_INTERVAL_BASE + random(0, BASE + MIN))
               ...
-            round n: wait(WS_RECONNECT_INTERVAL_BASE + random(0,max(BASE + MIN*4^n,MAX)))
+            round n: wait(WS_RECONNECT_INTERVAL_BASE + random(0, max(BASE + MIN*4^n, MAX)))
             */
             let wait_time = WS_RECONNECT_INTERVAL_BASE + rand::random::<u64>() % random_range;
             thread::sleep(time::Duration::from_secs(wait_time));
