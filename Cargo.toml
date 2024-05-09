@@ -1,13 +1,13 @@
 [package]
 name = "tat_agent"
-version = "1.0.15"
+version = "1.0.16"
 edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [dependencies]
-tokio = { version = "0.2.22", features = ["full"]}
-tokio01 = { version = "0.1.22", package = "tokio"}
-futures01 = { version = "0.1", package = "futures"}
+tokio = { version = "0.2.22", features = ["full"] }
+tokio01 = { version = "0.1.22", package = "tokio" }
+futures01 = { version = "0.1", package = "futures" }
 reqwest = { version = "0.10", features = ["blocking", "json", "stream"] }
 websocket = "0.26.2"
 bytes = "0.5.6"
@@ -48,30 +48,30 @@ procfs = "0.15.1"
 unix_mode = "0.1.3"
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3.9", features = [
-    "winsvc",
-    "winbase",
-    "winnt",
-    "stringapiset",
-    "winnls",
-    "wow64apiset",
-    "synchapi",
-    "namedpipeapi",
-    "lmaccess",
-    "lmapibuf",
-    "sddl",
-    "ntlsa",
-    "ntsecapi",
-    "lsalookup",
-    "libloaderapi",
-    "errhandlingapi",
-    "securitybaseapi",
-    "userenv",
-    "tlhelp32",
-    "psapi",
-    "memoryapi",
-    "subauth",
-    "winsock2",
-    "winreg"
+  "winsvc",
+  "winbase",
+  "winnt",
+  "stringapiset",
+  "winnls",
+  "wow64apiset",
+  "synchapi",
+  "namedpipeapi",
+  "lmaccess",
+  "lmapibuf",
+  "sddl",
+  "ntlsa",
+  "ntsecapi",
+  "lsalookup",
+  "libloaderapi",
+  "errhandlingapi",
+  "securitybaseapi",
+  "userenv",
+  "tlhelp32",
+  "psapi",
+  "memoryapi",
+  "subauth",
+  "winsock2",
+  "winreg",
 ] }
 codepage-strings = "1.0.2"
 ntapi = "0.4.1"

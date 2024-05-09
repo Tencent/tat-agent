@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.16] - 2024-05-09
+
+### Changed
+
+- Add new Dockerfile to build and run Linux agent
+
 ## [1.0.15] - 2024-03-26
 
 ### Changed

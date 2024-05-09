@@ -13,14 +13,14 @@ use url::Url;
 
 const METADATA_API_MOCK: &str = "http://mock-server:8000";
 const METADATA_API: &str = "http://metadata.tencentyun.com";
-const WS_URL_MOCK: &str = "ws://proxy:8086/ws";
+const WS_URL_MOCK: &str = "ws://notify:8086/ws";
 const WS_URLS: [&'static str; 4] = [
     "wss://notify.tat-tc.tencent.cn:8186/ws",
     "wss://notify.tat-tc.tencent.com.cn:8186/ws",
     "wss://notify.tat-tc.tencentyun.com:8186/ws",
     "wss://notify.tat.tencent-cloud.com:8186/ws",
 ];
-const INVOKE_API_MOCK: &str = "http://proxy-invoke";
+const INVOKE_API_MOCK: &str = "http://invoke";
 const INVOKE_APIS: [&'static str; 4] = [
     "https://invoke.tat-tc.tencent.cn",
     "https://invoke.tat-tc.tencent.com.cn",
