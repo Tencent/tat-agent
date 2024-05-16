@@ -1,4 +1,3 @@
-use super::gather::PtyGather;
 use super::handler::{BsonHandler, Handler};
 use crate::common::evbus::EventBus;
 use crate::network::types::ws_msg::{
@@ -8,12 +7,13 @@ use crate::network::types::ws_msg::{
 };
 
 use std::fs::{self, create_dir_all, File, Metadata};
-use std::io::{Seek, SeekFrom::Start, Write};
+use std::io::{Seek, SeekFrom, Write};
 use std::iter::{once, repeat};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::SystemTime;
 
+use async_trait::async_trait;
 use glob::Pattern;
 use log::info;
 use tokio::io::AsyncReadExt;
@@ -52,48 +52,49 @@ const WS_MSG_TYPE_PTY_FILE_INFO: &str = "PtyFileInfo";
 pub fn register_file_handlers(event_bus: &Arc<EventBus>) {
     event_bus
         .slot_register(SLOT_PTY_BIN, WS_MSG_TYPE_PTY_CREATE_FILE, move |msg| {
-            BsonHandler::<CreateFileReq>::dispatch(msg)
+            BsonHandler::<CreateFileReq>::dispatch(msg, true)
         })
         .slot_register(SLOT_PTY_BIN, WS_MSG_TYPE_PTY_DELETE_FILE, move |msg| {
-            BsonHandler::<DeleteFileReq>::dispatch(msg)
+            BsonHandler::<DeleteFileReq>::dispatch(msg, true)
         })
         .slot_register(SLOT_PTY_BIN, WS_MSG_TYPE_PTY_LIST_PATH, move |msg| {
-            BsonHandler::<ListPathReq>::dispatch(msg)
+            BsonHandler::<ListPathReq>::dispatch(msg, true)
         })
         .slot_register(SLOT_PTY_BIN, WS_MSG_TYPE_PTY_FILE_EXIST, move |msg| {
-            BsonHandler::<FileExistsReq>::dispatch(msg)
+            BsonHandler::<FileExistsReq>::dispatch(msg, true)
         })
         .slot_register(SLOT_PTY_BIN, WS_MSG_TYPE_PTY_FILE_INFO, move |msg| {
-            BsonHandler::<FileInfoReq>::dispatch(msg)
+            BsonHandler::<FileInfoReq>::dispatch(msg, true)
         })
         .slot_register(SLOT_PTY_BIN, WS_MSG_TYPE_PTY_WRITE_FILE, move |msg| {
-            BsonHandler::<WriteFileReq>::dispatch(msg)
+            BsonHandler::<WriteFileReq>::dispatch(msg, true)
         })
         .slot_register(SLOT_PTY_BIN, WS_MSG_TYPE_PTY_READ_FILE, move |msg| {
-            BsonHandler::<ReadFileReq>::dispatch(msg)
+            BsonHandler::<ReadFileReq>::dispatch(msg, true)
         });
 }
 
+#[async_trait]
 impl Handler for BsonHandler<CreateFileReq> {
-    fn process(self) {
-        let session_id = self.request.session_id.clone();
-        let req_data = &self.request.data;
+    async fn process(self) {
+        let data = &self.request.data;
+        info!("=>create_file `{}`, path: {}", self.id(), data.path);
 
-        info!("=>{} pty_create_file", session_id);
-        if Path::new(&req_data.path).exists() && !req_data.overwrite {
+        if Path::new(&data.path).exists() && !data.overwrite {
             return self.reply(PtyBinErrMsg::new("file exists"));
         }
-        let Some(parent_path) = Path::new(&req_data.path).parent() else {
+        let Some(parent_path) = Path::new(&data.path).parent() else {
             return self.reply(PtyBinErrMsg::new("invalid path"));
         };
 
         //create file as user
-        let create_result = self.associate_pty.execute(&|| -> Result<Vec<u8>, String> {
+        let plugin = &self.channel.as_ref().unwrap().plugin.component;
+        let create_result = plugin.execute(&|| {
             create_dir_all(parent_path).map_err(|e| e.to_string())?;
-            let _file = File::create(&req_data.path).map_err(|e| e.to_string())?;
+            let _file = File::create(&data.path).map_err(|e| e.to_string())?;
             #[cfg(unix)]
             if let Ok(meta) = _file.metadata() {
-                meta.permissions().set_mode(req_data.mode);
+                meta.permissions().set_mode(data.mode);
             }
             Ok(Vec::new())
         });
@@ -105,42 +106,39 @@ impl Handler for BsonHandler<CreateFileReq> {
     }
 }
 
+#[async_trait]
 impl Handler for BsonHandler<DeleteFileReq> {
-    fn process(self) {
-        let session_id = self.request.session_id.clone();
-        let req_data = &self.request.data;
+    async fn process(self) {
+        let path = &self.request.data.path;
+        info!("=>delete_file `{}`, path: {}", self.id(), path);
 
-        if let Err(e) = self
-            .associate_pty
-            .inspect_access(&req_data.path, PTY_INSPECT_WRITE)
-        {
+        let plugin = &self.channel.as_ref().unwrap().plugin.component;
+        if let Err(e) = plugin.inspect_access(path, PTY_INSPECT_WRITE) {
             return self.reply(PtyBinErrMsg::new(e));
         }
 
-        info!("=>{} pty_delete_file", session_id);
-        match fs::remove_file(req_data.path.clone()) {
+        match fs::remove_file(path) {
             Ok(_) => self.reply(DeleteFileResp { deleted: true }),
             Err(e) => self.reply(PtyBinErrMsg::new(e)),
         };
     }
 }
 
+#[async_trait]
 impl Handler for BsonHandler<ListPathReq> {
-    fn process(self) {
-        let session_id = self.request.session_id.clone();
-        let req_data = &self.request.data;
+    async fn process(self) {
+        let path = &self.request.data.path;
+        let filter = &self.request.data.filter;
+        let show_hidden = self.request.data.show_hidden;
+        let id = self.id();
+        info!("=>list_path `{id}`, path: {path}, filter: {filter}",);
 
-        info!(
-            "=>{} pty_list_path path {} filter {}",
-            session_id, req_data.path, req_data.filter
-        );
-
-        let pattern = match Pattern::new(&req_data.filter) {
+        let pattern = match Pattern::new(filter) {
             Ok(pattern) => pattern,
             Err(e) => return self.reply(PtyBinErrMsg::new(e)),
         };
 
-        let files = match list_path(&req_data.path, pattern.clone()) {
+        let files = match list_path(path, pattern.clone(), show_hidden) {
             Ok(files) => files,
             Err(e) => return self.reply(PtyBinErrMsg::new(e)),
         };
@@ -160,90 +158,87 @@ impl Handler for BsonHandler<ListPathReq> {
     }
 }
 
+#[async_trait]
 impl Handler for BsonHandler<FileExistsReq> {
-    fn process(self) {
-        let session_id = self.request.session_id.clone();
-        let req_data = &self.request.data;
-        info!("=>{} pty_file_exists", session_id);
-        let exists = Path::exists(req_data.path.as_ref());
+    async fn process(self) {
+        let path = &self.request.data.path;
+        info!("=>file_exists `{}`, path: {}", self.id(), path);
+        let exists = Path::new(path).exists();
         return self.reply(FileExistResp { exists });
     }
 }
 
+#[async_trait]
 impl Handler for BsonHandler<FileInfoReq> {
-    fn process(self) {
-        let session_id = self.request.session_id.clone();
-        let req_data = &self.request.data;
-        info!("=>{} pty_file_info", session_id);
-        match fs::metadata(&req_data.path) {
-            Ok(meta_data) => self.reply(file_info_data(req_data.path.clone(), &meta_data)),
+    async fn process(self) {
+        let path = &self.request.data.path;
+        info!("=>file_info `{}`, path: {}", self.id(), path);
+        match fs::metadata(path) {
+            Ok(metadata) => self.reply(file_info_data(path, &metadata)),
             Err(e) => self.reply(PtyBinErrMsg::new(e)),
         };
     }
 }
 
+#[async_trait]
 impl Handler for BsonHandler<WriteFileReq> {
-    fn process(self) {
-        let req_data = &self.request.data;
+    async fn process(self) {
+        let data = &self.request.data;
+        info!("=>write_file `{}`, path: {}", self.id(), data.path);
         //check permission
-        if let Err(err_msg) = self
-            .associate_pty
-            .inspect_access(&req_data.path, PTY_INSPECT_WRITE)
-        {
-            return self.reply(PtyBinErrMsg::new(err_msg));
+        let plugin = &self.channel.as_ref().unwrap().plugin.component;
+        if let Err(e) = plugin.inspect_access(&data.path, PTY_INSPECT_WRITE) {
+            return self.reply(PtyBinErrMsg::new(e));
         };
 
-        let mut file = match fs::OpenOptions::new()
-            .write(true)
-            .append(true)
-            .open(&req_data.path)
-        {
+        let mut file = match fs::OpenOptions::new().write(true).open(&data.path) {
             Ok(file) => file,
             Err(e) => return self.reply(PtyBinErrMsg::new(e)),
         };
 
-        if req_data.offset != usize::MAX {
-            if let Err(e) = file.seek(Start(req_data.offset as u64)) {
-                return self.reply(PtyBinErrMsg::new(e));
-            };
+        // Write at the file's end by default if 'offset' is not provided.
+        let pos = match data.offset {
+            Some(offset) => SeekFrom::Start(offset as u64),
+            None => SeekFrom::End(0),
+        };
+
+        if let Err(e) = file.seek(pos) {
+            return self.reply(PtyBinErrMsg::new(e));
         }
 
-        match file.write(&req_data.data) {
+        match file.write(&data.data) {
             Ok(length) => self.reply(WriteFileResp { length }),
             Err(e) => self.reply(PtyBinErrMsg::new(e)),
         };
     }
 }
 
-//read
-impl BsonHandler<ReadFileReq> {
-    async fn async_read(self_: Arc<Self>) {
-        let session_id = self_.request.session_id.clone();
-        let param = &self_.request.data;
-        info!("=>{} ReadFileReq {}", session_id, param.path);
+#[async_trait]
+impl Handler for BsonHandler<ReadFileReq> {
+    async fn process(self) {
+        let data = &self.request.data;
+        info!("=>read_file `{}`, path: {}", self.id(), data.path);
         //check permission
-        if let Err(err_msg) = self_
-            .associate_pty
-            .inspect_access(&param.path, PTY_INSPECT_READ)
-        {
-            info!("=>{} inspect_access failed", session_id);
-            return self_.reply(PtyBinErrMsg::new(err_msg));
+        let plugin = &self.channel.as_ref().unwrap().plugin.component;
+        if let Err(e) = plugin.inspect_access(&data.path, PTY_INSPECT_READ) {
+            info!("read_file `{}` inspect_access failed", self.id());
+            return self.reply(PtyBinErrMsg::new(e));
         };
 
         //open file read only
-        let mut file = match File::open(&param.path) {
+        let mut file = match File::open(&data.path) {
             Ok(file) => file,
-            Err(e) => return self_.reply(PtyBinErrMsg::new(e)),
+            Err(e) => return self.reply(PtyBinErrMsg::new(e)),
         };
 
-        if let Err(e) = file.seek(Start(param.offset as u64)) {
-            return self_.reply(PtyBinErrMsg::new(e));
+        if let Err(e) = file.seek(SeekFrom::Start(data.offset as u64)) {
+            return self.reply(PtyBinErrMsg::new(e));
         };
 
         //use async file
         let mut file = tokio::fs::File::from_std(file);
-        let mut remainder = param.size;
-        let mut offset = param.offset;
+        let mut remainder = data.size;
+        let mut offset = data.offset;
         let mut buffer: [u8; 3072] = [0; 3072];
         loop {
             let upper_limit = std::cmp::min(remainder, 3072);
@@ -251,7 +246,7 @@ impl BsonHandler<ReadFileReq> {
                 Ok(size) => {
                     remainder -= size;
                     let is_last = remainder == 0 || size < upper_limit;
-                    self_.reply(ReadFileResp {
+                    self.reply(ReadFileResp {
                         data: buffer[..size].to_owned(),
                         offset,
                         length: size,
@@ -262,18 +257,9 @@ impl BsonHandler<ReadFileReq> {
                     }
                     offset += size;
                 }
-                Err(e) => break self_.reply(PtyBinErrMsg::new(e)),
+                Err(e) => break self.reply(PtyBinErrMsg::new(e)),
             };
         }
-    }
-}
-
-impl Handler for BsonHandler<ReadFileReq> {
-    fn process(self) {
-        let self_0 = Arc::new(self);
-        PtyGather::runtime().spawn(async move {
-            BsonHandler::<ReadFileReq>::async_read(self_0).await;
-        });
     }
 }
 
@@ -289,7 +275,7 @@ fn get_win32_ready_drives() -> Vec<String> {
 }
 
 //windows path format:  /d:/work
-fn list_path(path: &str, filter: Pattern) -> Result<Vec<FileInfoResp>, String> {
+fn list_path(path: &str, filter: Pattern, show_hidden: bool) -> Result<Vec<FileInfoResp>, String> {
     let mut files = Vec::<FileInfoResp>::new();
     let mut path = path.to_string();
 
@@ -316,26 +302,26 @@ fn list_path(path: &str, filter: Pattern) -> Result<Vec<FileInfoResp>, String> {
         let Ok(entry) = item else {
             continue;
         };
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
         let name = entry.file_name().to_string_lossy().to_string();
+        if !show_hidden && is_hidden(&name, &metadata) {
+            continue;
+        }
         if !filter.matches(&name) {
             continue;
         }
-        if let Ok(meta_data) = entry.metadata() {
-            #[cfg(windows)]
-            if meta_data.file_attributes() & FILE_ATTRIBUTE_HIDDEN != 0 {
-                continue;
-            }
-            files.push(file_info_data(name, &meta_data))
-        }
+        files.push(file_info_data(&name, &metadata))
     }
     files.sort_by(|a, b| a.name.cmp(&b.name));
     return Ok(files);
 }
 
-fn file_info_data(name: String, meta_data: &Metadata) -> FileInfoResp {
-    let fs_type = if meta_data.is_dir() {
+fn file_info_data(name: &str, metadata: &Metadata) -> FileInfoResp {
+    let fs_type = if metadata.is_dir() {
         FS_TYPE_DIR.to_string()
-    } else if meta_data.is_symlink() {
+    } else if metadata.is_symlink() {
         FS_TYPE_LINK.to_string()
     } else {
         FS_TYPE_FILE.to_string()
@@ -343,47 +329,47 @@ fn file_info_data(name: String, meta_data: &Metadata) -> FileInfoResp {
 
     FileInfoResp {
         r#type: fs_type,
-        name: name.clone(),
-        size: meta_data.len(),
-        modify_time: meta_data
+        name: name.to_owned(),
+        size: metadata.len(),
+        modify_time: metadata
             .modified()
             .unwrap()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64,
-        access_time: meta_data
+        access_time: metadata
             .accessed()
             .unwrap()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64,
         #[cfg(unix)]
-        owner: meta_data.st_uid(),
+        owner: metadata.st_uid(),
         #[cfg(unix)]
-        group: meta_data.st_gid(),
+        group: metadata.st_gid(),
         #[cfg(unix)]
-        rights: unix_mode::to_string(meta_data.permissions().mode()),
+        rights: unix_mode::to_string(metadata.permissions().mode()),
         #[cfg(unix)]
-        longname: get_long_name(name, &meta_data),
+        longname: get_long_name(name, &metadata),
     }
 }
 
 #[cfg(unix)]
-fn get_long_name(name: String, meta_data: &Metadata) -> String {
-    let rights = unix_mode::to_string(meta_data.permissions().mode());
-    let link_count = meta_data.st_nlink();
+fn get_long_name(name: &str, metadata: &Metadata) -> String {
+    let rights = unix_mode::to_string(metadata.permissions().mode());
+    let link_count = metadata.st_nlink();
 
-    let owner_name = match get_user_by_uid(meta_data.st_uid()) {
+    let owner_name = match get_user_by_uid(metadata.st_uid()) {
         Some(user) => user.name().to_string_lossy().to_string(),
         None => "unknown".to_string(),
     };
-    let group_name = match get_group_by_gid(meta_data.st_gid()) {
+    let group_name = match get_group_by_gid(metadata.st_gid()) {
         Some(group) => group.name().to_string_lossy().to_string(),
         None => "unknown".to_string(),
     };
-    let size = meta_data.st_size();
+    let size = metadata.st_size();
 
-    let datetime: DateTime<Local> = meta_data.modified().unwrap().into();
+    let datetime: DateTime<Local> = metadata.modified().unwrap().into();
     let time = format!("{}", datetime.format("%b %d %R"));
 
     let longname = format!(
@@ -391,6 +377,16 @@ fn get_long_name(name: String, meta_data: &Metadata) -> String {
         rights, link_count, owner_name, group_name, size, time, name
     );
     return longname;
+}
+
+#[cfg(unix)]
+fn is_hidden(file_name: &str, _: &Metadata) -> bool {
+    file_name.starts_with('.')
+}
+
+#[cfg(windows)]
+fn is_hidden(_: &str, metadata: &Metadata) -> bool {
+    metadata.file_attributes() & FILE_ATTRIBUTE_HIDDEN != 0
 }
 
 #[cfg(test)]

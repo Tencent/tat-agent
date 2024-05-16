@@ -11,6 +11,7 @@ ExecStartPost=/bin/sleep 0.2
 KillMode=process
 Restart=always
 RestartSec=1s
+OOMPolicy=continue
 
 [Install]
 WantedBy=multi-user.target

@@ -16,9 +16,18 @@ pub struct WsMsg<T> {
 
 #[derive(Default, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]
-pub struct PtyStart {
+pub struct PtyJsonBase<T> {
     #[serde(default)]
     pub session_id: String,
+    #[serde(default)]
+    pub channel_id: String,
+    #[serde(flatten)]
+    pub data: T,
+}
+
+#[derive(Default, Serialize, Deserialize, Debug)]
+#[serde(rename_all = "PascalCase")]
+pub struct PtyStart {
     #[serde(default)]
     pub user_name: String,
     #[serde(default)]
@@ -35,16 +44,12 @@ pub struct PtyStart {
 #[serde(rename_all = "PascalCase")]
 pub struct PtyInput {
     #[serde(default)]
-    pub session_id: String,
-    #[serde(default)]
     pub input: String,
 }
 
 #[derive(Default, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]
 pub struct PtyResize {
-    #[serde(default)]
-    pub session_id: String,
     #[serde(default)]
     pub cols: u16,
     #[serde(default)]
@@ -53,33 +58,29 @@ pub struct PtyResize {
 
 #[derive(Default, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]
-pub struct PtyStop {
-    #[serde(default)]
-    pub session_id: String,
-}
+pub struct PtyStop {}
 
 #[derive(Default, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]
 pub struct PtyOutput {
-    #[serde(default)]
-    pub session_id: String,
-    #[serde(default)]
     pub output: String,
 }
 
 #[derive(Default, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]
-pub struct PtyReady {
-    #[serde(default)]
-    pub session_id: String,
-}
+pub struct PtyReady {}
 
 #[derive(Default, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]
 pub struct PtyError {
-    #[serde(default)]
-    pub session_id: String,
     pub reason: String,
+}
+
+impl PtyError {
+    pub fn new(reason: impl ToString) -> Self {
+        let reason = reason.to_string();
+        Self { reason }
+    }
 }
 
 #[derive(Default, Serialize, Deserialize, Debug)]
@@ -87,6 +88,8 @@ pub struct PtyError {
 pub struct PtyBinBase<T> {
     #[serde(default)]
     pub session_id: String,
+    #[serde(default)]
+    pub channel_id: String,
     #[serde(default)]
     pub custom_data: String,
     #[serde(default)]
@@ -102,7 +105,7 @@ pub struct PtyBinErrMsg {
 impl PtyBinErrMsg {
     pub fn new(error: impl ToString) -> Self {
         let error = error.to_string();
-        PtyBinErrMsg { error }
+        Self { error }
     }
 }
 
@@ -139,7 +142,7 @@ pub struct DeleteFileResp {
 #[serde(rename_all = "PascalCase")]
 pub struct ReadFileReq {
     pub path: String,
-    #[serde(default = "default_read_offset")]
+    #[serde(default)]
     pub offset: usize,
     #[serde(default = "default_read_size")]
     pub size: usize,
@@ -147,10 +150,6 @@ pub struct ReadFileReq {
 
 fn default_read_size() -> usize {
     usize::MAX
-}
-
-fn default_read_offset() -> usize {
-    0
 }
 
 #[derive(Default, Serialize, Deserialize, Debug)]
@@ -167,13 +166,9 @@ pub struct ReadFileResp {
 #[serde(rename_all = "PascalCase")]
 pub struct WriteFileReq {
     pub path: String,
-    #[serde(default = "default_write_offset")]
-    pub offset: usize,
+    pub offset: Option<usize>,
     #[serde(with = "serde_bytes")]
     pub data: Vec<u8>,
-}
-fn default_write_offset() -> usize {
-    usize::MAX
 }
 
 #[derive(Default, Serialize, Deserialize, Debug)]
@@ -198,10 +193,6 @@ pub struct FileExistResp {
 #[derive(Default, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]
 pub struct FileInfoReq {
-    #[serde(default)]
-    pub session_id: String,
-    #[serde(default)]
-    pub custom_data: String,
     #[serde(default)]
     pub path: String,
 }
@@ -230,10 +221,16 @@ pub struct ListPathReq {
     pub path: String,
     #[serde(default = "default_list_filter")]
     pub filter: String,
+    #[serde(default = "default_show_hidden")]
+    pub show_hidden: bool,
 }
 
 fn default_list_filter() -> String {
-    return "*".to_string();
+    "*".to_string()
+}
+
+fn default_show_hidden() -> bool {
+    true
 }
 
 #[derive(Default, Serialize, Deserialize, Debug)]
@@ -270,6 +267,7 @@ pub struct ExecCmdStreamReq {
 pub struct ExecCmdStreamResp {
     pub index: u32,
     pub is_last: bool,
+    // #[serde(skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
     #[serde(with = "serde_bytes")]
     pub data: Vec<u8>,

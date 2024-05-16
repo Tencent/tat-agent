@@ -1,332 +1,402 @@
 <html>
-
-<head>
-  <meta charset="utf-8">
-  <style>
-    body {
-      margin: 1em;
-      background: black;
-    }
-  </style>
-  <link rel="stylesheet" href="https://cdn.bootcdn.net/ajax/libs/xterm/3.9.2/xterm.min.css" />
-  <script type="text/javascript" src="https://cdn.bootcdn.net/ajax/libs/xterm/3.9.2/xterm.min.js"
-    charset="utf-8"></script>
-  <script type="text/javascript" src="https://cdn.bootcdn.net/ajax/libs/xterm/3.9.2/addons/fit/fit.min.js"
-    charset="utf-8"></script>
-  <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/bson@4.6.5/dist/bson.browser.umd.min.js"></script>
-</head>
-
-<body>
-  <div>
-    <input type="text" id="id_path" value="/tmp/test_file.txt">
-    <input type="text" id="id_data" value="test_data">
-    <button type="submit" id="create">create</button>
-    <button type="submit" id="delete">delete</button>
-    <button type="submit" id="write">write</button>
-    <button type="submit" id="read">read</button>
-    <button type="submit" id="list">list</button>
-  </div>
-
-  <div>
-    <input type="text" id="id_cmd" value="pwd">
-    <input type="number" id="id_timeout" value=60>
-    <button type="submit" id="exec">exec</button>
-    <button type="submit" id="execStream">execStream</button>
-  </div>
-
-  <div>
-    <button type="submit" id="stop">stop</button>
-  </div>
-
-  <div id="terminal"></div>
-  <script type="text/javascript">
-    function randomString(len) {
-      len = len || 32;
-      var $chars = 'ABCDEFGHJKMNPQRSTWXYZabcdefhijkmnprstwxyz2345678';
-      var maxPos = $chars.length;
-      var pwd = '';
-      for (i = 0; i < len; i++) {
-        pwd += $chars.charAt(Math.floor(Math.random() * maxPos));
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body {
+        margin: 1em;
+        background: black;
       }
-      return pwd;
-    }
+    </style>
+    <link
+      rel="stylesheet"
+      href="https://cdn.bootcdn.net/ajax/libs/xterm/3.9.2/xterm.min.css"
+    />
+    <script
+      type="text/javascript"
+      src="https://cdn.bootcdn.net/ajax/libs/xterm/3.9.2/xterm.min.js"
+      charset="utf-8"
+    ></script>
+    <script
+      type="text/javascript"
+      src="https://cdn.bootcdn.net/ajax/libs/xterm/3.9.2/addons/fit/fit.min.js"
+      charset="utf-8"
+    ></script>
+    <script
+      type="text/javascript"
+      src="https://cdn.jsdelivr.net/npm/bson@4.6.5/dist/bson.browser.umd.min.js"
+    ></script>
+  </head>
 
-    let session_id = randomString(10)
+  <body>
+    <div>
+      <input type="text" id="id_path" value="/tmp/test_file.txt" />
+      <input type="text" id="id_data" value="test_data" />
+      <button type="submit" id="create">create</button>
+      <button type="submit" id="delete">delete</button>
+      <button type="submit" id="write">write</button>
+      <button type="submit" id="read">read</button>
+      <button type="submit" id="list">list</button>
+    </div>
 
-    function decodeBase64(base64) {
-      const text = atob(base64);
-      const length = text.length;
-      const bytes = new Uint8Array(length);
-      for (let i = 0; i < length; i++) {
-        bytes[i] = text.charCodeAt(i);
+    <div>
+      <input type="text" id="id_cmd" value="pwd" />
+      <input type="number" id="id_timeout" value="60" />
+      <button type="submit" id="exec">exec</button>
+      <button type="submit" id="execStream">execStream</button>
+    </div>
+
+    <div>
+      <input type="text" id="id_session" value="sess-0001" />
+      <input type="text" id="id_channel" value="chnl-0001" />
+      <button type="submit" id="start">start</button>
+      <button type="submit" id="stop">stop</button>
+    </div>
+
+    <div id="terminal"></div>
+
+    <script type="text/javascript">
+      function randomString(len) {
+        len = len || 32;
+        var $chars = "ABCDEFGHJKMNPQRSTWXYZabcdefhijkmnprstwxyz2345678";
+        var maxPos = $chars.length;
+        var pwd = "";
+        for (i = 0; i < len; i++) {
+          pwd += $chars.charAt(Math.floor(Math.random() * maxPos));
+        }
+        return pwd;
       }
-      const decoder = new TextDecoder(); // default is utf-8
-      return decoder.decode(bytes);
-    }
 
-    function str2bytes(str) {
-      var ch, st, re = [];
-      for (var i = 0; i < str.length; i++) {
-        ch = str.charCodeAt(i);
-        st = [];
-        do {
-          st.push(ch & 0xFF);
-          ch = ch >> 8;
-        } while (ch);
-        re = re.concat(st.reverse());
+      let isOpen = false;
+
+      function decodeBase64(base64) {
+        const text = atob(base64);
+        const length = text.length;
+        const bytes = new Uint8Array(length);
+        for (let i = 0; i < length; i++) {
+          bytes[i] = text.charCodeAt(i);
+        }
+        const decoder = new TextDecoder(); // default is utf-8
+        return decoder.decode(bytes);
       }
-      return re;
-    }
 
+      function str2bytes(str) {
+        var ch,
+          st,
+          re = [];
+        for (var i = 0; i < str.length; i++) {
+          ch = str.charCodeAt(i);
+          st = [];
+          do {
+            st.push(ch & 0xff);
+            ch = ch >> 8;
+          } while (ch);
+          re = re.concat(st.reverse());
+        }
+        return re;
+      }
 
-    function createFile(path) {
-      const doc = {
-        Type: 'PtyCreateFile',
-        Data: {
-          SessionId: session_id,
-          CustomData: 'c',
+      function createFile(path, session_id, channel_id) {
+        const doc = {
+          Type: "PtyCreateFile",
           Data: {
-            Path: path,
-            Mode: 0o644,
-            Overwrite: true,
+            SessionId: session_id,
+            ChannelId: channel_id,
+            CustomData: "c",
+            Data: {
+              Path: path,
+              Mode: 0o644,
+              Overwrite: true,
+            },
           },
-        }
-      };
-      const msg = BSON.serialize(doc);
-      console.log('CreateMsg:', msg);
-      ws.send(msg);
-    }
+        };
+        const msg = BSON.serialize(doc);
+        console.log("CreateMsg:", msg);
+        ws.send(msg);
+      }
 
-    function deleteFile(path) {
-      const doc = {
-        Type: 'PtyDeleteFile',
-        Data: {
-          SessionId: session_id,
-          CustomData: 'd',
+      function deleteFile(path, session_id, channel_id) {
+        const doc = {
+          Type: "PtyDeleteFile",
           Data: {
-            Path: path,
+            SessionId: session_id,
+            ChannelId: channel_id,
+            CustomData: "d",
+            Data: {
+              Path: path,
+            },
           },
-        }
-      };
-      const msg = BSON.serialize(doc);
-      console.log('DeleteMsg:', msg);
-      ws.send(msg);
-    }
+        };
+        const msg = BSON.serialize(doc);
+        console.log("DeleteMsg:", msg);
+        ws.send(msg);
+      }
 
-    function writeFile(path, data) {
-      const doc = {
-        Type: 'PtyWriteFile',
-        Data: {
-          SessionId: session_id,
-          CustomData: 'd',
+      function writeFile(path, data, session_id, channel_id) {
+        const doc = {
+          Type: "PtyWriteFile",
           Data: {
-            Path: path,
-            Offset: 0,
-            Data: data,
+            SessionId: session_id,
+            ChannelId: channel_id,
+            CustomData: "d",
+            Data: {
+              Path: path,
+              Offset: 0,
+              Data: data,
+            },
           },
-        }
-      };
-      const msg = BSON.serialize(doc);
-      console.log('WriteMsg:', msg);
-      ws.send(msg);
-    }
+        };
+        const msg = BSON.serialize(doc);
+        console.log("WriteMsg:", msg);
+        ws.send(msg);
+      }
 
-
-    function readFile(path) {
-      const doc = {
-        Type: 'PtyReadFile',
-        Data: {
-          SessionId: session_id,
-          CustomData: 'd',
+      function readFile(path, session_id, channel_id) {
+        const doc = {
+          Type: "PtyReadFile",
           Data: {
-            Path: path,
-            Offset: 0,
-            //Size:-1,  //-1 means all
+            SessionId: session_id,
+            ChannelId: channel_id,
+            CustomData: "d",
+            Data: {
+              Path: path,
+              Offset: 0,
+              //Size:-1,  //-1 means all
+            },
           },
-        }
-      };
-      const msg = BSON.serialize(doc);
-      console.log('ReadMsg:', msg);
-      ws.send(msg);
-    }
+        };
+        const msg = BSON.serialize(doc);
+        console.log("ReadMsg:", msg);
+        ws.send(msg);
+      }
 
-
-    function listPath(path) {
-      const doc = {
-        Type: 'PtyListPath',
-        Data: {
-          SessionId: session_id,
-          CustomData: 'd',
+      function listPath(path, session_id, channel_id) {
+        const doc = {
+          Type: "PtyListPath",
           Data: {
-            Path: path,
-            Filter: "*",
+            SessionId: session_id,
+            ChannelId: channel_id,
+            CustomData: "d",
+            Data: {
+              Path: path,
+              Filter: "*",
+              ShowHidden: true,
+            },
           },
-        }
-      };
-      const msg = BSON.serialize(doc);
-      console.log('ReadMsg:', msg);
-      ws.send(msg);
-    }
+        };
+        const msg = BSON.serialize(doc);
+        console.log("ReadMsg:", msg);
+        ws.send(msg);
+      }
 
-    function execCmd(cmd) {
-      const doc = {
-        Type: 'PtyExecCmd',
-        Data: {
-          SessionId: session_id,
-          CustomData: 'd',
+      function execCmd(cmd, session_id, channel_id) {
+        const doc = {
+          Type: "PtyExecCmd",
           Data: {
-            Cmd: cmd,
+            SessionId: session_id,
+            ChannelId: channel_id,
+            CustomData: "d",
+            Data: {
+              Cmd: cmd,
+            },
           },
-        }
-      };
-      const msg = BSON.serialize(doc);
-      console.log('ReadMsg:', msg);
-      ws.send(msg);
-    }
+        };
+        const msg = BSON.serialize(doc);
+        console.log("ReadMsg:", msg);
+        ws.send(msg);
+      }
 
-    function execCmdStream(cmd, timeout) {
-      const doc = {
-        Type: 'PtyExecCmdStream',
-        Data: {
-          SessionId: session_id,
-          CustomData: 'd',
+      function execCmdStream(cmd, timeout, session_id, channel_id) {
+        const doc = {
+          Type: "PtyExecCmdStream",
           Data: {
-            Cmd: cmd,
-            Timeout: Number(timeout),
+            SessionId: session_id,
+            ChannelId: channel_id,
+            CustomData: "d",
+            Data: {
+              Cmd: cmd,
+              Timeout: Number(timeout),
+            },
           },
-        }
-      };
-      const msg = BSON.serialize(doc);
-      console.log('ReadMsg:', msg);
-      ws.send(msg);
-    }
+        };
+        const msg = BSON.serialize(doc);
+        console.log("ReadMsg:", msg);
+        ws.send(msg);
+      }
 
-    document.getElementById("create").addEventListener("click", function handle_create() {
-      let path = document.getElementById("id_path").value;
-      createFile(path)
-    })
+      document
+        .getElementById("create")
+        .addEventListener("click", function handle_create() {
+          let path = document.getElementById("id_path").value;
+          let session_id = document.getElementById("id_session").value;
+          let channel_id = document.getElementById("id_channel").value;
+          createFile(path, session_id, channel_id);
+        });
 
-    document.getElementById("delete").addEventListener("click", function handle_create() {
-      let path = document.getElementById("id_path").value;
-      deleteFile(path)
-    })
+      document
+        .getElementById("delete")
+        .addEventListener("click", function handle_create() {
+          let path = document.getElementById("id_path").value;
+          let session_id = document.getElementById("id_session").value;
+          let channel_id = document.getElementById("id_channel").value;
+          deleteFile(path, session_id, channel_id);
+        });
 
-    document.getElementById("write").addEventListener("click", function handle_create() {
-      let path = document.getElementById("id_path").value;
-      let data = document.getElementById("id_data").value;
-      writeFile(path, str2bytes(data))
-    })
+      document
+        .getElementById("write")
+        .addEventListener("click", function handle_create() {
+          let path = document.getElementById("id_path").value;
+          let data = document.getElementById("id_data").value;
+          let session_id = document.getElementById("id_session").value;
+          let channel_id = document.getElementById("id_channel").value;
+          writeFile(path, str2bytes(data), session_id, channel_id);
+        });
 
-    document.getElementById("read").addEventListener("click", function handle_create() {
-      let path = document.getElementById("id_path").value;
-      readFile(path)
-    })
+      document
+        .getElementById("read")
+        .addEventListener("click", function handle_create() {
+          let path = document.getElementById("id_path").value;
+          let session_id = document.getElementById("id_session").value;
+          let channel_id = document.getElementById("id_channel").value;
+          readFile(path, session_id, channel_id);
+        });
 
-    document.getElementById("list").addEventListener("click", function handle_create() {
-      let path = document.getElementById("id_path").value;
-      listPath(path)
-    })
+      document
+        .getElementById("list")
+        .addEventListener("click", function handle_create() {
+          let path = document.getElementById("id_path").value;
+          let session_id = document.getElementById("id_session").value;
+          let channel_id = document.getElementById("id_channel").value;
+          listPath(path, session_id, channel_id);
+        });
 
-    document.getElementById("exec").addEventListener("click", function handle_create() {
-      let cmd = document.getElementById("id_cmd").value;
-      execCmd(cmd)
-    })
+      document
+        .getElementById("exec")
+        .addEventListener("click", function handle_create() {
+          let cmd = document.getElementById("id_cmd").value;
+          let session_id = document.getElementById("id_session").value;
+          let channel_id = document.getElementById("id_channel").value;
+          execCmd(cmd, session_id, channel_id);
+        });
 
-    document.getElementById("execStream").addEventListener("click", function handle_create() {
-      let cmd = document.getElementById("id_cmd").value;
-      let timeout = document.getElementById("id_timeout").value;
-      execCmdStream(cmd, timeout)
-    })
+      document
+        .getElementById("execStream")
+        .addEventListener("click", function handle_create() {
+          let cmd = document.getElementById("id_cmd").value;
+          let timeout = document.getElementById("id_timeout").value;
+          let session_id = document.getElementById("id_session").value;
+          let channel_id = document.getElementById("id_channel").value;
+          execCmdStream(cmd, timeout, session_id, channel_id);
+        });
 
-    document.getElementById("stop").addEventListener("click", function handle_create() {
-      let json = JSON.stringify({
-        Type: "PtyStop",
-        Data: {
-          SessionId: session_id,
-        }
-      });
-      ws.send(json)
-    })
-
-    Terminal.applyAddon(fit)
-    const term = new Terminal({
-      cols: 100,
-      rows: 50
-    })
-
-
-    const ws = new WebSocket(`ws://<server-address>:3333`);
-    ws.addEventListener('open', function () {
-      console.info('WebSocket connected');
-      let json = JSON.stringify({
-        Type: "PtyStart",
-        Data: {
-          SessionId: session_id,
-          Cols: 100,
-          Rows: 50,
-        }
-      });
-      ws.send(json);
-    })
-
-    ws.addEventListener('message', function (event) {
-      console.debug('Message from server ', event.data)
-      try {
-        if (typeof event.data === 'string') {
-          let msg = JSON.parse(event.data);
-          //console.log("TxtMsg", msg);
-          if (msg.Type === "PtyOutput") {
-            let output = decodeBase64(msg.Data.Output)
-            term.write(output);
-            console.log("TxtMsg", output)
+      document
+        .getElementById("start")
+        .addEventListener("click", function handle_create() {
+          let session_id = document.getElementById("id_session").value;
+          let channel_id = document.getElementById("id_channel").value;
+          if (isOpen) {
+            let json = JSON.stringify({
+              Type: "PtyStart",
+              Data: {
+                SessionId: session_id,
+                ChannelId: channel_id,
+                Cols: 100,
+                Rows: 50,
+              },
+            });
+            ws.send(json);
           }
-          return
-        }
+        });
 
-        if (event.data instanceof Blob || event.data instanceof ArrayBuffer) {
-          event.data.arrayBuffer().then(buffer => {
-            let msg = BSON.deserialize(buffer);
-            console.log('BinMsg', msg);
+      document
+        .getElementById("stop")
+        .addEventListener("click", function handle_create() {
+          let session_id = document.getElementById("id_session").value;
+          let channel_id = document.getElementById("id_channel").value;
+          const json = JSON.stringify({
+            Type: "PtyStop",
+            Data: {
+              SessionId: session_id,
+              ChannelId: channel_id,
+            },
           });
-        }
+          ws.send(json);
+          term.clear();
+        });
 
-      } catch (e) {
-        console.error(e);
-      }
-    })
+      Terminal.applyAddon(fit);
+      const term = new Terminal({
+        cols: 100,
+        rows: 50,
+      });
 
-    term.open(document.getElementById('terminal'))
+      const ws = new WebSocket(`ws://<server-address>:3333`);
+      ws.addEventListener("open", function () {
+        console.info("WebSocket connected");
+        isOpen = true;
+      });
 
-    term.on('data', data => {
-      let b64 = window.btoa(data)
-      let json = JSON.stringify({
-        Type: "PtyInput",
-        Data: {
-          SessionId: session_id,
-          Input: b64
+      ws.addEventListener("message", function (event) {
+        console.debug("Message from server ", event.data);
+        try {
+          if (typeof event.data === "string") {
+            let msg = JSON.parse(event.data);
+            //console.log("TxtMsg", msg);
+            if (msg.Type === "PtyOutput") {
+              let output = decodeBase64(msg.Data.Output);
+              term.write(output);
+              console.log("TxtMsg", output);
+            }
+            return;
+          }
+
+          if (event.data instanceof Blob || event.data instanceof ArrayBuffer) {
+            event.data.arrayBuffer().then((buffer) => {
+              let msg = BSON.deserialize(buffer);
+              console.log("BinMsg", msg);
+            });
+          }
+        } catch (e) {
+          console.error(e);
         }
       });
-      ws.send(json)
-    })
 
-    window.addEventListener('resize', () => {
-      term.fit()
-    })
+      term.open(document.getElementById("terminal"));
 
-    term.fit()
-    term.on('resize', size => {
-      console.debug('resize')
-      let json = JSON.stringify({
-        Type: "PtyResize",
-        Data: {
-          SessionId: session_id,
-          Cols: size.cols,
-          Rows: size.rows,
-        }
+      term.on("data", (data) => {
+        let b64 = window.btoa(data);
+        let session_id = document.getElementById("id_session").value;
+        let channel_id = document.getElementById("id_channel").value;
+        let json = JSON.stringify({
+          Type: "PtyInput",
+          Data: {
+            SessionId: session_id,
+            ChannelId: channel_id,
+            Input: b64,
+          },
+        });
+        ws.send(json);
       });
-      ws.send(json)
-    })
-  </script>
-</body>
 
+      window.addEventListener("resize", () => {
+        term.fit();
+      });
+
+      term.fit();
+      term.on("resize", (size) => {
+        console.debug("resize");
+        let session_id = document.getElementById("id_session").value;
+        let channel_id = document.getElementById("id_channel").value;
+        let json = JSON.stringify({
+          Type: "PtyResize",
+          Data: {
+            SessionId: session_id,
+            ChannelId: channel_id,
+            Cols: size.cols,
+            Rows: size.rows,
+          },
+        });
+        ws.send(json);
+      });
+    </script>
+  </body>
 </html>

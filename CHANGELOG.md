@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.17] - 2024-05-15
+
+## Changed
+
+- Support for multiplexing a single WebSocket connection across multiple Channels.
+- Enhanced the logical correctness of Pty-related interfaces.
+- Enabled login shell mode for Pty during login.
+- Optimized the timeout logic for Session and Channel.
+
 ## [1.0.16] - 2024-05-09
 
 ### Changed

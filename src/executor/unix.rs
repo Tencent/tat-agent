@@ -143,7 +143,7 @@ pub fn init_cmd(script: &str) -> Command {
     cmd
 }
 
-pub fn prepare_cmd(mut cmd: Command, user: &User, work_dir: &str) -> Command {
+pub fn prepare_cmd(mut cmd: Command, user: &User, work_dir: impl AsRef<Path>) -> Command {
     // let shell_path = cmd_path(cmd.as_std().get_program())
     let (_, shell_path, _) = find_shell();
     let home_path = user.home_dir().to_str().unwrap_or("/tmp").to_owned();
