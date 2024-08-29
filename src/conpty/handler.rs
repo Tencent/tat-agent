@@ -64,25 +64,27 @@ where
             op_type: op,
         };
 
-        if let Some(session) = Gather::get_session(&session_id) {
-            if let Some(channel) = session.get_channel(&channel_id) {
-                handler.channel = Some(channel);
+        Gather::runtime().spawn(async move {
+            if let Some(session) = Gather::get_session(&session_id).await {
+                if let Some(channel) = session.get_channel(&channel_id).await {
+                    handler.channel = Some(channel);
+                }
             }
-        }
 
-        if channel_required && handler.channel.is_none() {
-            error!("BsonHandler::dispatch channel `{}` not found", handler.id());
-            return handler.reply(PtyBinErrMsg::new("Channel not found"));
-        }
+            if channel_required && handler.channel.is_none() {
+                error!("BsonHandler::dispatch channel `{}` not found", handler.id());
+                return handler.reply(PtyBinErrMsg::new("Channel not found")).await;
+            }
 
-        Gather::runtime().spawn(handler.process());
+            handler.process().await
+        });
     }
 
-    pub fn reply<M: Serialize>(&self, data: M) {
-        Self::reply_with(&self.request, &self.op_type, data)
+    pub async fn reply<M: Serialize>(&self, data: M) {
+        Self::reply_with(&self.request, &self.op_type, data).await
     }
 
-    fn reply_with<M: Serialize>(req: &PtyBinBase<T>, op: &str, data: M) {
+    async fn reply_with<M: Serialize>(req: &PtyBinBase<T>, op: &str, data: M) {
         let session_id = req.session_id.clone();
         let channel_id = req.channel_id.clone();
         let custom_data = req.custom_data.clone();
@@ -92,7 +94,7 @@ where
             custom_data,
             data,
         };
-        Gather::reply_bson_msg(op, msg)
+        Gather::reply_bson_msg(op, msg).await
     }
 }
 
@@ -127,6 +129,7 @@ where
         let Some(Some(session_id)) = json_data.get("SessionId").map(|v| v.as_str()) else {
             return error!("JsonHandler::dispatch parse SessionId failed: {}", msg);
         };
+        let session_id = session_id.to_owned();
 
         // Compatible with legacy front-end code
         // If no channel_id is provided, use empty string as channel_id.
@@ -134,7 +137,8 @@ where
             .get("ChannelId")
             .map(|v| v.as_str())
             .flatten()
-            .unwrap_or_default();
+            .unwrap_or_default()
+            .to_owned();
 
         let Ok(request) = serde_json::from_value::<PtyJsonBase<T>>(json_data.clone()) else {
             return error!("JsonHandler::dispatch parse Data failed: {}", msg);
@@ -145,28 +149,30 @@ where
             request,
         };
 
-        if let Some(session) = Gather::get_session(session_id) {
-            if let Some(channel) = session.get_channel(channel_id) {
-                handler.channel = Some(channel);
+        Gather::runtime().spawn(async move {
+            if let Some(session) = Gather::get_session(&session_id).await {
+                if let Some(channel) = session.get_channel(&channel_id).await {
+                    handler.channel = Some(channel);
+                }
             }
-        }
 
-        if channel_required && handler.channel.is_none() {
-            error!("JsonHandler::dispatch channel `{}` not found", handler.id());
-            return handler.reply(PtyError::new("Channel not found"));
-        }
+            if channel_required && handler.channel.is_none() {
+                error!("JsonHandler::dispatch channel `{}` not found", handler.id());
+                return handler.reply(PtyError::new("Channel not found")).await;
+            }
 
-        Gather::runtime().spawn(handler.process());
+            handler.process().await
+        });
     }
 
-    pub fn reply<M: Serialize>(&self, data: M) {
+    pub async fn reply<M: Serialize>(&self, data: M) {
         let msg_type = get_msg_type(&data);
         let body = PtyJsonBase {
             session_id: self.request.session_id.clone(),
             channel_id: self.request.channel_id.clone(),
             data,
         };
-        return Gather::reply_json_msg(&msg_type, body);
+        Gather::reply_json_msg(&msg_type, body).await
     }
 }
 

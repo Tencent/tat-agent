@@ -67,7 +67,7 @@ install() {
             mv ${TAT_AGENT} -f ${TAT_AGENT}64
             mv ${UTMPX} -f ${UTMPX}64
             mv ${TAT_AGENT_AARCH64} -f ${TAT_AGENT}
-             mv ${UTMPX_AARCH64} -f ${UTMPX}
+            mv ${UTMPX_AARCH64} -f ${UTMPX}
         fi
     fi
 
@@ -100,6 +100,13 @@ install() {
 
     if has_systemd; then
         echo "use systemd to manage service"
+
+        # Set OOMPolicy for systemd >= v243
+        systemd_version=$(systemctl --version | head -n 1 | awk '{print $2}')
+        if [ "$systemd_version" -ge 243 ]; then
+            sed -i 's/^# OOMPolicy=/OOMPolicy=/' tat_agent.service
+        fi
+
         SYSTEMD_DIR="/etc/systemd/system/"
         cp -f tat_agent.service ${SYSTEMD_DIR}
         systemctl daemon-reload

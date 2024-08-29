@@ -51,6 +51,12 @@ pub struct ResponseError {
     message: String,
 }
 
+impl ResponseError {
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}
+
 // standard response format
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]

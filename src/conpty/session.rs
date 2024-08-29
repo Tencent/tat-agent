@@ -5,15 +5,18 @@ use crate::common::utils::{Stopper, Timer};
 use crate::network::types::ws_msg::{PtyBinBase, PtyJsonBase};
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use log::{error, info};
+use tokio::sync::RwLock;
 
 const SESSION_REMOVE_INTERVAL: u64 = 60 * 5;
 
+type ChannelMap = RwLock<HashMap<String, Arc<Channel>>>;
+
 pub struct Session {
     pub session_id: String,
-    pub channels: RwLock<HashMap<String, Arc<Channel>>>,
+    pub channels: ChannelMap,
     timer: Timer,
     stopper: Stopper,
 }
@@ -28,65 +31,70 @@ impl Session {
         }
     }
 
-    pub fn stop(&self) {
-        self.stopper.stop();
+    pub async fn stop(&self) {
+        self.stopper.stop().await;
     }
 
-    pub fn add_channel(&self, channel_id: &str, channel: Arc<Channel>) -> Result<(), String> {
+    pub async fn add_channel(&self, channel_id: &str, channel: Arc<Channel>) -> Result<(), String> {
         let id = format!("{}:{}", self.session_id, channel_id);
-        let mut chs = self.channels.write().expect("lock failed");
+        let mut chs = self.channels.write().await;
         if chs.contains_key(channel_id) {
             error!("duplicate add_channel `{id}`");
             Err(format!("channel `{id}` already start"))?
         }
         chs.insert(channel_id.to_owned(), channel.clone());
         info!("add_channel `{id}`");
-        Gather::runtime().spawn(async move { channel.process_output().await });
+        tokio::spawn(async move { channel.process_output().await });
         self.timer.freeze();
         Ok(())
     }
 
-    pub fn remove_channel(&self, channel_id: &str) {
-        let _ = self
-            .channels
-            .write()
-            .expect("lock failed")
-            .remove(channel_id)
-            .map(|ch| {
-                ch.stop();
-                self.timer.unfreeze();
-                info!("remove_channel `{}:{}`", self.session_id, channel_id)
-            });
+    pub async fn remove_channel(&self, channel_id: &str) {
+        if let Some(ch) = self.channels.write().await.remove(channel_id) {
+            ch.stop().await;
+            self.timer.unfreeze().await;
+            info!("remove_channel `{}:{}`", self.session_id, channel_id)
+        }
     }
 
-    pub fn get_channel(&self, channel_id: &str) -> Option<Arc<Channel>> {
-        self.channels
+    pub async fn get_channel(&self, channel_id: &str) -> Option<Arc<Channel>> {
+        let op = self
+            .channels
             .read()
-            .expect("lock failed")
+            .await
             .get(channel_id)
-            .map(|ch| {
-                ch.update_last_time();
-                ch.clone()
-            })
+            .map(|ch| ch.clone());
+        if let Some(ref ch) = op {
+            ch.update_last_time().await;
+        };
+        op
     }
 
     pub async fn process_output(&self) {
         info!("=>Session::process_output: {}", self.session_id);
-        let stopper_rx = self.stopper.get_receiver().expect("get_receiver failed");
+        let stopper_rx = self
+            .stopper
+            .get_receiver()
+            .await
+            .expect("get_receiver failed");
         tokio::select! {
             _ = stopper_rx => info!("session `{}` stopped", self.session_id),
             _ = self.timer.timeout() => info!("session `{}` timeout", self.session_id),
         };
-        Gather::remove_session(&self.session_id);
+        Gather::remove_session(&self.session_id).await;
         info!("session `{}` process_output finished", self.session_id);
     }
 }
 
 impl Drop for Session {
     fn drop(&mut self) {
-        for ch in self.channels.read().expect("lock failed").values() {
-            ch.stop();
-        }
+        let mut this: ChannelMap = Default::default();
+        std::mem::swap(&mut this, &mut self.channels);
+        Gather::runtime().spawn(async move {
+            for ch in this.read().await.values() {
+                ch.stop().await;
+            }
+        });
     }
 }
 
@@ -105,12 +113,12 @@ impl Channel {
         }
     }
 
-    pub fn stop(&self) {
-        self.plugin.controller.stopper.stop();
+    pub async fn stop(&self) {
+        self.plugin.controller.stopper.stop().await;
     }
 
-    pub fn update_last_time(&self) {
-        self.plugin.controller.timer.refresh();
+    pub async fn update_last_time(&self) {
+        self.plugin.controller.timer.refresh().await;
     }
 
     pub async fn process_output(&self) {
@@ -118,10 +126,10 @@ impl Channel {
         info!("=>Channel::process_output: {}", id);
         self.plugin.process().await;
         info!("channel `{}` process_output finished", id);
-        let Some(session) = Gather::get_session(&self.session_id) else {
+        let Some(session) = Gather::get_session(&self.session_id).await else {
             return;
         };
-        session.remove_channel(&self.channel_id);
+        session.remove_channel(&self.channel_id).await;
     }
 }
 
@@ -152,7 +160,7 @@ impl Plugin {
             PluginComp::Pty(pty) => pty.process(&id, &self.data, &self.controller).await,
             PluginComp::Proxy(proxy) => proxy.process(&id, &self.data, &self.controller).await,
             PluginComp::None { .. } => tokio::select! {
-                _ = self.controller.stopper.get_receiver().expect("get_receiver failed") => (),
+                _ = self.controller.stopper.get_receiver().await.expect("get_receiver failed") => (),
                 _ = self.controller.timer.timeout() => info!("Channel `{id}` timeout"),
             },
         }

@@ -227,7 +227,7 @@ impl InvokeAPIAdapter {
                 Err(ref e) => {
                     if retry_cnt < retries {
                         retry_cnt = retry_cnt + 1;
-                        tokio::time::delay_for(Duration::from_millis(500)).await;
+                        tokio::time::sleep(Duration::from_millis(500)).await;
                         info!("request error: {:?}, retry {}", e, retry_cnt);
                         continue;
                     }
@@ -260,7 +260,7 @@ impl InvokeAPIAdapter {
         raw_resp.into_response().map_err(|e| {
             AgentError::wrap(
                 AgentErrorCode::ResponseEmptyError,
-                "empty response content",
+                format!("error: {}", e.message()).as_str(),
                 format!("response error: {:?}", e),
             )
         })

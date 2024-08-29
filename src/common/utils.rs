@@ -3,7 +3,6 @@ use std::ffi::{OsStr, OsString};
 #[cfg(windows)]
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex;
 
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
@@ -12,7 +11,8 @@ use rsa::pkcs8::LineEnding;
 use rsa::{RsaPrivateKey, RsaPublicKey};
 use std::time::{Duration, UNIX_EPOCH};
 use tokio::sync::oneshot::{self, Receiver, Sender};
-use tokio::time::{delay_until, Instant};
+use tokio::sync::Mutex;
+use tokio::time::{sleep_until, Instant};
 
 pub struct Stopper(Mutex<Option<Sender<()>>>, Mutex<Option<Receiver<()>>>);
 
@@ -22,12 +22,12 @@ impl Stopper {
         Self(Mutex::new(Some(tx)), Mutex::new(Some(rx)))
     }
 
-    pub fn stop(&self) {
-        self.0.lock().expect("lock failed").take();
+    pub async fn stop(&self) {
+        self.0.lock().await.take();
     }
 
-    pub fn get_receiver(&self) -> Option<Receiver<()>> {
-        self.1.lock().expect("lock failed").take()
+    pub async fn get_receiver(&self) -> Option<Receiver<()>> {
+        self.1.lock().await.take()
     }
 }
 
@@ -50,51 +50,51 @@ impl Timer {
         self.freeze_count.fetch_add(1, Ordering::SeqCst);
     }
 
-    pub fn unfreeze(&self) {
-        self.refresh();
+    pub async fn unfreeze(&self) {
+        self.refresh().await;
         self.freeze_count.fetch_sub(1, Ordering::SeqCst);
     }
 
-    pub fn refresh(&self) {
-        self.refresh_with(Instant::now());
+    pub async fn refresh(&self) {
+        self.refresh_with(Instant::now()).await;
     }
 
     pub async fn timeout(&self) {
-        while !self.is_timeout() {
-            delay_until(self.may_timeout_at()).await
+        while !self.is_timeout().await {
+            sleep_until(self.may_timeout_at().await).await
         }
     }
 
-    pub fn is_timeout_refresh(&self, inst: Instant) -> bool {
-        if self.is_timeout_with(inst) {
+    pub async fn is_timeout_refresh(&self, inst: Instant) -> bool {
+        if self.is_timeout_with(inst).await {
             return true;
         }
-        self.refresh_with(inst);
+        self.refresh_with(inst).await;
         false
     }
 
-    fn refresh_with(&self, inst: Instant) {
-        *self.last_time.lock().expect("lock failed") = inst;
+    async fn refresh_with(&self, inst: Instant) {
+        *self.last_time.lock().await = inst;
     }
 
-    fn is_timeout_with(&self, inst: Instant) -> bool {
+    async fn is_timeout_with(&self, inst: Instant) -> bool {
         if self.freeze_count.load(Ordering::SeqCst) != 0 {
-            self.refresh();
+            self.refresh().await;
             return false;
         }
         inst.elapsed().as_secs() >= self.interval
     }
 
-    fn is_timeout(&self) -> bool {
-        self.is_timeout_with(self.last_time())
+    async fn is_timeout(&self) -> bool {
+        self.is_timeout_with(self.last_time().await).await
     }
 
-    fn may_timeout_at(&self) -> Instant {
-        self.last_time() + Duration::from_secs(self.interval)
+    async fn may_timeout_at(&self) -> Instant {
+        self.last_time().await + Duration::from_secs(self.interval)
     }
 
-    fn last_time(&self) -> Instant {
-        *self.last_time.lock().expect("lock failed")
+    async fn last_time(&self) -> Instant {
+        *self.last_time.lock().await
     }
 }
 

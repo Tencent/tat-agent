@@ -2,8 +2,9 @@ use super::{execute_stream, PtyExecCallback, PtyResult};
 use crate::conpty::{session::PluginComp, PTY_INSPECT_READ};
 use crate::executor::unix::{build_envs, prepare_cmd};
 
+use std::collections::HashMap;
 use std::ffi::CStr;
-use std::fs::{metadata, File};
+use std::fs::File;
 use std::io::{Read, Write};
 use std::os::linux::fs::MetadataExt;
 use std::os::unix::prelude::{AsRawFd, CommandExt, FromRawFd, RawFd};
@@ -16,6 +17,7 @@ use libc::{
     self, getsid, pid_t, ttyname, uid_t, waitpid, winsize, SIGHUP, STDIN_FILENO, TIOCSCTTY,
 };
 use log::{error, info};
+use tokio::fs::{metadata, File as tokioFile};
 use unix_mode::{is_allowed, Access, Accessor};
 use users::os::unix::UserExt;
 use users::{get_user_by_name, User};
@@ -34,7 +36,7 @@ impl Pty {
         user_name: &str,
         cols: u16,
         rows: u16,
-        #[allow(dead_code)] _flag: u32,
+        envs: HashMap<String, String>,
     ) -> PtyResult<Pty> {
         let user = get_user_by_name(user_name).ok_or(format!("user {} not exist", user_name))?;
         let shell_path = user.shell();
@@ -45,7 +47,7 @@ impl Pty {
             .to_string();
 
         let home_path = user.home_dir().to_str().unwrap_or_else(|| "/tmp");
-        let envs = build_envs(user_name, home_path, &shell_path.to_string_lossy());
+        let local_envs = build_envs(user_name, home_path, &shell_path.to_string_lossy());
         let (master, slave) = openpty(user.clone(), cols, rows)?;
         let mut cmd = Command::new(&shell_name);
         if LOGIN_SHELL_SUPPORTED.contains(&shell_name.as_str()) {
@@ -71,7 +73,7 @@ impl Pty {
             .stdin(slave.try_clone().expect(""))
             .stdout(slave.try_clone().expect(""))
             .stderr(slave.try_clone().expect(""))
-            .envs(envs)
+            .envs(local_envs.into_iter().chain(envs))
             .current_dir(home_path)
             .spawn()
             .map_err(|e| format!("spawn error: {}", e))?;
@@ -93,7 +95,7 @@ impl Pty {
         });
     }
 
-    pub fn resize(&self, cols: u16, rows: u16) -> PtyResult<()> {
+    pub async fn resize(&self, cols: u16, rows: u16) -> PtyResult<()> {
         let size = winsize {
             ws_row: rows,
             ws_col: cols,
@@ -106,14 +108,14 @@ impl Pty {
             .ok_or_else(|| io::Error::last_os_error().to_string())
     }
 
-    pub fn get_reader(&self) -> PtyResult<tokio::fs::File> {
-        self.get_writer()
+    pub async fn get_reader(&self) -> PtyResult<tokioFile> {
+        self.get_writer().await
     }
 
-    pub fn get_writer(&self) -> PtyResult<tokio::fs::File> {
+    pub async fn get_writer(&self) -> PtyResult<tokioFile> {
         self.master
             .try_clone()
-            .map(|f| tokio::fs::File::from_std(f))
+            .map(|f| tokioFile::from_std(f))
             .map_err(|e| format!("error: {e}"))
     }
 
@@ -151,8 +153,8 @@ impl Drop for Pty {
 }
 
 impl PluginComp {
-    pub fn inspect_access(&self, path: &str, access: u8) -> PtyResult<()> {
-        let metadata = metadata(path).map_err(|e| e.to_string())?;
+    pub async fn inspect_access(&self, path: &str, access: u8) -> PtyResult<()> {
+        let metadata = metadata(path).await.map_err(|e| e.to_string())?;
         let user = self.get_user()?;
         let access = match access {
             PTY_INSPECT_READ => Access::Read,
@@ -237,7 +239,7 @@ impl PluginComp {
         let cwd_path = self.get_cwd(&user);
         let cmd = prepare_cmd(cmd, &user, cwd_path);
 
-        let callback = callback.unwrap_or_else(|| Box::new(|_, _, _, _| ()));
+        let callback = callback.unwrap_or_else(|| Box::new(|_, _, _, _| Box::pin(async {})));
         let timeout = timeout.unwrap_or(60);
         execute_stream(cmd, &callback, timeout).await
     }

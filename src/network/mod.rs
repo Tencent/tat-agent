@@ -122,9 +122,7 @@ pub fn register(
     register_value: &String,
 ) -> Result<(), String> {
     //temp runtime in current thread
-    // tokio::runtime::Builder::new_current_thread()
-    tokio::runtime::Builder::new()
-        .basic_scheduler()
+    tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("register runtime failed")
@@ -143,9 +141,7 @@ pub fn register(
 }
 
 pub fn check() {
-    // tokio::runtime::Builder::new_current_thread()
-    tokio::runtime::Builder::new()
-        .basic_scheduler()
+    tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("check runtime failed")

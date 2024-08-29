@@ -11,7 +11,10 @@ ExecStartPost=/bin/sleep 0.2
 KillMode=process
 Restart=always
 RestartSec=1s
-OOMPolicy=continue
+LimitNOFILE=1024:infinity
+
+# Enable OOMPolicy only for systemd v243+
+# OOMPolicy=continue
 
 [Install]
 WantedBy=multi-user.target

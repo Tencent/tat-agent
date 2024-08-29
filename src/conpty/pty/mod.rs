@@ -8,9 +8,11 @@ use crate::conpty::{WS_MSG_TYPE_PTY_ERROR, WS_MSG_TYPE_PTY_OUTPUT};
 use crate::executor::{decode_output, init_cmd, kill_process_group};
 use crate::network::types::ws_msg::{
     ExecCmdReq, ExecCmdStreamReq, ExecCmdStreamResp, PtyBinBase, PtyBinErrMsg, PtyError, PtyInput,
-    PtyJsonBase, PtyOutput, PtyReady, PtyResize, PtyStart, PtyStop,
+    PtyJsonBase, PtyMaxRate, PtyOutput, PtyReady, PtyResize, PtyStart, PtyStop,
 };
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -21,13 +23,14 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::Instant;
 
 use super::{
-    PTY_EXEC_DATA_SIZE, PTY_FLAG_ENABLE_BLOCK, SLOT_PTY_BIN, WS_MSG_TYPE_PTY_EXEC_CMD,
-    WS_MSG_TYPE_PTY_EXEC_CMD_STREAM, WS_MSG_TYPE_PTY_INPUT, WS_MSG_TYPE_PTY_RESIZE,
-    WS_MSG_TYPE_PTY_START, WS_MSG_TYPE_PTY_STOP,
+    PTY_EXEC_DATA_SIZE, SLOT_PTY_BIN, WS_MSG_TYPE_PTY_EXEC_CMD, WS_MSG_TYPE_PTY_EXEC_CMD_STREAM,
+    WS_MSG_TYPE_PTY_INPUT, WS_MSG_TYPE_PTY_MAX_RATE, WS_MSG_TYPE_PTY_RESIZE, WS_MSG_TYPE_PTY_START,
+    WS_MSG_TYPE_PTY_STOP,
 };
 const SLOT_PTY_CMD: &str = "event_slot_pty_cmd";
 const PTY_REMOVE_INTERVAL: u64 = 60 * 3;
 const PTY_BUF_SIZE: usize = 1024;
+const PTY_SHELL_EXIT_ERR: &str = "I/O error (os error 5)";
 
 cfg_if::cfg_if! {
     if #[cfg(unix)] {
@@ -44,12 +47,17 @@ cfg_if::cfg_if! {
         pub use windows::Pty;
 
         use crate::executor::windows::resume_as_user;
+        use super::PTY_FLAG_ENABLE_BLOCK;
         use std::fs::File;
     }
 }
 
-type PtyExecCallback = Box<dyn Fn(u32, bool, Option<i32>, Vec<u8>) + Send + Sync>;
 type PtyResult<T> = Result<T, String>;
+type PtyExecCallback = Box<
+    dyn Fn(u32, bool, Option<i32>, Vec<u8>) -> Pin<Box<dyn Future<Output = ()> + Send>>
+        + Send
+        + Sync,
+>;
 
 pub fn register_pty_handlers(event_bus: &Arc<EventBus>) {
     event_bus
@@ -64,6 +72,9 @@ pub fn register_pty_handlers(event_bus: &Arc<EventBus>) {
         })
         .slot_register(SLOT_PTY_CMD, WS_MSG_TYPE_PTY_INPUT, move |value| {
             JsonHandler::<PtyInput>::dispatch(value, true);
+        })
+        .slot_register(SLOT_PTY_CMD, WS_MSG_TYPE_PTY_MAX_RATE, move |value| {
+            JsonHandler::<PtyMaxRate>::dispatch(value, false);
         })
         .slot_register(SLOT_PTY_BIN, WS_MSG_TYPE_PTY_EXEC_CMD, move |value| {
             BsonHandler::<ExecCmdReq>::dispatch(value, true);
@@ -90,20 +101,26 @@ impl Handler for JsonHandler<PtyStart> {
             username = get_current_username();
         }
 
-        // necessary for pty on Windows systems
-        let mut flag: u32 = 0;
-        if req.init_block {
-            flag = flag | PTY_FLAG_ENABLE_BLOCK
-        }
-
         let comp = if req.no_shell {
             PluginComp::None { username }
         } else {
-            let pty = match Pty::new(&username, req.cols, req.rows, flag) {
+            #[cfg(windows)]
+            let pty_res = {
+                let mut flag: u32 = 0;
+                if req.init_block {
+                    flag = flag | PTY_FLAG_ENABLE_BLOCK
+                }
+                Pty::new(&username, req.cols, req.rows, flag)
+            };
+
+            #[cfg(unix)]
+            let pty_res = Pty::new(&username, req.cols, req.rows, req.envs.clone());
+
+            let pty = match pty_res {
                 Ok(pty) => pty,
                 Err(e) => {
                     error!("pty_start `{}` failed, open pty err: {}", self.id(), e);
-                    return self.reply(PtyError::new(e));
+                    return self.reply(PtyError::new(e)).await;
                 }
             };
             PluginComp::Pty(pty)
@@ -115,18 +132,21 @@ impl Handler for JsonHandler<PtyStart> {
         };
 
         let channel = Arc::new(Channel::new(session_id, channel_id, plugin));
-        let session = Gather::get_session(session_id).unwrap_or_else(|| {
-            let s = Arc::new(Session::new(session_id));
-            let _ = Gather::add_session(session_id, s.clone());
-            s
-        });
+        let session = match Gather::get_session(session_id).await {
+            Some(s) => s,
+            None => {
+                let s = Arc::new(Session::new(session_id));
+                let _ = Gather::add_session(session_id, s.clone()).await;
+                s
+            }
+        };
 
-        if let Err(e) = session.add_channel(channel_id, channel) {
-            return self.reply(PtyError::new(e));
+        if let Err(e) = session.add_channel(channel_id, channel).await {
+            return self.reply(PtyError::new(e)).await;
         }
 
         info!("pty_start `{}` success", self.id());
-        self.reply(PtyReady {});
+        self.reply(PtyReady {}).await
     }
 }
 
@@ -137,13 +157,13 @@ impl Handler for JsonHandler<PtyStop> {
         let channel_id = &self.request.channel_id;
         info!("=>pty_stop `{}`", self.id());
 
-        let Some(session) = Gather::get_session(session_id) else {
+        let Some(session) = Gather::get_session(session_id).await else {
             return;
         };
         if channel_id.is_empty() {
-            Gather::remove_session(session_id);
+            Gather::remove_session(session_id).await;
         } else if self.channel.is_some() {
-            session.remove_channel(channel_id);
+            session.remove_channel(channel_id).await;
         }
     }
 }
@@ -152,12 +172,13 @@ impl Handler for JsonHandler<PtyStop> {
 impl Handler for JsonHandler<PtyResize> {
     async fn process(self) {
         info!("=>pty_resize `{}`", self.id());
-        let channel = self.channel.clone();
+        let channel = &self.channel;
         let Some(pty) = channel.as_ref().unwrap().plugin.try_get_pty() else {
             error!("channel `{}` pty not found", self.id());
-            return self.reply(PtyError::new("pty not found"));
+            return self.reply(PtyError::new("pty not found")).await;
         };
-        if let Err(e) = pty.resize(self.request.data.cols, self.request.data.rows) {
+        let d = &self.request.data;
+        if let Err(e) = pty.resize(d.cols, d.rows).await {
             error!("pty_resize `{}` error: {}", self.id(), e);
         };
     }
@@ -169,14 +190,14 @@ impl Handler for JsonHandler<PtyInput> {
         // info!("=>pty_input `{}`", self.id());
         let data = match STANDARD.decode(&self.request.data.input) {
             Ok(data) => data,
-            Err(e) => return self.reply(PtyError::new(e)),
+            Err(e) => return self.reply(PtyError::new(e)).await,
         };
-        let channel = self.channel.clone();
+        let channel = &self.channel;
         let Some(pty) = channel.as_ref().unwrap().plugin.try_get_pty() else {
             error!("channel `{}` pty not found", self.id());
-            return self.reply(PtyError::new("pty not found"));
+            return self.reply(PtyError::new("pty not found")).await;
         };
-        let mut writer = match pty.get_writer() {
+        let mut writer = match pty.get_writer().await {
             Ok(w) => w,
             Err(e) => return error!("pty_input `{}` error: {}", self.id(), e),
         };
@@ -190,7 +211,8 @@ impl Handler for JsonHandler<PtyInput> {
 #[async_trait]
 impl Handler for BsonHandler<ExecCmdReq> {
     async fn process(self) {
-        self.reply(PtyBinErrMsg::new("not support on windows"));
+        self.reply(PtyBinErrMsg::new("not support on windows"))
+            .await
     }
 }
 
@@ -225,11 +247,11 @@ impl Handler for BsonHandler<ExecCmdReq> {
             Ok(output) => {
                 let output = String::from_utf8_lossy(&output).to_string();
                 info!("exec_cmd `{}` success, output: {}", self.id(), output);
-                self.reply(ExecCmdResp { output })
+                self.reply(ExecCmdResp { output }).await
             }
             Err(err) => {
                 error!("exec_cmd `{}` failed: {}", self.id(), err);
-                self.reply(PtyBinErrMsg::new(err))
+                self.reply(PtyBinErrMsg::new(err)).await
             }
         }
     }
@@ -245,7 +267,7 @@ impl Handler for BsonHandler<ExecCmdStreamReq> {
         let cid = self.request.channel_id.clone();
         let cdata = self.request.custom_data.clone();
         let op = self.op_type.clone();
-        let cb = Box::new(move |index, is_last, exit_code, data: Vec<u8>| {
+        let cb: PtyExecCallback = Box::new(move |index, is_last, exit_code, data: Vec<u8>| {
             let msg = PtyBinBase {
                 session_id: sid.clone(),
                 channel_id: cid.clone(),
@@ -257,7 +279,8 @@ impl Handler for BsonHandler<ExecCmdStreamReq> {
                     data,
                 },
             };
-            Gather::reply_bson_msg(&op, msg)
+            let op = op.clone();
+            Box::pin(async move { Gather::reply_bson_msg(&op, msg).await })
         });
 
         let cmd = init_cmd(&data.cmd);
@@ -267,11 +290,20 @@ impl Handler for BsonHandler<ExecCmdStreamReq> {
             .component
             .execute_stream(cmd, Some(cb), data.timeout)
             .await;
-        plugin.controller.timer.unfreeze();
+        plugin.controller.timer.unfreeze().await;
         if let Err(e) = result {
             error!("exec_cmd_stream `{}` failed: {}", self.id(), e);
-            self.reply(PtyBinErrMsg::new(e))
+            self.reply(PtyBinErrMsg::new(e)).await
         }
+    }
+}
+
+#[async_trait]
+impl Handler for JsonHandler<PtyMaxRate> {
+    async fn process(self) {
+        let rate = self.request.data.rate;
+        info!("=>pty_max_rate: {} MB/s", rate);
+        Gather::set_limiter(rate).await
     }
 }
 
@@ -281,9 +313,13 @@ impl Pty {
             session_id,
             channel_id,
         } = data;
-        let mut stopper_rx = ctrl.stopper.get_receiver().expect("get_receiver failed");
+        let mut stopper_rx = ctrl
+            .stopper
+            .get_receiver()
+            .await
+            .expect("get_receiver failed");
         let mut buf = [0u8; PTY_BUF_SIZE];
-        let mut reader = self.get_reader().expect("get_reader Failed");
+        let mut reader = self.get_reader().await.expect("get_reader Failed");
         // Upon initialization, set the last reply time to an instant before the timer was created.
         let mut last_reply = Instant::now() - Duration::from_secs(PTY_REMOVE_INTERVAL);
 
@@ -298,21 +334,24 @@ impl Pty {
                             channel_id:  channel_id.clone(),
                             data: PtyOutput { output: data },
                         };
-                        Gather::reply_json_msg(WS_MSG_TYPE_PTY_OUTPUT, pty_output);
+                        Gather::reply_json_msg(WS_MSG_TYPE_PTY_OUTPUT, pty_output).await;
                         last_reply = Instant::now();
                     }
                     Err(e) => {
-                        info!("Pty `{id}` err: {}", e);
+                        match e.to_string().as_str() {
+                            PTY_SHELL_EXIT_ERR => info!("Pty `{id}` shell exited"),
+                            _ => error!("Pty `{id}` err: {}", e),
+                        }
                         let pty_logout = PtyJsonBase {
                             session_id:  session_id.clone(),
                             channel_id:  channel_id.clone(),
-                            data: PtyError::new("loginout"),
+                            data: PtyError::new("logout"),
                         };
-                        break Gather::reply_json_msg(WS_MSG_TYPE_PTY_ERROR, pty_logout);
+                        break Gather::reply_json_msg(WS_MSG_TYPE_PTY_ERROR, pty_logout).await;
                     }
                 },
                 _ = &mut stopper_rx => break info!("Pty `{id}` stopped"),
-                _ = ctrl.timer.timeout() => if ctrl.timer.is_timeout_refresh(last_reply) {
+                _ = ctrl.timer.timeout() => if ctrl.timer.is_timeout_refresh(last_reply).await {
                     break info!("Pty `{id}` timeout");
                 },
             };
@@ -335,7 +374,7 @@ pub async fn execute_stream(
 
     #[allow(unused_mut)] // Unix needs MUT, Windows does not.
     let mut child = cmd.spawn().map_err(|_| "command start failed")?;
-    let pid = child.id();
+    let pid = child.id().unwrap();
 
     #[cfg(windows)]
     let mut reader = {
@@ -355,10 +394,10 @@ pub async fn execute_stream(
                     break;
                 }
                 let output = decode_output(&buf[..len]);
-                callback(idx, is_last, None, output.into());
+                callback(idx, is_last, None, output.into()).await;
                 idx += 1;
             }
-            _ = tokio::time::delay_until(timeout_at) => {
+            _ = tokio::time::sleep_until(timeout_at) => {
                 error!("work_as_user func timeout");
                 kill_process_group(pid);
                 Err("command timeout, process killed")?;
@@ -375,7 +414,7 @@ pub async fn execute_stream(
         error!("work_as_user func exit failed: {}", exit_status);
     }
     let exit_code = exit_status.code().ok_or("command terminated abnormally")?;
-    callback(idx, is_last, Some(exit_code), Vec::new());
+    callback(idx, is_last, Some(exit_code), Vec::new()).await;
     Ok(())
 }
 
@@ -383,6 +422,7 @@ pub async fn execute_stream(
 mod test {
     use super::{Pty, PtyResult};
     use crate::common::utils::get_current_username;
+    use crate::conpty::pty::PtyExecCallback;
     use crate::conpty::session::PluginComp;
     use crate::executor::init_cmd;
 
@@ -396,9 +436,12 @@ mod test {
     #[tokio::test]
     async fn test_pty() {
         let user_name = get_current_username();
+        #[cfg(windows)]
         let pty = Pty::new(&user_name, 200, 100, 0).unwrap();
-        let mut reader = pty.get_reader().unwrap();
-        let mut writer = pty.get_writer().unwrap();
+        #[cfg(unix)]
+        let pty = Pty::new(&user_name, 200, 100, HashMap::new()).unwrap();
+        let mut reader = pty.get_reader().await.unwrap();
+        let mut writer = pty.get_writer().await.unwrap();
 
         //consume data
         loop {
@@ -448,7 +491,7 @@ mod test {
         let username = get_current_username();
         let plugin = PluginComp::None { username };
 
-        let cb = Box::new(
+        let cb: PtyExecCallback = Box::new(
             move |idx: u32, is_last: bool, exit_code: Option<i32>, data: Vec<u8>| {
                 let (expect_is_last, expect_exit_code, expect_data) = data_map
                     .get(&idx)
@@ -457,6 +500,7 @@ mod test {
                 assert_eq!(*expect_is_last, is_last);
                 assert_eq!(*expect_exit_code, exit_code);
                 assert_eq!(*expect_data, data);
+                Box::pin(async {})
             },
         );
         let cmd = init_cmd(script);

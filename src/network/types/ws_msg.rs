@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 pub const WS_MSG_TYPE_KICK: &str = "kick";
 pub const WS_MSG_TYPE_CHECK_UPDATE: &str = "CheckUpdate";
@@ -38,6 +40,8 @@ pub struct PtyStart {
     pub init_block: bool,
     #[serde(default)]
     pub no_shell: bool,
+    #[serde(default)]
+    pub envs: HashMap<String, String>,
 }
 
 #[derive(Default, Serialize, Deserialize, Debug)]
@@ -69,6 +73,12 @@ pub struct PtyOutput {
 #[derive(Default, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]
 pub struct PtyReady {}
+
+#[derive(Default, Serialize, Deserialize, Debug)]
+#[serde(rename_all = "PascalCase")]
+pub struct PtyMaxRate {
+    pub rate: usize,
+}
 
 #[derive(Default, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]
@@ -117,6 +127,8 @@ pub struct CreateFileReq {
     pub mode: u32,
     #[serde(default)]
     pub overwrite: bool,
+    #[serde(default)]
+    pub is_dir: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -130,6 +142,8 @@ pub struct CreateFileResp {
 pub struct DeleteFileReq {
     #[serde(default)]
     pub path: String,
+    #[serde(default)]
+    pub is_dir: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug)]

@@ -21,14 +21,15 @@ use std::os::windows::io::FromRawHandle;
 use std::os::windows::prelude::AsRawHandle;
 use std::os::windows::raw::HANDLE;
 use std::ptr::null_mut;
-use std::sync::Mutex;
 use std::{mem, ptr};
 
 use log::{error, info};
 use ntapi::ntpsapi::{
     NtResumeProcess, NtSetInformationProcess, ProcessAccessToken, PROCESS_ACCESS_TOKEN,
 };
+use tokio::fs::File as tokioFile;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::Mutex;
 use winapi::shared::minwindef::{DWORD, LPDWORD};
 use winapi::shared::ntdef::{LPCWSTR, NULL};
 use winapi::um::fileapi::{CreateFileW, OPEN_EXISTING};
@@ -47,16 +48,16 @@ const DEFAULT_WORK_DIR: &str = "C:\\Program Files\\QCloud\\tat_agent\\";
 pub struct Pty {
     pty_ptr: Mutex<Box<winpty_t>>,
     token: File,
-    writer: File,
+    writer: tokioFile,
     enable_block: bool,
     user_name: String,
 }
 
 impl Pty {
     pub fn new(user_name: &str, cols: u16, rows: u16, flag: u32) -> PtyResult<Pty> {
-        let (pty_ptr, token) = openpty(user_name, cols, rows)?;
+        let (mut pty_ptr, token) = openpty(user_name, cols, rows)?;
         let writer = unsafe {
-            let conin_name = winpty_conin_name(pty_ptr.lock().unwrap().as_mut());
+            let conin_name = winpty_conin_name(pty_ptr.as_mut());
             let empty_handle = 0 as HANDLE;
             let conin = CreateFileW(
                 conin_name as LPWSTR,
@@ -74,30 +75,29 @@ impl Pty {
             File::from_raw_handle(conin)
         };
         Ok(Pty {
-            pty_ptr,
+            pty_ptr: Mutex::new(pty_ptr),
             token,
-            writer,
+            writer: tokioFile::from_std(writer),
             enable_block: flag & PTY_FLAG_ENABLE_BLOCK != 0,
             user_name: user_name.to_owned(),
         })
     }
 
-    pub fn resize(&self, cols: u16, rows: u16) -> PtyResult<()> {
-        let err_ptr: *mut winpty_error_ptr_t = ptr::null_mut();
+    pub async fn resize(&self, cols: u16, rows: u16) -> PtyResult<()> {
         unsafe {
             winpty_set_size(
-                self.pty_ptr.lock().unwrap().as_mut(),
+                self.pty_ptr.lock().await.as_mut(),
                 cols as i32,
                 rows as i32,
-                err_ptr,
+                ptr::null_mut(),
             );
         }
         Ok(())
     }
 
-    pub fn get_reader(&self) -> PtyResult<tokio::fs::File> {
+    pub async fn get_reader(&self) -> PtyResult<tokioFile> {
         unsafe {
-            let conin_name = winpty_conout_name(self.pty_ptr.lock().unwrap().as_mut());
+            let conin_name = winpty_conout_name(self.pty_ptr.lock().await.as_mut());
 
             let empty_handle = 0 as HANDLE;
             let conin = CreateFileW(
@@ -111,22 +111,22 @@ impl Pty {
             );
 
             if !self.enable_block {
-                return Ok(tokio::fs::File::from_std(File::from_raw_handle(conin)));
+                return Ok(tokioFile::from_std(File::from_raw_handle(conin)));
             }
             let input = File::from_raw_handle(conin);
             let (read_pipe, write_pipe) = anon_pipe(true)?;
-            Gather::runtime().spawn(async move {
+            tokio::spawn(async move {
                 let mut maker = BlockMarker::new(input, write_pipe);
                 maker.work().await;
             });
-            return Ok(tokio::fs::File::from_std(read_pipe));
+            return Ok(tokioFile::from_std(read_pipe));
         }
     }
 
-    pub fn get_writer(&self) -> PtyResult<tokio::fs::File> {
+    pub async fn get_writer(&self) -> PtyResult<tokioFile> {
         self.writer
             .try_clone()
-            .map(|f| tokio::fs::File::from_std(f))
+            .await
             .map_err(|e| format!("error: {e}"))
     }
 }
@@ -134,16 +134,20 @@ impl Pty {
 impl Drop for Pty {
     fn drop(&mut self) {
         unsafe {
-            let process = winpty_agent_process(self.pty_ptr.lock().unwrap().as_mut()) as HANDLE;
-            let pid = GetProcessId(process);
-            kill_process_group(pid);
-            winpty_free(self.pty_ptr.lock().unwrap().as_mut());
+            let mut this: Mutex<Box<winpty_t>> = Mutex::new(Box::from_raw(ptr::null_mut()));
+            std::mem::swap(&mut self.pty_ptr, &mut this);
+            Gather::runtime().spawn(async move {
+                let process = winpty_agent_process(this.lock().await.as_mut()) as HANDLE;
+                let pid = GetProcessId(process);
+                kill_process_group(pid);
+                winpty_free(this.lock().await.as_mut());
+            });
         }
     }
 }
 
 impl PluginComp {
-    pub fn inspect_access(&self, path: &str, access: u8) -> PtyResult<()> {
+    pub async fn inspect_access(&self, path: &str, access: u8) -> PtyResult<()> {
         unsafe {
             let desired_access = if access == PTY_INSPECT_WRITE {
                 FILE_GENERIC_WRITE
@@ -195,7 +199,7 @@ impl PluginComp {
         let (receiver, sender) = anon_pipe(true)?;
         let cmd = prepare_cmd(cmd, &username, &work_dir, sender)?;
 
-        let callback = callback.unwrap_or_else(|| Box::new(|_, _, _, _| ()));
+        let callback = callback.unwrap_or_else(|| Box::new(|_, _, _, _| Box::pin(async {})));
         let timeout = timeout.unwrap_or(60);
         execute_stream(cmd, &callback, timeout, &token, receiver, &username).await
     }
@@ -218,8 +222,8 @@ impl PluginComp {
 }
 
 struct BlockMarker {
-    readf: tokio::fs::File,
-    writef: tokio::fs::File,
+    readf: tokioFile,
+    writef: tokioFile,
     history: Vec<AnsiItem>,
     state: String,
 }
@@ -231,8 +235,8 @@ const BLOCK_MARKER_BUF_SIZE: usize = 4096;
 impl BlockMarker {
     fn new(input: File, output: File) -> Self {
         BlockMarker {
-            readf: tokio::fs::File::from_std(input),
-            writef: tokio::fs::File::from_std(output),
+            readf: tokioFile::from_std(input),
+            writef: tokioFile::from_std(output),
             history: vec![],
             state: PS_STATE_INPUT.to_string(),
         }
@@ -333,7 +337,7 @@ fn get_cwd(token: HANDLE) -> Vec<u16> {
     cwd
 }
 
-fn openpty(user_name: &str, cols: u16, rows: u16) -> PtyResult<(Mutex<Box<winpty_t>>, File)> {
+fn openpty(user_name: &str, cols: u16, rows: u16) -> PtyResult<(Box<winpty_t>, File)> {
     unsafe {
         let token = get_user_token(user_name)?;
         let mut err_ptr: *mut winpty_error_ptr_t = ptr::null_mut();
@@ -405,6 +409,6 @@ fn openpty(user_name: &str, cols: u16, rows: u16) -> PtyResult<(Mutex<Box<winpty
 
         CloseHandle(process);
 
-        Ok((Mutex::new(Box::from_raw(pty_ptr)), token))
+        Ok((Box::from_raw(pty_ptr), token))
     }
 }

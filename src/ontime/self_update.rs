@@ -32,7 +32,7 @@ cfg_if::cfg_if! {
 }
 
 pub fn try_update(self_updating: Arc<AtomicBool>, need_restart: Arc<AtomicBool>) {
-    let rt_res = Builder::new().basic_scheduler().enable_all().build();
+    let rt_res = Builder::new_current_thread().enable_all().build();
     if let Err(e) = rt_res {
         warn!("runtime for try update build failed: {e:?}, will retry later");
         self_updating.store(false, Ordering::SeqCst);

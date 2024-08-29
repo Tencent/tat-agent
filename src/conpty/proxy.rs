@@ -50,14 +50,18 @@ impl Handler for BsonHandler<ProxyNew> {
         let channel_id = match self.channel.as_ref() {
             Some(ch) if ch.plugin.try_get_proxy().is_some() => {
                 error!("duplicate proxy_new `{proxy_id}`");
-                return self.reply(PtyBinErrMsg::new(format!("proxy already start")));
+                return self
+                    .reply(PtyBinErrMsg::new(format!("proxy already start")))
+                    .await;
             }
             // Compatible with legacy front-end code
             // If no channel_id is provided, use proxy_id as channel_id.
             _ if req.channel_id.is_empty() => proxy_id.clone(),
             Some(_) => {
                 error!("channel `{}` already start", self.id());
-                return self.reply(PtyBinErrMsg::new(format!("channel already start")));
+                return self
+                    .reply(PtyBinErrMsg::new(format!("channel already start")))
+                    .await;
             }
             None => req.channel_id.clone(),
         };
@@ -79,14 +83,17 @@ impl Handler for BsonHandler<ProxyNew> {
             controller: PluginCtrl::new(PROXY_REMOVE_INTERVAL),
         };
         let channel = Arc::new(Channel::new(&req.session_id, &channel_id, plugin));
-        let session = Gather::get_session(&req.session_id).unwrap_or_else(|| {
-            let s = Arc::new(Session::new(&req.session_id));
-            let _ = Gather::add_session(&req.session_id, s.clone());
-            s
-        });
+        let session = match Gather::get_session(&req.session_id).await {
+            Some(s) => s,
+            None => {
+                let s = Arc::new(Session::new(&req.session_id));
+                let _ = Gather::add_session(&req.session_id, s.clone()).await;
+                s
+            }
+        };
 
-        if let Err(e) = session.add_channel(&channel_id, channel) {
-            return self.reply(PtyBinErrMsg::new(e));
+        if let Err(e) = session.add_channel(&channel_id, channel).await {
+            return self.reply(PtyBinErrMsg::new(e)).await;
         }
 
         let data = PtyBinBase {
@@ -95,7 +102,7 @@ impl Handler for BsonHandler<ProxyNew> {
             custom_data: "".to_owned(),
             data: ProxyReady { proxy_id },
         };
-        Gather::reply_bson_msg(WS_MSG_TYPE_PTY_PROXY_READY, data);
+        Gather::reply_bson_msg(WS_MSG_TYPE_PTY_PROXY_READY, data).await
     }
 }
 
@@ -110,8 +117,8 @@ impl Handler for BsonHandler<ProxyData> {
         // Compatible with legacy front-end code
         // If no channel_id is provided, use proxy_id as channel_id.
         if req.channel_id.is_empty() {
-            if let Some(session) = Gather::get_session(&req.session_id) {
-                if let Some(channel) = session.get_channel(proxy_id) {
+            if let Some(session) = Gather::get_session(&req.session_id).await {
+                if let Some(channel) = session.get_channel(proxy_id).await {
                     ch = channel.clone();
                 }
             }
@@ -136,15 +143,15 @@ impl Handler for BsonHandler<ProxyClose> {
         let req = &self.request;
         let proxy_id = &req.data.proxy_id;
         info!("=>proxy_closed `{}`, channel `{}`", proxy_id, self.id());
-        let Some(session) = Gather::get_session(&req.session_id) else {
+        let Some(session) = Gather::get_session(&req.session_id).await else {
             return;
         };
         if req.channel_id.is_empty() {
             // Compatible with legacy front-end code
             // If no channel_id is provided, use proxy_id as channel_id.
-            session.remove_channel(proxy_id);
+            session.remove_channel(proxy_id).await;
         } else if self.channel.is_some() {
-            session.remove_channel(&req.channel_id);
+            session.remove_channel(&req.channel_id).await;
         }
     }
 }
@@ -160,7 +167,11 @@ impl Proxy {
         let mut buffer = [0u8; PROXY_BUF_SIZE];
         let mut size = 0;
         let mut count = 0;
-        let mut stopper_rx = ctrl.stopper.get_receiver().expect("get_receiver failed");
+        let mut stopper_rx = ctrl
+            .stopper
+            .get_receiver()
+            .await
+            .expect("get_receiver failed");
         let mut reader = self.reader.lock().await;
         // Upon initialization, set the last reply time to an instant before the timer was created.
         let mut last_reply = Instant::now() - Duration::from_secs(PROXY_REMOVE_INTERVAL);
@@ -175,7 +186,7 @@ impl Proxy {
                             proxy_id: self.proxy_id.clone(),
                             data: buffer[..i].to_vec(),
                         };
-                        self.post(WS_MSG_TYPE_PTY_PROXY_DATA, data, msg_data);
+                        self.post(WS_MSG_TYPE_PTY_PROXY_DATA, data, msg_data).await;
                         last_reply = Instant::now();
                         size += i;
                         count += 1;
@@ -183,7 +194,7 @@ impl Proxy {
                     Err(e) => break error!("Proxy `{}` read failed: {}", id, e),
                 },
                 _ = &mut stopper_rx => break info!("Proxy `{}` stopped", id),
-                _ = ctrl.timer.timeout() => if ctrl.timer.is_timeout_refresh(last_reply) {
+                _ = ctrl.timer.timeout() => if ctrl.timer.is_timeout_refresh(last_reply).await {
                     break info!("Proxy `{}` timeout", id);
                 },
             };
@@ -192,17 +203,17 @@ impl Proxy {
         let msg_data = ProxyClose {
             proxy_id: self.proxy_id.clone(),
         };
-        self.post(WS_MSG_TYPE_PTY_PROXY_CLOSE, data, msg_data);
+        self.post(WS_MSG_TYPE_PTY_PROXY_CLOSE, data, msg_data).await;
         info!("Proxy `{}` send total size: {}, count: {}", id, size, count);
     }
 
-    fn post<T: Serialize>(&self, msg_type: &str, ids: &PluginData, data: T) {
+    async fn post<T: Serialize>(&self, msg_type: &str, ids: &PluginData, data: T) {
         let data = PtyBinBase {
             session_id: ids.session_id.clone(),
             channel_id: ids.channel_id.clone(),
             custom_data: "".to_owned(),
             data,
         };
-        Gather::reply_bson_msg(msg_type, data);
+        Gather::reply_bson_msg(msg_type, data).await
     }
 }

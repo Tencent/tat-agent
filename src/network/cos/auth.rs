@@ -26,7 +26,6 @@ pub fn cos_sign(
     // Step 2: Generate SignKey
     // Utilize HMAC-SHA1 with the SecretKey as the key and KeyTime as the message
     // to compute the message digest (hash value, in hexadecimal lowercase form), which is the SignKey.
-    // For example: eb2519b498b02ac213cb1f3d1a3d27a3b3c9bc5f.
     let sign_key = Hmac::<Sha1>::new_from_slice(secret_key.as_bytes())
         .expect("Hmac init failed")
         .chain_update(key_time.as_bytes())
@@ -75,7 +74,6 @@ pub fn cos_sign(
     // Step 7: Generate Signature
     // Use HMAC-SHA1 with the SignKey as the key (in string format, not raw binary)
     // and the StringToSign as the message to compute the message digest, which will be the Signature.
-    // For example: 01681b8c9d798a678e43b685a9f1bba0f6c0e012.
     let signature = Hmac::<Sha1>::new_from_slice(sign_key.as_bytes())
         .expect("Hmac init failed")
         .chain_update(string_to_sign.as_bytes())

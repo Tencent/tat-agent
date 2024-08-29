@@ -135,8 +135,7 @@ impl WindowsCommand {
                 self.cmd_path, self.work_dir, e
             )
         })?;
-        let pid = child.id();
-        // *self.pid.lock().unwrap() = Some(child.id().unwrap());
+        let pid = child.id().unwrap();
         *self.pid.lock().unwrap() = Some(pid);
         resume_as_user(pid, &self.username, &self.token);
         Ok(child)

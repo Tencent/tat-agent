@@ -93,8 +93,7 @@ impl UnixCommand {
                 self.cmd_path, self.work_dir, e
             )
         })?;
-        // *self.pid.lock().unwrap() = Some(child.id().unwrap());
-        *self.pid.lock().unwrap() = Some(child.id());
+        *self.pid.lock().unwrap() = Some(child.id().unwrap());
         Ok(child)
     }
 }

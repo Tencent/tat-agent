@@ -139,8 +139,7 @@ pub fn get_current_region() -> String {
         // Run the following code in a new thread, as it may be called inside or outside the tokio runtime.
         // Creating a tokio runtime multiple times will result in an error due to multiple runtime creation.
         std::thread::spawn(move || {
-            *region_0.lock().expect("lock fail") = tokio::runtime::Builder::new()
-                .basic_scheduler()
+            *region_0.lock().expect("lock fail") = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .expect("register runtime failed")

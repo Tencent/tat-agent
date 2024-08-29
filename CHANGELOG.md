@@ -2,9 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.18] - 2024-08-27
+
+### Changed
+
+- Added rate limiting logic for Pty output.
+- Optimized sync blocking operations in Pty async code.
+- Enhanced Pty file interface to support directory operations.
+- Upgraded versions of some dependencies.
+
 ## [1.0.17] - 2024-05-15
 
-## Changed
+### Changed
 
 - Support for multiplexing a single WebSocket connection across multiple Channels.
 - Enhanced the logical correctness of Pty-related interfaces.
