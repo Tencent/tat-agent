@@ -310,7 +310,7 @@ fn get_win32_ready_drives() -> Vec<String> {
         .collect()
 }
 
-//windows path format:  /d:/work
+//windows path format: /d:/work
 fn list_path(path: &str, filter: Pattern, show_hidden: bool) -> Result<Vec<FileInfoResp>, String> {
     let mut files = Vec::<FileInfoResp>::new();
     let mut path = path.to_string();

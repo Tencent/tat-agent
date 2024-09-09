@@ -66,9 +66,9 @@ mod unix {
         new_entry.ut_session = sid.into();
 
         cfg_if::cfg_if! {
-            if  #[cfg(target_arch = "aarch64")] {
+            if #[cfg(target_arch = "aarch64")] {
                 let current_timestamp = unsafe { time(ptr::null_mut()) as i64 };
-            } else  {
+            } else {
                 let current_timestamp = unsafe { time(ptr::null_mut()) as i32 };
             }
         }

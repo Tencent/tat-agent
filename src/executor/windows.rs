@@ -508,8 +508,10 @@ pub fn get_user_token(user_name: &str) -> Result<File, String> {
             .stdout(Stdio::piped())
             .output()
             .unwrap();
-        let version = String::from_utf8_lossy(&output.stdout);
-        info!("version is {}", version);
+        let version = String::from_utf8_lossy(&output.stdout)
+            .escape_debug()
+            .to_string();
+        info!("OS version: {}", version);
         let result = version.contains("2008");
         result
     });

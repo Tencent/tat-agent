@@ -8,7 +8,7 @@ fn main() {
         // handleStartProcessPacket function, the CREATE_SUSPENDED flag has been added when creating a subprocess.
         // This is done so that the new process starts in a suspended state, making it easier to switch the user
         // identity of the process later on. To inspect these changes, you can check the winpty-agent.pdb,winpty.pdb and source.zip.
-        // winpty-agent.pdb  https://tat-1258344699.cos.accelerate.myqcloud.com/winpty/winpty-agent.pdb
+        // winpty-agent.pdb https://tat-1258344699.cos.accelerate.myqcloud.com/winpty/winpty-agent.pdb
         // winpty.pdb https://tat-1258344699.cos.accelerate.myqcloud.com/winpty/winpty.pdb
         // source.zip https://tat-1258344699.cos.ap-beijing.myqcloud.com/winpty/source.zip
 

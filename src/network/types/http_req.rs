@@ -336,7 +336,7 @@ pub struct ReportResourceRequest {
     #[serde(default)]
     fd_avg: u32,
     #[serde(default)]
-    zp_cnt: u32, // always  0 on winodws;
+    zp_cnt: u32, // always 0 on winodws;
 }
 
 impl ReportResourceRequest {

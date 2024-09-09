@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::{env, io};
 
 use async_trait::async_trait;
-use libc;
+use libc::{self, SIGKILL};
 use log::warn;
 use tokio::process::{Child, Command};
 use users::os::unix::UserExt;
@@ -170,7 +170,7 @@ pub fn kill_process_group(pid: u32) {
     unsafe {
         // send SIGKILL to the process group of pid, note the -1
         // see more details at man 2 kill
-        libc::kill(pid * -1, 9);
+        libc::kill(pid * -1, SIGKILL);
     }
 }
 

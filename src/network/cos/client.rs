@@ -58,21 +58,3 @@ impl<'a> COS<'a> {
         now.format("%a, %d %b %Y %T GMT").to_string()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    // use crate::cos::client;
-    // use crate::cos::object::ObjectAPI;
-
-    // #[test]
-    // fn test_upload_object() {
-    //     let cli = client::COS::new(
-    //         "tmp_ak_id",
-    //         "tmp_ak_key",
-    //         "tmp_token",
-    //         "https://tat-xxxx.cos.ap-guangzhou.myqcloud.com",
-    //     );
-    //     let res = cli.put_object_from_file("README.md".to_string(), "/tat/README.md".to_string(), None);
-    //     assert!(res.is_ok());
-    // }
-}

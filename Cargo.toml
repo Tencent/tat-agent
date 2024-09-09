@@ -1,6 +1,6 @@
 [package]
 name = "tat_agent"
-version = "1.0.18"
+version = "1.0.19"
 edition = "2018"
 
 [dependencies]

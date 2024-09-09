@@ -4,20 +4,18 @@ use crate::executor::unix::{build_envs, prepare_cmd};
 
 use std::collections::HashMap;
 use std::ffi::CStr;
-use std::fs::File;
+use std::fs::File as StdFile;
 use std::io::{Read, Write};
 use std::os::linux::fs::MetadataExt;
-use std::os::unix::prelude::{AsRawFd, CommandExt, FromRawFd, RawFd};
+use std::os::unix::prelude::{AsRawFd, FromRawFd, RawFd};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
-use std::ptr::null_mut;
 use std::{env, io, ptr};
 
-use libc::{
-    self, getsid, pid_t, ttyname, uid_t, waitpid, winsize, SIGHUP, STDIN_FILENO, TIOCSCTTY,
-};
+use libc::{self, getsid, pid_t, ttyname, uid_t, winsize, STDIN_FILENO, TIOCSCTTY};
 use log::{error, info};
-use tokio::fs::{metadata, File as tokioFile};
+use tokio::fs::{metadata, File};
+use tokio::process::Command;
+use tokio::sync::oneshot::{channel, Sender};
 use unix_mode::{is_allowed, Access, Accessor};
 use users::os::unix::UserExt;
 use users::{get_user_by_name, User};
@@ -25,14 +23,14 @@ use users::{get_user_by_name, User};
 const LOGIN_SHELL_SUPPORTED: [&str; 4] = ["bash", "zsh", "fish", "tcsh"];
 
 pub struct Pty {
+    _kill_on_drop: Sender<()>,
     master: File,
-    child: Child,
     user: User,
-    tty_name: String,
+    pid: i32,
 }
 
 impl Pty {
-    pub fn new(
+    pub async fn new(
         user_name: &str,
         cols: u16,
         rows: u16,
@@ -69,7 +67,7 @@ impl Pty {
                 Ok(())
             });
         }
-        let child = cmd
+        let mut child = cmd
             .stdin(slave.try_clone().expect(""))
             .stdout(slave.try_clone().expect(""))
             .stderr(slave.try_clone().expect(""))
@@ -78,20 +76,34 @@ impl Pty {
             .spawn()
             .map_err(|e| format!("spawn error: {}", e))?;
 
-        let pid = child.id() as pid_t;
+        let pid = child.id().unwrap() as pid_t;
         let sid = unsafe { getsid(pid) };
         let utmx_type = "LOGIN";
         let tty_name = unsafe {
             let tty_name_c = ttyname(slave.as_raw_fd());
             CStr::from_ptr(tty_name_c).to_string_lossy().to_string()
         };
-        call_utmpx(&tty_name.clone(), user_name, pid, sid, &utmx_type);
+        call_utmpx(&tty_name.clone(), user_name, pid, sid, &utmx_type).await;
+
+        // Kill terminal process when Pty is dropped
+        let (send, mut recv) = channel::<()>();
+        let user_name = user_name.to_owned();
+        tokio::spawn(async move {
+            tokio::select! {
+                biased;
+                _ = child.wait() => {},
+                _ = &mut recv => child.kill().await.unwrap_or_default(),
+            }
+            let _ = child.wait().await; // Release zombie process after kill
+            let utmx_type = "EXIT";
+            call_utmpx(&tty_name, &user_name, pid, sid, &utmx_type).await;
+        });
 
         return Ok(Pty {
+            _kill_on_drop: send,
             master,
-            tty_name,
-            child,
             user,
+            pid,
         });
     }
 
@@ -108,47 +120,24 @@ impl Pty {
             .ok_or_else(|| io::Error::last_os_error().to_string())
     }
 
-    pub async fn get_reader(&self) -> PtyResult<tokioFile> {
+    pub async fn get_reader(&self) -> PtyResult<File> {
         self.get_writer().await
     }
 
-    pub async fn get_writer(&self) -> PtyResult<tokioFile> {
+    pub async fn get_writer(&self) -> PtyResult<File> {
         self.master
             .try_clone()
-            .map(|f| tokioFile::from_std(f))
+            .await
             .map_err(|e| format!("error: {e}"))
     }
 
     pub fn get_cwd(&self) -> PathBuf {
-        if let Ok(pid) = self.get_pid() {
-            let cwd_path = format!("/proc/{}/cwd", pid);
-            if let Ok(path) = std::fs::read_link(&cwd_path) {
-                return path;
-            };
-        }
-        return "/tmp".into();
-    }
-
-    fn get_pid(&self) -> PtyResult<u32> {
-        let pid = self.child.id();
-        Ok(pid)
-    }
-}
-
-impl Drop for Pty {
-    fn drop(&mut self) {
-        let pid = self.child.id() as i32;
-        let user = self.user.clone();
-        let tty_name = self.tty_name.clone();
-
-        unsafe {
-            let user_name = user.name().to_string_lossy().to_string();
-            let sid = getsid(pid);
-            let utmx_type = "EXIT";
-            call_utmpx(&tty_name, &user_name, pid, sid, &utmx_type);
-            libc::kill(pid * -1, SIGHUP);
-            waitpid(pid, null_mut(), 0);
-        }
+        let pid = self.pid;
+        let cwd_path = format!("/proc/{}/cwd", pid);
+        if let Ok(path) = std::fs::read_link(&cwd_path) {
+            return path;
+        };
+        "/tmp".into()
     }
 }
 
@@ -200,7 +189,7 @@ impl PluginComp {
                 let _ = env::set_current_dir(cwd_path);
                 libc::setgid(user.primary_group_id());
                 libc::setuid(user.uid());
-                let mut stdin = File::from_raw_fd(pipefd[1]);
+                let mut stdin = StdFile::from_raw_fd(pipefd[1]);
                 match f() {
                     Ok(output) => {
                         let _ = stdin.write_all(&output);
@@ -215,7 +204,7 @@ impl PluginComp {
             } else {
                 libc::close(pipefd[1]);
                 let mut output: Vec<u8> = Vec::new();
-                let mut stdout = File::from_raw_fd(pipefd[0]);
+                let mut stdout = StdFile::from_raw_fd(pipefd[0]);
                 let _ = stdout.read_to_end(&mut output);
                 let mut exit_code = 0 as i32;
                 libc::waitpid(pid, &mut exit_code, 0);
@@ -231,7 +220,7 @@ impl PluginComp {
 
     pub async fn execute_stream(
         &self,
-        cmd: tokio::process::Command,
+        cmd: Command,
         callback: Option<PtyExecCallback>,
         timeout: Option<u64>,
     ) -> PtyResult<()> {
@@ -263,7 +252,7 @@ impl PluginComp {
     }
 }
 
-fn openpty(user: User, cols: u16, rows: u16) -> PtyResult<(File, File)> {
+fn openpty(user: User, cols: u16, rows: u16) -> PtyResult<(File, StdFile)> {
     let mut master: RawFd = -1;
     let mut slave: RawFd = -1;
 
@@ -289,13 +278,13 @@ fn openpty(user: User, cols: u16, rows: u16) -> PtyResult<(File, File)> {
     }
 
     let master = unsafe { File::from_raw_fd(master) };
-    let slave = unsafe { File::from_raw_fd(slave) };
+    let slave = unsafe { StdFile::from_raw_fd(slave) };
     Ok((master, slave))
 }
 
-fn call_utmpx(ttyname: &str, username: &str, pid: libc::pid_t, sid: libc::pid_t, ut_type: &str) {
+async fn call_utmpx(ttyname: &str, username: &str, pid: pid_t, sid: pid_t, ut_type: &str) {
     info!(
-        "=>call_utmpx tty:{} user:{} pid:{} sid:{} type:{}",
+        "=>call_utmpx tty:{}, user:{}, pid:{}, sid:{}, type:{}",
         ttyname, username, pid, sid, ut_type
     );
     let current_bin = env::current_exe().expect("current path failed");
@@ -308,26 +297,23 @@ fn call_utmpx(ttyname: &str, username: &str, pid: libc::pid_t, sid: libc::pid_t,
         .arg(sid.to_string())
         .arg(ut_type)
         .output()
+        .await
     {
-        Ok(output) => {
-            info!(
-                "stdout:{}  stderr:{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-        Err(err) => {
-            info!("call_utmpx  err:{}", err);
-        }
+        Ok(output) => info!(
+            "stdout:{}, stderr:{}",
+            String::from_utf8_lossy(&output.stdout).escape_debug(),
+            String::from_utf8_lossy(&output.stderr).escape_debug(),
+        ),
+        Err(err) => info!("call_utmpx err:{}", err),
     }
 }
 
-fn audit_setloginuid(uid: uid_t) -> Result<(), std::io::Error> {
+fn audit_setloginuid(uid: uid_t) -> std::io::Result<()> {
     info!("=>audit_setloginuid {}", uid);
     let loginuid = format!("{}", uid);
     let loginuid_path = format!("/proc/self/loginuid");
 
-    let mut file = File::create(loginuid_path)?;
+    let mut file = StdFile::create(loginuid_path)?;
     file.write_all(loginuid.as_bytes())?;
     Ok(())
 }
@@ -336,8 +322,8 @@ fn audit_setloginuid(uid: uid_t) -> Result<(), std::io::Error> {
 mod tests {
     use crate::{common::utils::get_current_username, conpty::session::PluginComp};
 
-    #[test]
-    fn test_work_as_user() {
+    #[tokio::test]
+    async fn test_work_as_user() {
         let username = get_current_username();
         let plugin = PluginComp::None { username };
 

@@ -123,7 +123,7 @@ impl HttpWorker {
                     out.len(),
                     idx,
                     dropped,
-                    String::from_utf8_lossy(&out[..]).replace("\n", "\\n"),
+                    String::from_utf8_lossy(&out[..]).escape_debug(),
                 );
                 // output report task here
                 self.upload_task_log(task_id, idx, out, dropped).await;
@@ -156,7 +156,7 @@ impl HttpWorker {
                             "ready to report output dropped length:idx:{}, dropped:{}, output_debug:{}",
                             last_index,
                             dropped,
-                            String::from_utf8_lossy(&out[..]).replace("\n", "\\n"),
+                            String::from_utf8_lossy(&out[..]).escape_debug(),
                         );
                         // final dropped bytes report task here
                         self.upload_task_log(task_id, last_index, out, dropped)

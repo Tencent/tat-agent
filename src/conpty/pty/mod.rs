@@ -114,7 +114,7 @@ impl Handler for JsonHandler<PtyStart> {
             };
 
             #[cfg(unix)]
-            let pty_res = Pty::new(&username, req.cols, req.rows, req.envs.clone());
+            let pty_res = Pty::new(&username, req.cols, req.rows, req.envs.clone()).await;
 
             let pty = match pty_res {
                 Ok(pty) => pty,
@@ -330,8 +330,8 @@ impl Pty {
                     Ok(size) => {
                         let data = STANDARD.encode(&mut buf[..size]);
                         let pty_output = PtyJsonBase {
-                            session_id:  session_id.clone(),
-                            channel_id:  channel_id.clone(),
+                            session_id: session_id.clone(),
+                            channel_id: channel_id.clone(),
                             data: PtyOutput { output: data },
                         };
                         Gather::reply_json_msg(WS_MSG_TYPE_PTY_OUTPUT, pty_output).await;
@@ -343,8 +343,8 @@ impl Pty {
                             _ => error!("Pty `{id}` err: {}", e),
                         }
                         let pty_logout = PtyJsonBase {
-                            session_id:  session_id.clone(),
-                            channel_id:  channel_id.clone(),
+                            session_id: session_id.clone(),
+                            channel_id: channel_id.clone(),
                             data: PtyError::new("logout"),
                         };
                         break Gather::reply_json_msg(WS_MSG_TYPE_PTY_ERROR, pty_logout).await;
@@ -439,7 +439,9 @@ mod test {
         #[cfg(windows)]
         let pty = Pty::new(&user_name, 200, 100, 0).unwrap();
         #[cfg(unix)]
-        let pty = Pty::new(&user_name, 200, 100, HashMap::new()).unwrap();
+        let pty = Pty::new(&user_name, 200, 100, HashMap::new())
+            .await
+            .unwrap();
         let mut reader = pty.get_reader().await.unwrap();
         let mut writer = pty.get_writer().await.unwrap();
 

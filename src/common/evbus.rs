@@ -88,7 +88,7 @@ impl EventBus {
             return self;
         };
 
-        //create queue for  slot
+        //create queue for slot
         let queue = Arc::new(EventQueue::new());
         slot_queues.insert(slot.to_string(), queue.clone());
 
