@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.20] - 2024-09-23
+
+### Changed
+
+- Updated some descriptions in README.
+
 ## [1.0.19] - 2024-09-04
 
 ### Changed

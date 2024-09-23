@@ -2,14 +2,13 @@
 
 简体中文 | [English](./README.md)
 
-自动化助手（TencentCloud Automation Tools，TAT）是云服务器的原生运维部署工具。TAT提供自动化的远程操作方式，可直接管理实例，批量执行 Shell，Powershell，Python等命令，轻松完成运行自动化运维脚本、轮询进程、安装或卸载软件、更新应用以及安装补丁等常见管理任务。
+自动化助手（TencentCloud Automation Tools，TAT）是云服务器的原生运维部署工具。TAT提供自动化的远程操作方式，可直接管理实例，批量执行 Shell，Powershell，Batch 等命令，轻松完成运行自动化运维脚本、轮询进程、安装或卸载软件、更新应用以及安装补丁等常见管理任务。
 
 了解更多信息，请访问 <https://cloud.tencent.com/product/tat>
 
 ## 环境与工具
 
 - Rust 语言环境
-- Docker
 
 ## 编译
 
