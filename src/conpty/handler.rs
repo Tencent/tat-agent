@@ -1,18 +1,22 @@
 use super::{gather::Gather, session::Channel};
 use crate::network::types::ws_msg::{PtyBinBase, PtyBinErrMsg, PtyError, PtyJsonBase, WsMsg};
 
-use std::io::Cursor;
 use std::sync::Arc;
+use std::{future::Future, io::Cursor};
 
-use async_trait::async_trait;
 use bson::Document;
 use log::error;
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
 
-#[async_trait]
 pub trait Handler {
-    async fn process(self);
+    fn process(self) -> impl Future<Output = ()> + Send;
+}
+
+pub trait HandlerExt: Handler {
+    fn id(&self) -> String;
+    fn dispatch(msg: Vec<u8>, need_channel: bool) -> impl Future<Output = ()> + Send;
+    async fn reply<M: Serialize>(&self, data: M);
 }
 
 pub struct BsonHandler<T> {
@@ -21,15 +25,16 @@ pub struct BsonHandler<T> {
     pub op_type: String,
 }
 
-impl<T> BsonHandler<T>
+impl<T> HandlerExt for BsonHandler<T>
 where
-    T: DeserializeOwned + Default + Sync + Send + 'static,
+    T: DeserializeOwned + Default + Send + Sync,
+    Self: Handler,
 {
-    pub fn id(&self) -> String {
+    fn id(&self) -> String {
         format!("{}:{}", self.request.session_id, self.request.channel_id)
     }
 
-    pub fn dispatch(msg: Vec<u8>, channel_required: bool)
+    async fn dispatch(msg: Vec<u8>, need_channel: bool)
     where
         Self: Handler,
     {
@@ -49,9 +54,6 @@ where
             return error!("BsonHandler::dispatch {} msg.data is None", msg.r#type);
         };
 
-        let session_id = req.session_id.clone();
-        let channel_id = req.channel_id.clone();
-
         // Compatible with legacy front-end code
         // If no channel_id is provided, use empty string as channel_id.
         // if session_id.is_empty() || channel_id.is_empty() {
@@ -64,55 +66,49 @@ where
             op_type: op,
         };
 
-        Gather::runtime().spawn(async move {
-            if let Some(session) = Gather::get_session(&session_id).await {
-                if let Some(channel) = session.get_channel(&channel_id).await {
-                    handler.channel = Some(channel);
-                }
-            }
+        let session_id = &handler.request.session_id;
+        let channel_id = &handler.request.channel_id;
 
-            if channel_required && handler.channel.is_none() {
-                error!("BsonHandler::dispatch channel `{}` not found", handler.id());
-                return handler.reply(PtyBinErrMsg::new("Channel not found")).await;
+        if let Some(session) = Gather::get_session(session_id).await {
+            if let Some(channel) = session.get_channel(channel_id).await {
+                handler.channel = Some(channel);
             }
+        }
 
-            handler.process().await
-        });
+        if need_channel && handler.channel.is_none() {
+            error!("BsonHandler::dispatch channel `{}` not found", handler.id());
+            return handler.reply(PtyBinErrMsg::new("Channel not found")).await;
+        }
+
+        handler.process().await
     }
 
-    pub async fn reply<M: Serialize>(&self, data: M) {
-        Self::reply_with(&self.request, &self.op_type, data).await
-    }
-
-    async fn reply_with<M: Serialize>(req: &PtyBinBase<T>, op: &str, data: M) {
-        let session_id = req.session_id.clone();
-        let channel_id = req.channel_id.clone();
-        let custom_data = req.custom_data.clone();
+    async fn reply<M: Serialize>(&self, data: M) {
         let msg = PtyBinBase {
-            session_id,
-            channel_id,
-            custom_data,
+            session_id: self.request.session_id.clone(),
+            channel_id: self.request.channel_id.clone(),
+            custom_data: self.request.custom_data.clone(),
             data,
         };
-        Gather::reply_bson_msg(op, msg).await
+        Gather::reply_bson_msg(&self.op_type, msg).await
     }
 }
 
-// #[derive(Clone)]
 pub struct JsonHandler<T> {
     pub channel: Option<Arc<Channel>>,
     pub request: PtyJsonBase<T>,
 }
 
-impl<T> JsonHandler<T>
+impl<T> HandlerExt for JsonHandler<T>
 where
-    T: DeserializeOwned + Default + Sync + Send + 'static,
+    T: DeserializeOwned + Default + Send + Sync,
+    Self: Handler,
 {
-    pub fn id(&self) -> String {
+    fn id(&self) -> String {
         format!("{}:{}", self.request.session_id, self.request.channel_id)
     }
 
-    pub fn dispatch(msg: Vec<u8>, channel_required: bool)
+    async fn dispatch(msg: Vec<u8>, need_channel: bool)
     where
         Self: Handler,
     {
@@ -149,23 +145,21 @@ where
             request,
         };
 
-        Gather::runtime().spawn(async move {
-            if let Some(session) = Gather::get_session(&session_id).await {
-                if let Some(channel) = session.get_channel(&channel_id).await {
-                    handler.channel = Some(channel);
-                }
+        if let Some(session) = Gather::get_session(&session_id).await {
+            if let Some(channel) = session.get_channel(&channel_id).await {
+                handler.channel = Some(channel);
             }
+        }
 
-            if channel_required && handler.channel.is_none() {
-                error!("JsonHandler::dispatch channel `{}` not found", handler.id());
-                return handler.reply(PtyError::new("Channel not found")).await;
-            }
+        if need_channel && handler.channel.is_none() {
+            error!("JsonHandler::dispatch channel `{}` not found", handler.id());
+            return handler.reply(PtyError::new("Channel not found")).await;
+        }
 
-            handler.process().await
-        });
+        handler.process().await
     }
 
-    pub async fn reply<M: Serialize>(&self, data: M) {
+    async fn reply<M: Serialize>(&self, data: M) {
         let msg_type = get_msg_type(&data);
         let body = PtyJsonBase {
             session_id: self.request.session_id.clone(),

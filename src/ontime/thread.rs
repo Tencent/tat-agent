@@ -10,9 +10,7 @@ use std::time::{Duration, SystemTime};
 
 use log::{debug, info, warn};
 
-use crate::network::types::ws_msg::{WS_MSG_TYPE_CHECK_UPDATE, WS_MSG_TYPE_KICK};
-const ONTIME_KICK_SOURCE: &str = "ONTIME_KICK";
-const ONTIME_KICK_INTERVAL: u64 = 3600 * 24;
+use crate::network::types::ws_msg::WS_MSG_TYPE_CHECK_UPDATE;
 const ONTIME_UPDATE_INTERVAL: u64 = 2 * 60 * 60;
 const ONTIME_THREAD_INTERVAL: u64 = 1;
 const ONTIME_CHECK_TASK_NUM: u64 = 10;
@@ -28,8 +26,6 @@ pub fn run(
     let ret = thread::spawn(move || {
         let mut instant_leak = SystemTime::now();
 
-        let mut instant_kick = SystemTime::now();
-
         let mut instant_update =
             SystemTime::now() - Duration::from_secs(ONTIME_UPDATE_INTERVAL - 10);
 
@@ -44,8 +40,6 @@ pub fn run(
         loop {
             //leakage check
             check_resource_leakage(&mut instant_leak);
-            // inter-thread channel communication, very fast
-            check_ontime_kick(&mut instant_kick, dispatcher.clone());
             // do self update in a new thread, will not block current thread
             check_ontime_update(&mut instant_update, &self_updating, &need_restart);
             // check running tasks number and need_restart flag to do graceful restart when no running tasks
@@ -61,13 +55,14 @@ fn register_update_handlers(
     self_updating: &Arc<AtomicBool>,
     need_restart: &Arc<AtomicBool>,
 ) {
-    let self_updating_clone = self_updating.clone();
-    let need_restart_clone = need_restart.clone();
-    dispatcher.register(WS_MSG_TYPE_CHECK_UPDATE, move |_source: Vec<u8>| {
-        if self_updating_clone.fetch_or(true, Ordering::SeqCst) {
-            return;
+    dispatcher.register(WS_MSG_TYPE_CHECK_UPDATE, {
+        let self_updating = self_updating.clone();
+        let need_restart = need_restart.clone();
+        move |_| {
+            if !self_updating.fetch_or(true, Ordering::SeqCst) {
+                try_update(self_updating.clone(), need_restart.clone());
+            }
         }
-        try_update(self_updating_clone.clone(), need_restart_clone.clone());
     });
 }
 
@@ -77,7 +72,7 @@ fn check_interval_elapsed(instant_time: &mut SystemTime, secs: u64) -> bool {
         Ok(duration) if duration < interval => return false, // interval not reach, do nothing
         Ok(_) => (),
         Err(e) => {
-            warn!("get systemTime error: {:?}", e);
+            warn!("get systemTime error: {}", e);
             return false;
         }
     }
@@ -85,16 +80,6 @@ fn check_interval_elapsed(instant_time: &mut SystemTime, secs: u64) -> bool {
     // the latter may cause accumulated latency after long term running.
     instant_time.add_assign(interval);
     return true;
-}
-
-fn check_ontime_kick(instant_kick: &mut SystemTime, dispatcher: Arc<EventBus>) {
-    if !check_interval_elapsed(instant_kick, ONTIME_KICK_INTERVAL) {
-        return;
-    }
-    dispatcher.dispatch(
-        WS_MSG_TYPE_KICK,
-        ONTIME_KICK_SOURCE.to_string().into_bytes(),
-    );
 }
 
 fn check_ontime_update(
@@ -111,14 +96,11 @@ fn check_ontime_update(
     }
 
     info!("start check self update");
-    let self_updating_clone = self_updating.clone();
-    let need_restart_clone = need_restart.clone();
-    thread::Builder::new()
-        .name("update".to_string())
-        .spawn(move || {
-            try_update(self_updating_clone, need_restart_clone);
-        })
-        .ok();
+    let _ = thread::Builder::new().name("update".to_string()).spawn({
+        let self_updating = self_updating.clone();
+        let need_restart = need_restart.clone();
+        move || try_update(self_updating, need_restart)
+    });
 }
 
 fn check_running_task_num(
@@ -140,7 +122,7 @@ fn check_running_task_num(
             );
 
             if let Err(e) = try_restart_agent() {
-                warn!("try restart agent failed: {:?}", e)
+                warn!("try restart agent failed: {}", e)
             }
 
             // should not comes here, because agent should has been killed when called `try_restart_agent`.

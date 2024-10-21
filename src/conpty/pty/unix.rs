@@ -1,4 +1,4 @@
-use super::{execute_stream, PtyExecCallback, PtyResult};
+use super::{execute_stream, PtyExecCallback};
 use crate::conpty::{session::PluginComp, PTY_INSPECT_READ};
 use crate::executor::unix::{build_envs, prepare_cmd};
 
@@ -11,6 +11,7 @@ use std::os::unix::prelude::{AsRawFd, FromRawFd, RawFd};
 use std::path::{Path, PathBuf};
 use std::{env, io, ptr};
 
+use anyhow::{anyhow, Context, Result};
 use libc::{self, getsid, pid_t, ttyname, uid_t, winsize, STDIN_FILENO, TIOCSCTTY};
 use log::{error, info};
 use tokio::fs::{metadata, File};
@@ -35,8 +36,8 @@ impl Pty {
         cols: u16,
         rows: u16,
         envs: HashMap<String, String>,
-    ) -> PtyResult<Pty> {
-        let user = get_user_by_name(user_name).ok_or(format!("user {} not exist", user_name))?;
+    ) -> Result<Pty> {
+        let user = get_user_by_name(user_name).context(format!("user {} not exist", user_name))?;
         let shell_path = user.shell();
         let shell_name = Path::new(shell_path)
             .file_name()
@@ -73,8 +74,7 @@ impl Pty {
             .stderr(slave.try_clone().expect(""))
             .envs(local_envs.into_iter().chain(envs))
             .current_dir(home_path)
-            .spawn()
-            .map_err(|e| format!("spawn error: {}", e))?;
+            .spawn()?;
 
         let pid = child.id().unwrap() as pid_t;
         let sid = unsafe { getsid(pid) };
@@ -83,7 +83,7 @@ impl Pty {
             let tty_name_c = ttyname(slave.as_raw_fd());
             CStr::from_ptr(tty_name_c).to_string_lossy().to_string()
         };
-        call_utmpx(&tty_name.clone(), user_name, pid, sid, &utmx_type).await;
+        call_utmpx(&tty_name, user_name, pid, sid, &utmx_type).await;
 
         // Kill terminal process when Pty is dropped
         let (send, mut recv) = channel::<()>();
@@ -107,28 +107,25 @@ impl Pty {
         });
     }
 
-    pub async fn resize(&self, cols: u16, rows: u16) -> PtyResult<()> {
+    pub async fn resize(&self, cols: u16, rows: u16) -> Result<()> {
         let size = winsize {
             ws_row: rows,
             ws_col: cols,
             ws_xpixel: 0,
             ws_ypixel: 0,
         };
-
-        unsafe { libc::ioctl(self.master.as_raw_fd(), libc::TIOCSWINSZ, &size as *const _) == 0 }
-            .then_some(())
-            .ok_or_else(|| io::Error::last_os_error().to_string())
+        if unsafe { libc::ioctl(self.master.as_raw_fd(), libc::TIOCSWINSZ, &size) == 0 } {
+            return Ok(());
+        }
+        Err(io::Error::last_os_error())?
     }
 
-    pub async fn get_reader(&self) -> PtyResult<File> {
+    pub async fn get_reader(&self) -> Result<File> {
         self.get_writer().await
     }
 
-    pub async fn get_writer(&self) -> PtyResult<File> {
-        self.master
-            .try_clone()
-            .await
-            .map_err(|e| format!("error: {e}"))
+    pub async fn get_writer(&self) -> Result<File> {
+        Ok(self.master.try_clone().await?)
     }
 
     pub fn get_cwd(&self) -> PathBuf {
@@ -142,8 +139,8 @@ impl Pty {
 }
 
 impl PluginComp {
-    pub async fn inspect_access(&self, path: &str, access: u8) -> PtyResult<()> {
-        let metadata = metadata(path).await.map_err(|e| e.to_string())?;
+    pub async fn inspect_access(&self, path: &str, access: u8) -> Result<()> {
+        let metadata = metadata(path).await?;
         let user = self.get_user()?;
         let access = match access {
             PTY_INSPECT_READ => Access::Read,
@@ -174,10 +171,10 @@ impl PluginComp {
             return Ok(());
         }
 
-        Err("access denied")?
+        Err(anyhow!("access denied"))?
     }
 
-    pub fn execute(&self, f: &dyn Fn() -> PtyResult<Vec<u8>>) -> PtyResult<Vec<u8>> {
+    pub fn execute(&self, f: &dyn Fn() -> Result<Vec<u8>>) -> Result<Vec<u8>> {
         let user = self.get_user()?;
         let cwd_path = self.get_cwd(&user);
 
@@ -195,9 +192,9 @@ impl PluginComp {
                         let _ = stdin.write_all(&output);
                         libc::exit(0);
                     }
-                    Err(err_msg) => {
-                        //error!("[child] work_as_user func exit failed: {}", err_msg);
-                        let _ = stdin.write_all(err_msg.as_bytes());
+                    Err(e) => {
+                        //error!("[child] work_as_user func exit failed: {}", e);
+                        let _ = stdin.write_all(e.to_string().as_bytes());
                         libc::exit(1);
                     }
                 }
@@ -213,7 +210,7 @@ impl PluginComp {
                 }
                 let err_msg = String::from_utf8_lossy(&output).to_string();
                 error!("[parent] work_as_user func exit failed: {}", err_msg);
-                return Err(err_msg);
+                return Err(anyhow!(err_msg));
             }
         }
     }
@@ -223,7 +220,7 @@ impl PluginComp {
         cmd: Command,
         callback: Option<PtyExecCallback>,
         timeout: Option<u64>,
-    ) -> PtyResult<()> {
+    ) -> Result<()> {
         let user = self.get_user()?;
         let cwd_path = self.get_cwd(&user);
         let cmd = prepare_cmd(cmd, &user, cwd_path);
@@ -233,13 +230,13 @@ impl PluginComp {
         execute_stream(cmd, &callback, timeout).await
     }
 
-    fn get_user(&self) -> PtyResult<User> {
+    fn get_user(&self) -> Result<User> {
         let user = match self {
             Self::Pty(pty) => pty.user.clone(),
-            Self::None { username } => {
-                get_user_by_name(username).ok_or(format!("user {} not exist", username))?
+            Self::Nil { username } => {
+                get_user_by_name(username).context(format!("user {} not exist", username))?
             }
-            _ => Err("unsupported channel plugin")?,
+            _ => Err(anyhow!("unsupported channel plugin"))?,
         };
         Ok(user)
     }
@@ -252,7 +249,7 @@ impl PluginComp {
     }
 }
 
-fn openpty(user: User, cols: u16, rows: u16) -> PtyResult<(File, StdFile)> {
+fn openpty(user: User, cols: u16, rows: u16) -> Result<(File, StdFile)> {
     let mut master: RawFd = -1;
     let mut slave: RawFd = -1;
 
@@ -271,7 +268,7 @@ fn openpty(user: User, cols: u16, rows: u16) -> PtyResult<(File, StdFile)> {
             ptr::null_mut(),
             &mut size,
         ) {
-            return Err(format!("openpty failed: {}", io::Error::last_os_error()));
+            return Err(anyhow!("openpty failed: {}", io::Error::last_os_error()));
         };
 
         libc::fchown(slave, user.uid(), user.primary_group_id());
@@ -308,7 +305,7 @@ async fn call_utmpx(ttyname: &str, username: &str, pid: pid_t, sid: pid_t, ut_ty
     }
 }
 
-fn audit_setloginuid(uid: uid_t) -> std::io::Result<()> {
+fn audit_setloginuid(uid: uid_t) -> io::Result<()> {
     info!("=>audit_setloginuid {}", uid);
     let loginuid = format!("{}", uid);
     let loginuid_path = format!("/proc/self/loginuid");
@@ -325,7 +322,7 @@ mod tests {
     #[tokio::test]
     async fn test_work_as_user() {
         let username = get_current_username();
-        let plugin = PluginComp::None { username };
+        let plugin = PluginComp::Nil { username };
 
         let result = plugin.execute(&|| Ok("foo".to_string().into_bytes()));
         let foo = String::from_utf8_lossy(&result.unwrap()).to_string();

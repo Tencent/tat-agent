@@ -2,20 +2,19 @@ use super::gather::Gather;
 use super::handler::{BsonHandler, Handler};
 use super::session::{PluginCtrl, PluginData};
 use crate::common::evbus::EventBus;
+use crate::conpty::handler::HandlerExt;
 use crate::conpty::session::{Channel, Plugin, PluginComp, Session};
 use crate::network::types::ws_msg::{
     ProxyClose, ProxyData, ProxyNew, ProxyReady, PtyBinBase, PtyBinErrMsg,
 };
 
 use std::sync::Arc;
-use std::time::Duration;
 
-use async_trait::async_trait;
 use log::{error, info};
 use serde::Serialize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
+use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
@@ -30,64 +29,66 @@ const PROXY_BUF_SIZE: usize = 2048;
 pub fn register_proxy_handlers(event_bus: &Arc<EventBus>) {
     event_bus
         .slot_register(SLOT_PTY_BIN, WS_MSG_TYPE_PTY_PROXY_NEW, move |msg| {
-            BsonHandler::<ProxyNew>::dispatch(msg, false);
+            Gather::dispatch::<BsonHandler<ProxyNew>>(msg, false);
         })
         .slot_register(SLOT_PTY_BIN, WS_MSG_TYPE_PTY_PROXY_DATA, move |msg| {
-            BsonHandler::<ProxyData>::dispatch(msg, true);
+            Gather::sync_dispatch::<BsonHandler<ProxyData>>(msg, true);
         })
         .slot_register(SLOT_PTY_BIN, WS_MSG_TYPE_PTY_PROXY_CLOSE, move |msg| {
-            BsonHandler::<ProxyClose>::dispatch(msg, false);
+            Gather::dispatch::<BsonHandler<ProxyClose>>(msg, false);
         });
 }
 
-#[async_trait]
 impl Handler for BsonHandler<ProxyNew> {
     async fn process(self) {
         let req = &self.request;
         let proxy_id = req.data.proxy_id.clone();
         info!("=>proxy_new `{}`, channel `{}`", proxy_id, self.id());
 
+        let session_id = req.session_id.clone();
         let channel_id = match self.channel.as_ref() {
             Some(ch) if ch.plugin.try_get_proxy().is_some() => {
                 error!("duplicate proxy_new `{proxy_id}`");
-                return self
-                    .reply(PtyBinErrMsg::new(format!("proxy already start")))
-                    .await;
+                let e = "proxy already start";
+                return self.reply(PtyBinErrMsg::new(e)).await;
             }
             // Compatible with legacy front-end code
             // If no channel_id is provided, use proxy_id as channel_id.
             _ if req.channel_id.is_empty() => proxy_id.clone(),
             Some(_) => {
                 error!("channel `{}` already start", self.id());
-                return self
-                    .reply(PtyBinErrMsg::new(format!("channel already start")))
-                    .await;
+                let e = "channel already start";
+                return self.reply(PtyBinErrMsg::new(e)).await;
             }
             None => req.channel_id.clone(),
         };
 
         let dest = format!("127.0.0.1:{}", req.data.port);
-        let r = TcpStream::connect(&dest).await;
-        let Ok(stream) = r.map_err(|e| info!("proxy `{proxy_id}` connect failed: {e}")) else {
-            return;
+        let stream = match TcpStream::connect(&dest).await {
+            Ok(s) => Mutex::new(s),
+            Err(e) => {
+                info!("proxy `{proxy_id}` connect failed: {e}");
+                return self.reply(PtyBinErrMsg::new(e)).await;
+            }
         };
-        let (reader, writer) = stream.into_split();
+        let (tx, rx) = unbounded_channel();
         let proxy = Proxy {
             proxy_id: proxy_id.clone(),
-            reader: Mutex::new(reader),
-            writer: Mutex::new(writer),
+            stream,
+            rx: Mutex::new(rx),
+            tx,
         };
         let plugin = Plugin {
             component: PluginComp::Proxy(proxy),
             data: req.into(),
             controller: PluginCtrl::new(PROXY_REMOVE_INTERVAL),
         };
-        let channel = Arc::new(Channel::new(&req.session_id, &channel_id, plugin));
-        let session = match Gather::get_session(&req.session_id).await {
+        let channel = Arc::new(Channel::new(&session_id, &channel_id, plugin));
+        let session = match Gather::get_session(&session_id).await {
             Some(s) => s,
             None => {
-                let s = Arc::new(Session::new(&req.session_id));
-                let _ = Gather::add_session(&req.session_id, s.clone()).await;
+                let s = Arc::new(Session::new(&session_id));
+                let _ = Gather::add_session(&session_id, s.clone()).await;
                 s
             }
         };
@@ -97,8 +98,8 @@ impl Handler for BsonHandler<ProxyNew> {
         }
 
         let data = PtyBinBase {
-            session_id: req.session_id.clone(),
-            channel_id: req.channel_id.clone(),
+            session_id,
+            channel_id,
             custom_data: "".to_owned(),
             data: ProxyReady { proxy_id },
         };
@@ -106,11 +107,10 @@ impl Handler for BsonHandler<ProxyNew> {
     }
 }
 
-#[async_trait]
 impl Handler for BsonHandler<ProxyData> {
     async fn process(self) {
-        let req = &self.request;
-        let proxy_id = &req.data.proxy_id;
+        let req = self.request;
+        let proxy_id = req.data.proxy_id.clone();
         // info!("=>proxy_data `{}`, channel `{}`", proxy_id, self.id());
 
         let mut ch = self.channel.unwrap().clone();
@@ -118,7 +118,7 @@ impl Handler for BsonHandler<ProxyData> {
         // If no channel_id is provided, use proxy_id as channel_id.
         if req.channel_id.is_empty() {
             if let Some(session) = Gather::get_session(&req.session_id).await {
-                if let Some(channel) = session.get_channel(proxy_id).await {
+                if let Some(channel) = session.get_channel(&proxy_id).await {
                     ch = channel.clone();
                 }
             }
@@ -128,16 +128,12 @@ impl Handler for BsonHandler<ProxyData> {
         };
 
         let _ = proxy
-            .writer
-            .lock()
-            .await
-            .write_all(&req.data.data)
-            .await
-            .map_err(|err| error!("proxy_data `{}` write failed: {}", proxy_id, err));
+            .tx
+            .send(req.data.data)
+            .inspect_err(|err| error!("proxy_data `{}` send failed: {}", proxy_id, err));
     }
 }
 
-#[async_trait]
 impl Handler for BsonHandler<ProxyClose> {
     async fn process(self) {
         let req = &self.request;
@@ -158,8 +154,9 @@ impl Handler for BsonHandler<ProxyClose> {
 
 pub struct Proxy {
     pub proxy_id: String,
-    reader: Mutex<OwnedReadHalf>,
-    writer: Mutex<OwnedWriteHalf>,
+    stream: Mutex<TcpStream>,
+    rx: Mutex<UnboundedReceiver<Vec<u8>>>,
+    tx: UnboundedSender<Vec<u8>>,
 }
 
 impl Proxy {
@@ -167,14 +164,11 @@ impl Proxy {
         let mut buffer = [0u8; PROXY_BUF_SIZE];
         let mut size = 0;
         let mut count = 0;
-        let mut stopper_rx = ctrl
-            .stopper
-            .get_receiver()
-            .await
-            .expect("get_receiver failed");
-        let mut reader = self.reader.lock().await;
-        // Upon initialization, set the last reply time to an instant before the timer was created.
-        let mut last_reply = Instant::now() - Duration::from_secs(PROXY_REMOVE_INTERVAL);
+        let mut stopper_rx = ctrl.stopper.get_receiver().await.unwrap();
+        let mut stream = self.stream.lock().await;
+        let (mut reader, mut writer) = stream.split();
+        let mut proxy_rx = self.rx.lock().await;
+        let mut last_reply = Instant::now();
 
         info!("Proxy `{}` start loop for proxy responses", id);
         loop {
@@ -192,6 +186,12 @@ impl Proxy {
                         count += 1;
                     }
                     Err(e) => break error!("Proxy `{}` read failed: {}", id, e),
+                },
+                recv = proxy_rx.recv() => if let Some(v) = recv {
+                    let _ = writer
+                        .write_all(&v)
+                        .await
+                        .inspect_err(|err| error!("Proxy `{}` write failed: {}", id, err));
                 },
                 _ = &mut stopper_rx => break info!("Proxy `{}` stopped", id),
                 _ = ctrl.timer.timeout() => if ctrl.timer.is_timeout_refresh(last_reply).await {

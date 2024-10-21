@@ -1,77 +1,35 @@
-use crate::executor::proc::{BaseCommand, MyCommand};
+use crate::executor::proc::Cmd;
 use std::collections::HashMap;
 use std::fs::{read_to_string, remove_file};
-use std::ops::Deref;
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::{env, io};
 
-use async_trait::async_trait;
+use anyhow::{anyhow, Context, Result};
 use libc::{self, SIGKILL};
 use log::warn;
 use tokio::process::{Child, Command};
 use users::os::unix::UserExt;
 use users::{get_user_by_name, User};
 
-pub struct UnixCommand {
-    base: Arc<BaseCommand>,
-}
-
-impl UnixCommand {
-    pub fn new(
-        cmd_path: &str,
-        username: &str,
-        work_dir: &str,
-        timeout: u64,
-        bytes_max_report: u64,
-        log_file_path: &str,
-        cos_bucket: &str,
-        cos_prefix: &str,
-        task_id: &str,
-    ) -> UnixCommand {
-        UnixCommand {
-            base: Arc::new(BaseCommand::new(
-                cmd_path,
-                username,
-                work_dir,
-                timeout,
-                bytes_max_report,
-                log_file_path,
-                cos_bucket,
-                cos_prefix,
-                task_id,
-            )),
-        }
-    }
-
-    fn user_check(&self) -> Result<User, String> {
-        let user = get_user_by_name(self.username.as_str());
-        match user {
-            Some(user) => Ok(user),
-            None => {
-                let ret = format!(
-                    "UnixCommand {} start failed, working_directory: {}, username: {}, user not exists",
-                    self.cmd_path, self.work_dir, self.username
-                );
+impl Cmd {
+    fn user_check(&self) -> Result<User> {
+        get_user_by_name(&self.username)
+            .context("user not exists")
+            .inspect_err(|_| {
                 *self.err_info.lock().unwrap() =
-                    format!("UserNotExists: user `{}` not exists", self.username);
-                Err(ret)
-            }
-        }
+                    format!("UserNotExists: user `{}` not exists", self.username)
+            })
     }
 
-    fn work_dir_check(&self) -> Result<(), String> {
-        if !working_directory_exists(self.work_dir.as_str()) {
-            let ret = format!(
-                "UnixCommand {} start failed, working_directory: {}, username: {}, working directory not exists",
-                self.cmd_path, self.work_dir, self.username
-            );
+    fn work_dir_check(&self) -> Result<()> {
+        if !self.working_directory_exists() {
             *self.err_info.lock().unwrap() = format!(
                 "DirectoryNotExists: working_directory `{}` not exists",
                 self.work_dir
             );
-            return Err(ret);
+            return Err(anyhow!("working directory not exists"));
         }
         Ok(())
     }
@@ -81,34 +39,26 @@ impl UnixCommand {
         prepare_cmd(cmd, &user, &self.work_dir)
     }
 
-    fn spawn_cmd(&self, user: User) -> Result<Child, String> {
-        let child = self.prepare_cmd(user).spawn().map_err(|e| {
+    fn spawn_cmd(&self, user: User) -> Result<Child> {
+        let child = self.prepare_cmd(user).spawn().inspect_err(|e| {
             *self.err_info.lock().unwrap() = e.to_string();
             // remove log_file when process run failed.
-            if let Err(e) = remove_file(self.log_file_path.as_str()) {
-                warn!("remove log file failed: {:?}", e)
-            }
-            format!(
-                "UnixCommand {}, working_directory: {}, start failed: {}",
-                self.cmd_path, self.work_dir, e
-            )
+            let _ = remove_file(self.log_file_path.as_str())
+                .inspect_err(|e| warn!("remove log file failed: {}", e));
         })?;
         *self.pid.lock().unwrap() = Some(child.id().unwrap());
         Ok(child)
     }
-}
 
-#[async_trait]
-impl MyCommand for UnixCommand {
-    async fn run(&mut self) -> Result<(), String> {
+    pub async fn run(self: &Arc<Self>) -> Result<()> {
         // pre check before spawn cmd
         self.store_path_check()?;
         self.work_dir_check()?;
 
         let user = self.user_check()?;
-        let log_file = self.open_log_file()?;
+        let log_file = self.open_log_file().await?;
         let mut child = self.spawn_cmd(user)?;
-        let base = self.base.clone();
+        let base = self.clone();
         // async read output.
         tokio::spawn(async move {
             let reader = child.stdout.take().unwrap();
@@ -117,20 +67,9 @@ impl MyCommand for UnixCommand {
         });
         Ok(())
     }
-}
 
-#[cfg(test)]
-impl std::fmt::Debug for UnixCommand {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.base.fmt(f)
-    }
-}
-
-impl Deref for UnixCommand {
-    type Target = BaseCommand;
-
-    fn deref(&self) -> &Self::Target {
-        &self.base
+    fn working_directory_exists(&self) -> bool {
+        Path::new(&self.work_dir).exists()
     }
 }
 
@@ -174,10 +113,6 @@ pub fn kill_process_group(pid: u32) {
     }
 }
 
-fn working_directory_exists(path: &str) -> bool {
-    Path::new(path).exists()
-}
-
 fn redirect_stderr_to_stdout() -> Result<(), io::Error> {
     if unsafe { libc::dup2(1, 2) } != -1 {
         Ok(())
@@ -195,18 +130,15 @@ fn own_process_group() -> Result<(), io::Error> {
 }
 
 pub fn cmd_path(cmd: &str) -> Option<String> {
-    if let Ok(path) = env::var("PATH") {
-        for p in path.split(":") {
-            let p_str = format!("{}/{}", p, cmd);
-            if Path::new(&p_str).exists() {
-                return Some(p_str);
-            }
-        }
-    }
-    None
+    let Ok(path) = env::var("PATH") else {
+        return None;
+    };
+    path.split(":")
+        .map(|p| format!("{}/{}", p, cmd))
+        .find(|p| Path::new(p).exists())
 }
 
-fn load_envs(content: String) -> HashMap<String, String> {
+fn load_envs(content: &str) -> HashMap<String, String> {
     content
         .lines()
         .map(|l| l.trim_start())
@@ -232,7 +164,7 @@ pub fn build_envs(username: &str, home_path: &str, shell_path: &str) -> HashMap<
         ("MAIL", &format!("/var/spool/mail/{username}")),
         ("TERM", "xterm-color"),
     ];
-    let etc_envs = load_envs(read_to_string("/etc/environment").unwrap_or("".to_owned()));
+    let etc_envs = load_envs(read_to_string("/etc/environment").as_deref().unwrap_or(""));
     envs.iter()
         .map(|&(k, v)| (k.to_owned(), v.to_owned()))
         .chain(etc_envs)
@@ -259,19 +191,14 @@ mod tests {
 
     #[test]
     fn test_fmt_cmd() {
-        let cmd = UnixCommand::new("./a.sh", "root", "./", 60, 10240, "", "", "", "");
+        let cmd = Cmd::new("./a.sh", "root", "./", 60, 10240, "", "", "", "");
         println!("fmt cmd:{:?}", cmd);
-    }
-
-    #[test]
-    fn test_working_directory_exists() {
-        assert_eq!(working_directory_exists("/etc"), true);
     }
 
     #[test]
     fn test_load_envs() {
         let content = "# \n B=b\n D=d=d\n C= \"x\n";
-        let envs = load_envs(content.to_string());
+        let envs = load_envs(content);
         assert!(envs.keys().len() == 3);
         assert!(envs.get("B").unwrap() == "b");
         assert!(envs.get("D").unwrap() == "d=d");

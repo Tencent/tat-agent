@@ -1,11 +1,12 @@
-use base64::{engine::general_purpose::STANDARD, Engine};
-use serde::{Deserialize, Serialize};
-use std::error::Error;
+use crate::common::utils::update_file_permission;
+
 use std::fs::{self, File};
 use std::io::{ErrorKind, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::common::utils::update_file_permission;
+use anyhow::Result;
+use base64::{engine::general_purpose::STANDARD, Engine};
+use serde::{Deserialize, Serialize};
 
 const CONFIG_DAT: &str = "config.dat";
 const REGISTER_FILE: &str = "register.dat";
@@ -56,27 +57,20 @@ pub fn get_ws_url() -> Option<String> {
 
 pub fn get_register_info() -> Option<RegisterInfo> {
     static NEED_CHECK: AtomicBool = AtomicBool::new(true);
-    match load_config().ok().and_then(|config| config.register) {
-        Some(info) => Some(info),
-        None => match get_register_info_old() {
-            Some(info) => {
-                if save_register_info(info.clone()).is_ok() {
-                    let _ = fs::remove_file(REGISTER_FILE);
-                };
-                Some(info)
+    let ret = load_config().ok().and_then(|cfg| cfg.register).or_else(|| {
+        get_register_info_old().inspect(|info| {
+            if save_register_info(info.clone()).is_ok() {
+                let _ = fs::remove_file(REGISTER_FILE);
             }
-            None => None,
-        },
+        })
+    });
+    if ret.is_some() && NEED_CHECK.fetch_and(false, Ordering::SeqCst) {
+        update_file_permission(CONFIG_DAT)
     }
-    .and_then(|x| {
-        if NEED_CHECK.fetch_and(false, Ordering::SeqCst) {
-            update_file_permission(CONFIG_DAT)
-        }
-        Some(x)
-    })
+    ret
 }
 
-pub fn save_register_info(info: RegisterInfo) -> Result<(), Box<dyn Error>> {
+pub fn save_register_info(info: RegisterInfo) -> Result<()> {
     let mut config = load_config()?;
     config.register = Some(info);
     save_config(&config)
@@ -89,16 +83,11 @@ fn get_register_info_old() -> Option<RegisterInfo> {
     return Some(record);
 }
 
-fn load_config() -> Result<Config, Box<dyn Error>> {
+fn load_config() -> Result<Config> {
     let mut file = match File::open(CONFIG_DAT) {
         Ok(file) => file,
-        Err(e) => {
-            if e.kind() == ErrorKind::NotFound {
-                return Ok(Config::default());
-            } else {
-                return Err(Box::new(e));
-            }
-        }
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Config::default()),
+        e => e?,
     };
 
     let mut contents = String::new();
@@ -107,7 +96,7 @@ fn load_config() -> Result<Config, Box<dyn Error>> {
     Ok(config)
 }
 
-fn save_config(config: &Config) -> Result<(), Box<dyn Error>> {
+fn save_config(config: &Config) -> Result<()> {
     let json_str = serde_json::to_string(config)?;
     let mut file = File::create(CONFIG_DAT)?;
     file.write_all(json_str.as_bytes())?;

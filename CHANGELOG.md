@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.0] - 2024-10-21
+
+### Changed
+
+- Fix message out-of-order issue in Proxy plugin.
+- Upgrade some risky dependencies.
+- Simplify error handling logic.
+
 ## [1.0.20] - 2024-09-23
 
 ### Changed

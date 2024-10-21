@@ -8,13 +8,12 @@ use log::debug;
 const SLOT_DEFAULT: &str = "event_slot_default";
 type Handler = Box<dyn Fn(Vec<u8>) + Sync + Send + 'static>;
 
-#[derive(Clone)]
 pub struct EventBus {
-    event_slots: Arc<RwLock<HashMap<String, String>>>,
-    slot_queues: Arc<RwLock<HashMap<String, Arc<EventQueue>>>>,
-    event_handlers: Arc<RwLock<HashMap<String, Handler>>>,
-    dispatch_count: Arc<AtomicU64>,
-    receive_count: Arc<AtomicU64>,
+    event_slots: RwLock<HashMap<String, String>>,
+    slot_queues: RwLock<HashMap<String, Arc<EventQueue>>>,
+    event_handlers: RwLock<HashMap<String, Handler>>,
+    dispatch_count: AtomicU64,
+    receive_count: AtomicU64,
 }
 
 struct Event {
@@ -23,14 +22,14 @@ struct Event {
 }
 
 struct EventQueue {
-    queue: Arc<Mutex<LinkedList<Event>>>,
+    queue: Mutex<LinkedList<Event>>,
     signal: Condvar,
 }
 
 impl EventQueue {
     fn new() -> Self {
         EventQueue {
-            queue: Arc::new(Mutex::new(LinkedList::new())),
+            queue: Mutex::new(LinkedList::new()),
             signal: Condvar::new(),
         }
     }
@@ -61,15 +60,15 @@ impl EventQueue {
 impl EventBus {
     pub fn new() -> Self {
         EventBus {
-            event_slots: Arc::new(RwLock::new(HashMap::new())),
-            event_handlers: Arc::new(RwLock::new(HashMap::new())),
-            slot_queues: Arc::new(RwLock::new(HashMap::new())),
-            dispatch_count: Arc::new(AtomicU64::new(0)),
-            receive_count: Arc::new(AtomicU64::new(0)),
+            event_slots: RwLock::new(HashMap::new()),
+            event_handlers: RwLock::new(HashMap::new()),
+            slot_queues: RwLock::new(HashMap::new()),
+            dispatch_count: AtomicU64::new(0),
+            receive_count: AtomicU64::new(0),
         }
     }
 
-    pub fn slot_register<F>(&self, slot: &str, event: &str, func: F) -> &Self
+    pub fn slot_register<F>(self: &Arc<Self>, slot: &str, event: &str, func: F) -> &Arc<Self>
     where
         F: Fn(Vec<u8>) + 'static + Sync + Send,
     {
@@ -92,33 +91,31 @@ impl EventBus {
         let queue = Arc::new(EventQueue::new());
         slot_queues.insert(slot.to_string(), queue.clone());
 
-        let self_0 = self.clone();
-        let receive_count = self.receive_count.clone();
-
         //create thread for queue
-        let _ = std::thread::Builder::new()
-            .name(slot.to_string())
-            .spawn(move || loop {
+        let _ = std::thread::Builder::new().name(slot.to_string()).spawn({
+            let eb = self.clone();
+            move || loop {
                 let event = queue.pull_event();
-                if let Some(handler) = self_0
+                if let Some(handler) = eb
                     .event_handlers
                     .read()
                     .expect("event_handlers lock failed")
-                    .get(event.name.as_str())
+                    .get(&event.name)
                 {
-                    let count = receive_count.fetch_add(1, SeqCst);
+                    let count = eb.receive_count.fetch_add(1, SeqCst);
                     debug!("receive_count: {}", count);
                     handler(event.msg);
                 }
-            });
+            }
+        });
         self
     }
 
-    pub fn register<F>(&self, event: &str, func: F) -> &Self
+    pub fn register<F>(self: &Arc<Self>, event: &str, func: F) -> &Arc<Self>
     where
         F: Fn(Vec<u8>) + 'static + Sync + Send,
     {
-        return self.slot_register(SLOT_DEFAULT, event, func);
+        self.slot_register(SLOT_DEFAULT, event, func)
     }
 
     pub fn dispatch(&self, event: &str, msg: Vec<u8>) {

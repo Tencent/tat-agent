@@ -1,12 +1,89 @@
+use std::collections::HashMap;
+use std::convert::TryInto;
 use std::iter::IntoIterator;
+use std::str;
 
-use chrono::Local;
+use anyhow::{anyhow, Result};
+use chrono::{Local, Utc};
 use hmac::{Hmac, Mac};
+use log::info;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use reqwest::header::{AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, DATE, HOST};
+use reqwest::{Body, Client};
 use sha1::{Digest, Sha1};
+use tokio::fs::File;
+use url::Url;
 use urlencoding::encode;
 
-pub fn cos_sign(
+pub struct COSAdapter<'a> {
+    secret_id: &'a str,
+    secret_key: &'a str,
+    token: &'a str,
+    endpoint: &'a str,
+    host: String,
+    client: Client,
+}
+
+impl<'a> COSAdapter<'a> {
+    pub fn new(secret_id: &'a str, secret_key: &'a str, token: &'a str, endpoint: &'a str) -> Self {
+        let host = Url::parse(&endpoint).unwrap();
+        let host = host.host().unwrap().to_string();
+        Self {
+            secret_id,
+            secret_key,
+            token,
+            endpoint,
+            host,
+            client: Client::new(),
+        }
+    }
+
+    pub async fn put_object_from_file(
+        &self,
+        file: &str,
+        object_name: &str,
+        headers: Option<HashMap<String, String>>,
+    ) -> Result<()> {
+        let mut headers: HeaderMap = headers
+            .and_then(|ref h| h.try_into().ok())
+            .unwrap_or_default();
+        headers.insert(HOST, self.host.parse()?);
+        headers.insert(DATE, date().parse()?);
+        headers.insert(CONTENT_TYPE, "application/xml".parse()?);
+        headers.insert(
+            CONTENT_LENGTH,
+            File::open(file).await?.metadata().await?.len().into(),
+        );
+        let authorization = cos_sign(
+            "PUT",
+            &self.secret_id,
+            &self.secret_key,
+            object_name,
+            600,
+            &headers,
+        );
+        headers.insert(AUTHORIZATION, authorization.parse()?);
+        headers.insert("x-cos-security-token", self.token.parse()?);
+        info!("{}", authorization);
+
+        let body = Body::from(File::open(file).await?);
+        let resp = self
+            .client
+            .put(&format!("{}{}", self.endpoint, object_name))
+            .headers(headers)
+            .body(body)
+            .send()
+            .await?;
+
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(anyhow!("can not put object, status code {}", resp.status()))
+        }
+    }
+}
+
+fn cos_sign(
     method: &str,
     secret_id: &str,
     secret_key: &str,
@@ -83,6 +160,10 @@ pub fn cos_sign(
 
     // Step 8: Concatenate the Signature String
     format!("q-sign-algorithm=sha1&q-ak={secret_id}&q-sign-time={key_time}&q-key-time={key_time}&q-header-list={header_list}&q-url-param-list={url_param_list}&q-signature={signature}")
+}
+
+fn date() -> String {
+    Utc::now().format("%a, %d %b %Y %T GMT").to_string()
 }
 
 trait EncodeHex {

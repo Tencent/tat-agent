@@ -1,10 +1,10 @@
 use crate::common::evbus::EventBus;
 use crate::common::utils::{cbs_exist, get_now_secs};
-use crate::executor::proc::{self, MyCommand};
+use crate::executor::proc::{self, Cmd};
 use crate::executor::store::TaskFileStore;
 use crate::network::types::ws_msg::WS_MSG_TYPE_KICK;
 use crate::network::types::{InvocationCancelTask, InvocationNormalTask};
-use crate::network::InvokeAPIAdapter;
+use crate::network::InvokeAdapter;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -25,33 +25,29 @@ pub fn run(dispatcher: &Arc<EventBus>, running_task_num: &Arc<AtomicU64>) {
     let running_tasks = Arc::new(Mutex::new(HashMap::new()));
 
     dispatcher.register(WS_MSG_TYPE_KICK, move |source| {
-        let source = String::from_utf8_lossy(&source).to_string(); //from vec to string
+        let source = String::from_utf8_lossy(&source).to_string();
         let running_task_num = running_task_num.clone();
         let running_tasks = running_tasks.clone();
         runtime.spawn(async move {
-            let adapter = InvokeAPIAdapter::new();
-            let worker = Arc::new(HttpWorker::new(
-                adapter,
-                running_task_num.clone(),
-                running_tasks,
-            ));
-            worker.process(source).await
+            let adapter = InvokeAdapter::new();
+            let worker = HttpWorker::new(adapter, running_task_num, running_tasks);
+            worker.process(&source).await
         });
     });
 }
 
 pub struct HttpWorker {
-    adapter: InvokeAPIAdapter,
+    adapter: InvokeAdapter,
     task_store: TaskFileStore,
-    running_tasks: Arc<Mutex<HashMap<String, Arc<Mutex<Box<dyn MyCommand + Send>>>>>>,
+    running_tasks: Arc<Mutex<HashMap<String, Arc<Cmd>>>>,
     running_task_num: Arc<AtomicU64>,
 }
 
 impl HttpWorker {
     pub fn new(
-        adapter: InvokeAPIAdapter,
+        adapter: InvokeAdapter,
         running_task_num: Arc<AtomicU64>,
-        running_tasks: Arc<Mutex<HashMap<String, Arc<Mutex<Box<dyn MyCommand + Send>>>>>>,
+        running_tasks: Arc<Mutex<HashMap<String, Arc<Cmd>>>>,
     ) -> Self {
         let task_store = TaskFileStore::new();
         info!(
@@ -66,12 +62,12 @@ impl HttpWorker {
         }
     }
 
-    pub async fn process(&self, source: String) {
+    pub async fn process(&self, source: &str) {
         info!("http thread processing message from: {}", source);
         for _ in 0..3 {
             let resp = match self.adapter.describe_tasks().await {
                 Ok(resp) => resp,
-                Err(why) => return error!("describe task failed: {:?}", why),
+                Err(why) => return error!("describe task failed: {}", why),
             };
 
             info!("describe task success: {:?}", resp);
@@ -95,15 +91,11 @@ impl HttpWorker {
         }
     }
 
-    async fn read_and_report(
-        &self,
-        cmd_arc: Arc<Mutex<Box<dyn MyCommand + Send>>>,
-        task_id: &str,
-    ) -> u32 {
+    async fn read_and_report(&self, cmd: Arc<Cmd>, task_id: &str) -> u32 {
         let mut stop_upload = false;
         let mut final_log_index: u32 = 0;
         let mut first_dropped: u64 = 0;
-        let mut finished = cmd_arc.lock().await.is_finished();
+        let mut finished = cmd.is_finished();
         loop {
             // total sleep max 20 * 50 ms, i.e. 1s
             for _ in 0..20 {
@@ -111,15 +103,14 @@ impl HttpWorker {
                     break;
                 }
                 sleep(Duration::from_millis(50)).await;
-                finished = cmd_arc.lock().await.is_finished();
+                finished = cmd.is_finished();
             }
-            let cmd = cmd_arc.lock().await;
             if cmd.cur_output_len() != 0 && !stop_upload {
                 let (out, idx, dropped) = cmd.next_output();
                 final_log_index = idx;
                 // print output in one line
                 info!(
-                    "ready to report output length:{:?}, idx:{}, dropped:{}, output_debug:{}",
+                    "ready to report output length:{}, idx:{}, dropped:{}, output_debug:{}",
                     out.len(),
                     idx,
                     dropped,
@@ -182,18 +173,15 @@ impl HttpWorker {
     ) {
         info!("task execute begin: {:?}", task);
         let task_id = task.invocation_task_id.clone();
-        let result = self.create_proc(task_file, task_log_file, task).await;
-        if result.is_none() {
+        let Some(cmd) = self.create_proc(task_file, task_log_file, task).await else {
             return;
-        }
-        let cmd_arc = result.unwrap();
+        };
 
         let mut final_log_index = 0;
-        if cmd_arc.lock().await.is_started() {
-            final_log_index = self.read_and_report(cmd_arc.clone(), &task_id).await;
+        if cmd.is_started() {
+            final_log_index = self.read_and_report(cmd.clone(), &task_id).await;
         }
 
-        let cmd = cmd_arc.lock().await;
         // report finish
         let finish_result = cmd.finish_result();
         let err_info = cmd.err_info();
@@ -228,8 +216,8 @@ impl HttpWorker {
                 &output_err_info,
             )
             .await
-            .map(|_| info!("task_execute report_task_finish {} success", task_id))
-            .map_err(|e| error!("report task {task_id} finish error: {e:?}"));
+            .inspect(|_| info!("task_execute report_task_finish {} success", task_id))
+            .inspect_err(|e| error!("report task {task_id} finish error: {e}"));
 
         // process finish, remove
         self.running_tasks.lock().await.remove(task_id.as_str());
@@ -240,25 +228,22 @@ impl HttpWorker {
         let cancel_task_id = task.invocation_task_id.clone();
         //mutex with create_proc
         let tasks = self.running_tasks.lock().await;
-        let task = tasks.get(cancel_task_id.as_str());
+        let task = tasks.get(&cancel_task_id);
         if let Some(cmd_arc) = task {
             let cmd_arc = cmd_arc.clone();
             //drop lock
             std::mem::drop(tasks);
-            let _ = cmd_arc
-                .lock()
-                .await
-                .cancel()
-                .map(|_| info!("cancel task {} success", &cancel_task_id))
-                .map_err(|e| error!("task {} cancel failed, error: {}", &cancel_task_id, e));
-            return;
-        } else {
-            info!("task {cancel_task_id} not found, may be not start or finished",);
+            return match cmd_arc.cancel() {
+                Ok(_) => info!("cancel task {} success", &cancel_task_id),
+                Err(e) => error!("task {} cancel failed, error: {}", &cancel_task_id, e),
+            };
         }
+        info!("task {cancel_task_id} not found, may be not start or finished");
 
         // report terminated
         let finish_time = get_now_secs();
-        self.adapter
+        let _ = self
+            .adapter
             .report_task_finish(
                 &cancel_task_id,
                 FINISH_RESULT_TERMINATED,
@@ -270,18 +255,15 @@ impl HttpWorker {
                 "",
             )
             .await
-            .map(|_| info!("task_cancel report_task_finish {} success", cancel_task_id))
-            .map_err(|e| {
-                error!("report task {} terminate error: {:?}", cancel_task_id, e);
-            })
-            .ok();
+            .inspect(|_| info!("task_cancel report_task_finish {} success", cancel_task_id))
+            .inspect_err(|e| error!("report task {} terminate error: {}", cancel_task_id, e));
     }
 
     async fn report_task_start(&self, task_id: &str, timestamp: u64) -> bool {
         self.adapter
             .report_task_start(task_id, timestamp)
             .await
-            .map_err(|e| error!("report start error: {:?}", e))
+            .inspect_err(|e| error!("report start error: {}", e))
             .is_ok()
     }
 
@@ -292,7 +274,7 @@ impl HttpWorker {
             .await
         {
             Ok(_) => info!("success upload task {}, log index: {}", task_id, idx),
-            Err(e) => error!("failed to upload task {} log: {:?}", task_id, e),
+            Err(e) => error!("failed to upload task {} log: {}", task_id, e),
         }
     }
 
@@ -301,7 +283,7 @@ impl HttpWorker {
         task_file: &str,
         task_log_file: &str,
         task: &InvocationNormalTask,
-    ) -> Option<Arc<Mutex<Box<dyn MyCommand + Send>>>> {
+    ) -> Option<Arc<Cmd>> {
         let task_id = task.invocation_task_id.clone();
         //mutex with task_cancel
         let mut tasks = self.running_tasks.lock().await;
@@ -337,19 +319,16 @@ impl HttpWorker {
             cos_bucket_prefix,
             &task_id,
         );
-        if proc_result.is_err() {
-            return None;
-        }
-        let mut proc_res = proc_result.unwrap();
-        proc_res
-            .run()
-            .await
-            .map_err(|e| error!("start process failed: {}", e))
-            .ok();
-        let cmd_arc = Arc::new(Mutex::new(proc_res));
+        let cmd = proc_result.ok()?;
+        let _ = cmd.run().await.inspect_err(|e| {
+            error!(
+                "cmd start failed: reason: {}, cmd_path: {}, work_dir: {}, username: {}",
+                e, cmd.cmd_path, cmd.work_dir, cmd.username
+            )
+        });
 
-        tasks.insert(task_id, cmd_arc.clone());
-        return Some(cmd_arc);
+        tasks.insert(task_id, cmd.clone());
+        return Some(cmd);
     }
 }
 
@@ -357,21 +336,23 @@ impl HttpWorker {
 mod tests {
     use crate::common::logger;
     use crate::common::utils::{gen_rand_str_with, get_current_username};
-    use crate::executor::proc::{self, MyCommand};
+    use crate::executor::proc::{self, Cmd};
     use crate::executor::store::TaskFileStore;
     use crate::executor::thread::HttpWorker;
     use crate::executor::FINISH_RESULT_TERMINATED;
     use crate::network::types::{
-        AgentError, AgentErrorCode, InvocationCancelTask, InvocationNormalTask,
-        ReportTaskFinishResponse, ReportTaskStartResponse,
+        InvocationCancelTask, InvocationNormalTask, ReportTaskFinishResponse,
+        ReportTaskStartResponse,
     };
-    use crate::network::InvokeAPIAdapter;
+    use crate::network::InvokeAdapter;
+
     use std::fs;
     use std::fs::File;
     use std::io::Write;
     use std::sync::Arc;
     use std::time::Duration;
-    use tokio::sync::Mutex;
+
+    use anyhow::anyhow;
     use tokio::time::timeout;
 
     fn gen_rand_str() -> String {
@@ -392,7 +373,7 @@ mod tests {
 
     fn get_http_worker() -> HttpWorker {
         HttpWorker {
-            adapter: InvokeAPIAdapter::faux(),
+            adapter: InvokeAdapter::faux(),
             task_store: TaskFileStore::new(),
             running_tasks: Default::default(),
             running_task_num: Arc::new(Default::default()),
@@ -417,13 +398,12 @@ mod tests {
         }
     }
 
-    fn fake_command() -> Arc<Mutex<Box<dyn MyCommand + Send>>> {
+    fn fake_command() -> Arc<Cmd> {
         #[cfg(unix)]
         let cmd_type = "SHELL";
         #[cfg(windows)]
         let cmd_type = "POWERSHELL";
-        let result = proc::new("", "", cmd_type.as_ref(), "", 10, 1024, "", "", "", "");
-        Arc::new(Mutex::new(result.unwrap()))
+        proc::new("", "", cmd_type.as_ref(), "", 10, 1024, "", "", "", "").unwrap()
     }
 
     #[tokio::test]
@@ -457,7 +437,8 @@ mod tests {
             .insert("invt-1122".to_string(), fake_command());
         let task = build_invocation("invt-1111", "", 5, cmd_type.as_ref());
         faux::when!(http_worker.adapter.report_task_start)
-            .then_return(Err(AgentError::new(AgentErrorCode::ResponseReadError, "")));
+            .once()
+            .then_return(Err(anyhow!("")));
         let result = http_worker
             .create_proc("/fake_path", "/fake_path", &task)
             .await;
@@ -483,6 +464,7 @@ mod tests {
         let mut http_worker = get_http_worker();
         let task = build_invocation("invt-1133", "", 5, cmd_type);
         faux::when!(http_worker.adapter.report_task_start)
+            .once()
             .then_return(Ok(ReportTaskStartResponse {}));
 
         let result = http_worker
@@ -511,8 +493,8 @@ mod tests {
         let cmd_type = "POWERSHELL";
         let task = build_invocation("invt-1133", "", 5, cmd_type);
         let create_fut = http_worker.create_proc("", "/fake_path", &task);
-        let time_out = timeout(Duration::from_secs(1), create_fut).await;
-        assert_eq!(time_out.is_err(), true);
+        let timeout = timeout(Duration::from_secs(1), create_fut).await;
+        assert_eq!(timeout.is_err(), true);
     }
 
     #[tokio::test]
@@ -523,8 +505,8 @@ mod tests {
             invocation_task_id: "inv-xxxx".to_string(),
         };
         let create_fut = http_worker.task_cancel(&task);
-        let time_out = timeout(Duration::from_secs(1), create_fut).await;
-        assert_eq!(time_out.is_err(), true);
+        let timeout = timeout(Duration::from_secs(1), create_fut).await;
+        assert_eq!(timeout.is_err(), true);
     }
 
     #[tokio::test]
@@ -547,9 +529,11 @@ mod tests {
         let mut http_worker = get_http_worker();
         let task = build_invocation("invt-test_cancel", "", 1025, cmd_type);
         faux::when!(http_worker.adapter.report_task_start)
+            .once()
             .then_return(Ok(ReportTaskStartResponse {}));
 
         faux::when!(http_worker.adapter.report_task_finish)
+            .once()
             .then_return(Ok(ReportTaskFinishResponse {}));
 
         let log_path = format!("./{}.log", gen_rand_str());
@@ -557,7 +541,7 @@ mod tests {
             .create_proc(filename.as_str(), log_path.as_str(), &task)
             .await
             .unwrap();
-        assert_eq!(cmd.lock().await.is_started(), true);
+        assert_eq!(cmd.is_started(), true);
         let http_worker1 = Arc::new(http_worker);
         let http_worker2 = http_worker1.clone();
         let cmd_clone = cmd.clone();
@@ -573,7 +557,7 @@ mod tests {
         http_worker2.task_cancel(&task).await;
         tokio::time::sleep(Duration::from_secs(1)).await;
         fs::remove_file(filename.as_str()).unwrap();
-        let finis_result = cmd.lock().await.finish_result();
+        let finis_result = cmd.finish_result();
         assert_eq!(finis_result, FINISH_RESULT_TERMINATED); //need read twice
     }
 }

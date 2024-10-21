@@ -1,6 +1,10 @@
 use crate::common::utils::update_file_permission;
 use crate::common::Opts;
-use log::{debug, info, Record};
+
+use std::fs::{create_dir_all, OpenOptions};
+
+use anyhow::Result;
+use log::{debug, Record};
 use log4rs::append::console::{ConsoleAppender, Target};
 use log4rs::append::rolling_file::policy::compound::roll::fixed_window::FixedWindowRoller;
 use log4rs::append::rolling_file::policy::compound::roll::Roll;
@@ -12,7 +16,6 @@ use log4rs::config::{Appender, Config, Root};
 use log4rs::encode::pattern::PatternEncoder;
 use log4rs::filter::threshold::ThresholdFilter;
 use log4rs::filter::{Filter, Response};
-use std::fs::{create_dir_all, OpenOptions};
 
 const LOG_PATTERN: &str = "{d}|{f}:{L}|{l}|{m}{n}";
 const LOG_FILE_NAME: &str = "log/tat_agent.log";
@@ -21,7 +24,6 @@ const LOG_FILE_SIZE: u64 = 10 * 1024 * 1024;
 const LOG_FILE_BASE_INDEX: u32 = 0;
 const MAX_LOG_FILE_COUNT: u32 = 2;
 const LOG_LEVEL: log::LevelFilter = log::LevelFilter::Info;
-const LOG_LEVEL_DEBUG: log::LevelFilter = log::LevelFilter::Debug;
 
 pub fn init() {
     let log_level = LOG_LEVEL;
@@ -93,7 +95,7 @@ impl CompoundPolicy {
 }
 
 impl Policy for CompoundPolicy {
-    fn process(&self, log: &mut LogFile) -> anyhow::Result<()> {
+    fn process(&self, log: &mut LogFile) -> Result<()> {
         if self.trigger.trigger(log)? {
             log.roll();
             self.roller.roll(log.path())?;
@@ -105,10 +107,17 @@ impl Policy for CompoundPolicy {
         }
         Ok(())
     }
+
+    fn is_pre_process(&self) -> bool {
+        self.trigger.is_pre_process()
+    }
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn init_test_log() {
+    use log::info;
+    const LOG_LEVEL_DEBUG: log::LevelFilter = log::LevelFilter::Debug;
+
     let stdout: ConsoleAppender = ConsoleAppender::builder()
         .encoder(Box::new(PatternEncoder::new(LOG_PATTERN)))
         .build();
@@ -116,9 +125,6 @@ pub fn init_test_log() {
         .appender(Appender::builder().build("stdout", Box::new(stdout)))
         .build(Root::builder().appender("stdout").build(LOG_LEVEL_DEBUG))
         .unwrap();
-    match log4rs::init_config(log_config) {
-        Ok(_) => (),
-        Err(why) => info!("init test log failed: {}", why),
-    };
+    let _ = log4rs::init_config(log_config);
     info!("logger init succ");
 }

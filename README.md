@@ -12,23 +12,13 @@ For more information, please visit <https://cloud.tencent.com/product/tat> .
 
 ## Compile
 
-Run the following command to compile:
-
-- Linux
-
-```shell
-cargo build --release --bin tat_agent
-```
-
-- Windows
-
-Note: In Windows OS, the version of rust must be **higher than 1.70**, If the version is too low, you can update the version with the following command:
+The version of rust must be **higher than 1.80**, If the version is too low, you can update the version with the following command:
 
 ```powershell
 rustup update
 ```
 
-Then run:
+Then run the following command to compile::
 
 ```powershell
 cargo build --release --bin tat_agent

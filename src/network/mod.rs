@@ -3,6 +3,7 @@ use crate::common::utils::{gen_rand_str_with, get_now_secs};
 use crate::sysinfo::{get_hostname, get_local_ip, Uname};
 use std::env;
 
+use anyhow::{Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use log::{error, info};
 use reqwest::header::HeaderValue;
@@ -11,7 +12,7 @@ use rsa::pkcs1v15::Pkcs1v15Sign;
 use rsa::{pkcs1::DecodeRsaPrivateKey, RsaPrivateKey};
 use sha1::{Digest, Sha1};
 
-pub mod cos;
+pub mod cos_adapter;
 pub mod types;
 pub mod urls;
 pub mod ws;
@@ -20,8 +21,8 @@ mod invoke_adapter;
 mod metadata_adapter;
 mod requester;
 
-pub use invoke_adapter::InvokeAPIAdapter;
-pub use metadata_adapter::MetadataAPIAdapter;
+pub use invoke_adapter::InvokeAdapter;
+pub use metadata_adapter::MetadataAdapter;
 pub use requester::HttpRequester;
 
 const VPCID_HEADER: &str = "Tat-Vpcid";
@@ -85,7 +86,7 @@ fn build_extra_headers() -> HeaderMap {
         HeaderValue::from_str(&record.instance_id).expect("build head failed"),
     );
 
-    let rand_key: String = gen_rand_str_with(32);
+    let rand_key = gen_rand_str_with(32);
     headers.insert(
         "RandomKey",
         HeaderValue::from_str(&rand_key).expect("build head failed"),
@@ -116,28 +117,19 @@ fn build_extra_headers() -> HeaderMap {
     headers
 }
 
-pub fn register(
-    region: &String,
-    register_id: &String,
-    register_value: &String,
-) -> Result<(), String> {
+pub fn register(region: &str, register_id: &str, register_value: &str) -> Result<()> {
     //temp runtime in current thread
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("register runtime failed")
         .block_on(async move {
-            let adapter = InvokeAPIAdapter::new();
+            let adapter = InvokeAdapter::new();
             adapter
                 .register_instance(region, register_id, register_value)
                 .await
         })
-        .and_then(|record| {
-            config::save_register_info(record).map_err(|e| {
-                error!("save_register_info fail {}", e);
-                e.to_string()
-            })
-        })
+        .and_then(|record| config::save_register_info(record).context("save_register_info failed"))
 }
 
 pub fn check() {
@@ -148,14 +140,13 @@ pub fn check() {
         .block_on(async move {
             if let Some(record) = config::get_register_info() {
                 info!("find register info, try validate");
-                let adapter = InvokeAPIAdapter::new();
+                let adapter = InvokeAdapter::new();
                 let local_ip = get_local_ip().expect("get_local_ip failed");
                 let hostname = get_hostname().expect("get_hostname failed");
-                if let Err(err) = adapter.validate_instance(hostname, local_ip).await {
-                    error!("validate_instance failed: {err:?}, work as normal instance");
-                } else {
-                    info!("validate_instance success, work as register instance");
-                };
+                match adapter.validate_instance(&hostname, &local_ip).await {
+                    Ok(_) => info!("validate_instance success, work as register instance"),
+                    Err(e) => error!("validate_instance failed: {e}, work as normal instance"),
+                }
                 let _ = config::save_register_info(record);
             }
         });

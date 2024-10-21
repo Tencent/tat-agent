@@ -3,9 +3,9 @@ use super::urls::{get_invoke_url, get_register_url};
 use crate::common::config::RegisterInfo;
 use crate::common::utils::generate_rsa_key;
 use crate::network::types::{
-    AgentError, AgentErrorCode, AgentRequest, CheckUpdateRequest, CheckUpdateResponse,
-    DescribeTasksRequest, DescribeTasksResponse, GetCosCredentialRequest, GetTmpCredentialResponse,
-    HttpMethod, RegisterInstanceRequest, RegisterInstanceResponse, ReportResourceRequest,
+    AgentRequest, CheckUpdateRequest, CheckUpdateResponse, DescribeTasksRequest,
+    DescribeTasksResponse, GetCosCredentialRequest, GetTmpCredentialResponse,
+    RegisterInstanceRequest, RegisterInstanceResponse, ReportResourceRequest,
     ReportResourceResponse, ReportTaskFinishRequest, ReportTaskFinishResponse,
     ReportTaskStartRequest, ReportTaskStartResponse, ServerRawResponse, UploadTaskLogRequest,
     UploadTaskLogResponse, ValidateInstanceRequest, ValidateInstanceResponse,
@@ -15,7 +15,8 @@ use crate::sysinfo::{get_hostname, get_local_ip, get_machine_id};
 
 use std::time::Duration;
 
-use log::{error, info};
+use anyhow::{Context, Result};
+use log::info;
 use reqwest::Response;
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::from_str;
@@ -24,39 +25,37 @@ const HTTP_REQUEST_RETRIES: u64 = 2;
 const HTTP_REQUEST_NO_RETRIES: u64 = 0;
 
 #[cfg_attr(test, faux::create)]
-pub struct InvokeAPIAdapter;
+pub struct InvokeAdapter;
 
 #[cfg_attr(test, faux::methods)]
-impl InvokeAPIAdapter {
-    pub fn new() -> InvokeAPIAdapter {
-        InvokeAPIAdapter
+impl InvokeAdapter {
+    pub fn new() -> Self {
+        Self
     }
 
     pub async fn register_instance(
         &self,
-        region: &String,
-        register_id: &String,
-        register_value: &String,
-    ) -> Result<RegisterInfo, String> {
-        let machine_id = get_machine_id().ok_or("get_machine_id failed")?;
-        let local_ip = get_local_ip().ok_or("get_local_ip failed")?;
-        let hostname = get_hostname().ok_or("get_hostname failed")?;
-        let (publickey, privkey) = generate_rsa_key().ok_or("generate_rsa_key failed")?;
+        region: &str,
+        register_id: &str,
+        register_value: &str,
+    ) -> Result<RegisterInfo> {
+        let machine_id = get_machine_id().context("get_machine_id failed")?;
+        let local_ip = get_local_ip().context("get_local_ip failed")?;
+        let hostname = get_hostname().context("get_hostname failed")?;
+        let (publickey, privkey) = generate_rsa_key().context("generate_rsa_key failed")?;
 
         let body = RegisterInstanceRequest::new(
             machine_id.clone(),
-            register_id.clone(),
-            register_value.clone(),
+            register_id.to_owned(),
+            register_value.to_owned(),
             publickey,
             hostname,
             local_ip,
         );
 
         let url = get_register_url(region);
-        let resp: RegisterInstanceResponse = self
-            .send("RegisterInstance", &url, body, HTTP_REQUEST_RETRIES)
-            .await
-            .map_err(|err| err.message)?;
+        let resp: RegisterInstanceResponse =
+            call_invoke_api("RegisterInstance", &url, body, HTTP_REQUEST_RETRIES).await?;
 
         let record = RegisterInfo {
             region: region.to_string(),
@@ -69,9 +68,9 @@ impl InvokeAPIAdapter {
         Ok(record)
     }
 
-    pub async fn describe_tasks(&self) -> Result<DescribeTasksResponse, AgentError<String>> {
+    pub async fn describe_tasks(&self) -> Result<DescribeTasksResponse> {
         let req = DescribeTasksRequest {};
-        self.send(
+        call_invoke_api(
             "DescribeTasks",
             &get_invoke_url(),
             req,
@@ -84,12 +83,12 @@ impl InvokeAPIAdapter {
         &self,
         invocation_task_id: &str,
         start_timestamp: u64,
-    ) -> Result<ReportTaskStartResponse, AgentError<String>> {
+    ) -> Result<ReportTaskStartResponse> {
         let req = ReportTaskStartRequest {
             invocation_task_id: invocation_task_id.to_string(),
             time_stamp: start_timestamp,
         };
-        self.send(
+        call_invoke_api(
             "ReportTaskStart",
             &get_invoke_url(),
             req,
@@ -108,7 +107,7 @@ impl InvokeAPIAdapter {
         finish_timestamp: u64,
         output_url: &str,
         output_err_info: &str,
-    ) -> Result<ReportTaskFinishResponse, AgentError<String>> {
+    ) -> Result<ReportTaskFinishResponse> {
         let req = ReportTaskFinishRequest {
             invocation_task_id: invocation_task_id.to_string(),
             time_stamp: finish_timestamp,
@@ -119,7 +118,7 @@ impl InvokeAPIAdapter {
             output_url: output_url.to_string(),
             output_error_info: output_err_info.to_string(),
         };
-        self.send(
+        call_invoke_api(
             "ReportTaskFinish",
             &get_invoke_url(),
             req,
@@ -134,9 +133,9 @@ impl InvokeAPIAdapter {
         idx: u32,
         output: Vec<u8>,
         dropped: u64,
-    ) -> Result<UploadTaskLogResponse, AgentError<String>> {
+    ) -> Result<UploadTaskLogResponse> {
         let task_log = UploadTaskLogRequest::new(task_id, idx, output, dropped);
-        self.send(
+        call_invoke_api(
             "UploadTaskLog",
             &get_invoke_url(),
             task_log,
@@ -145,9 +144,9 @@ impl InvokeAPIAdapter {
         .await
     }
 
-    pub async fn check_update(&self) -> Result<CheckUpdateResponse, AgentError<String>> {
+    pub async fn check_update(&self) -> Result<CheckUpdateResponse> {
         let body = CheckUpdateRequest::new();
-        self.send(
+        call_invoke_api(
             "CheckUpdate",
             &get_invoke_url(),
             body,
@@ -161,9 +160,9 @@ impl InvokeAPIAdapter {
         fd_avg: u32,
         mem_avg: u32,
         zp_cnt: u32,
-    ) -> Result<ReportResourceResponse, AgentError<String>> {
+    ) -> Result<ReportResourceResponse> {
         let body = ReportResourceRequest::new(fd_avg, mem_avg, zp_cnt);
-        self.send(
+        call_invoke_api(
             "ReportResource",
             &get_invoke_url(),
             body,
@@ -174,11 +173,11 @@ impl InvokeAPIAdapter {
 
     pub async fn validate_instance(
         &self,
-        hostname: String,
-        local_ip: String,
-    ) -> Result<ValidateInstanceResponse, AgentError<String>> {
+        hostname: &str,
+        local_ip: &str,
+    ) -> Result<ValidateInstanceResponse> {
         let body = ValidateInstanceRequest::new(hostname, local_ip);
-        self.send(
+        call_invoke_api(
             "ValidateInstance",
             &get_invoke_url(),
             body,
@@ -187,12 +186,9 @@ impl InvokeAPIAdapter {
         .await
     }
 
-    pub async fn get_cos_credential(
-        &self,
-        task_id: String,
-    ) -> Result<GetTmpCredentialResponse, AgentError<String>> {
+    pub async fn get_cos_credential(&self, task_id: &str) -> Result<GetTmpCredentialResponse> {
         let body = GetCosCredentialRequest::new(task_id);
-        self.send(
+        call_invoke_api(
             "GetCosCredential",
             &get_invoke_url(),
             body,
@@ -200,69 +196,29 @@ impl InvokeAPIAdapter {
         )
         .await
     }
+}
 
-    // parse standard formatted response to custom type
-    async fn send<T: Serialize + std::fmt::Debug, R: DeserializeOwned>(
-        &self,
-        action: &str,
-        url: &str,
-        request: T,
-        retries: u64,
-    ) -> Result<R, AgentError<String>> {
-        let mut retry_cnt = 0;
-        let body = AgentRequest::new(action, request);
-        loop {
-            let reqwest_resp_result = HttpRequester::new(url)
-                .with_time_out(10)
-                .send_request::<AgentRequest<T>>(
-                    HttpMethod::POST,
-                    "/",
-                    Some(&body),
-                    Some(build_extra_headers()),
-                )
-                .await;
+async fn call_invoke_api<T: Serialize + std::fmt::Debug, R: DeserializeOwned>(
+    action: &str,
+    url: &str,
+    request: T,
+    retries: u64,
+) -> Result<R> {
+    let body = AgentRequest::new(action, request);
+    let resp = HttpRequester::post(url, &body)
+        .timeout(10)
+        .headers(build_extra_headers())
+        .retries(retries)
+        .retry_interval(Duration::from_millis(500))
+        .send()
+        .await?;
+    Ok(parse(resp).await?)
+}
 
-            match reqwest_resp_result {
-                Ok(reqwest_resp) => return self.parse(reqwest_resp).await,
-                Err(ref e) => {
-                    if retry_cnt < retries {
-                        retry_cnt = retry_cnt + 1;
-                        tokio::time::sleep(Duration::from_millis(500)).await;
-                        info!("request error: {:?}, retry {}", e, retry_cnt);
-                        continue;
-                    }
-                    error!("request error reached {} times", retry_cnt);
-                    return Err(e.clone());
-                }
-            }
-        }
-    }
-
-    async fn parse<T: DeserializeOwned>(
-        &self,
-        reqwest_resp: Response,
-    ) -> Result<T, AgentError<String>> {
-        let txt = reqwest_resp.text().await.map_err(|e| {
-            AgentError::new(
-                AgentErrorCode::ResponseReadError,
-                &format!("failed to read response: {:?}", e),
-            )
-        })?;
-
-        info!("response text {:?}", txt);
-        let raw_resp = from_str::<'_, ServerRawResponse<T>>(&txt).map_err(|e| {
-            AgentError::new(
-                AgentErrorCode::JsonDecodeError,
-                &format!("failed to parse json response: {:?}", e),
-            )
-        })?;
-
-        raw_resp.into_response().map_err(|e| {
-            AgentError::wrap(
-                AgentErrorCode::ResponseEmptyError,
-                format!("error: {}", e.message()).as_str(),
-                format!("response error: {:?}", e),
-            )
-        })
-    }
+// parse standard formatted response to custom type
+async fn parse<T: DeserializeOwned>(reqwest_resp: Response) -> Result<T> {
+    let txt = reqwest_resp.text().await?;
+    info!("response text {}", txt);
+    let raw_resp = from_str::<ServerRawResponse<T>>(&txt)?;
+    Ok(raw_resp.into_response()?)
 }

@@ -94,7 +94,7 @@ fn try_start_service(entry: fn()) {
 
 fn clean_update_files() {
     wow64_disable_exc(|| {
-        Command::new("cmd.exe")
+        let _ = Command::new("cmd.exe")
             .args(&[
                 "/C",
                 "del",
@@ -104,8 +104,7 @@ fn clean_update_files() {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-            .map_err(|_| error!("clean_update_files failed"))
-            .ok();
+            .inspect_err(|_| error!("clean_update_files failed"));
     })
 }
 

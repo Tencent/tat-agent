@@ -1,15 +1,16 @@
-use crate::network::types::{AgentError, CheckUpdateResponse, HttpMethod};
-use crate::network::{HttpRequester, InvokeAPIAdapter};
+use crate::network::types::CheckUpdateResponse;
+use crate::network::{HttpRequester, InvokeAdapter};
 use std::fs::{create_dir_all, File};
 use std::io::{self, Write};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use log::{debug, error, info, warn};
 use tokio::runtime::{Builder, Runtime};
-use unzip::{Unzipper, UnzipperStats};
+use zip::ZipArchive;
 
 const SELF_UPDATE_FILENAME: &str = "agent_update.zip";
 const UPDATE_FILE_UNZIP_DIR: &str = "agent_update_unzip";
@@ -34,17 +35,17 @@ cfg_if::cfg_if! {
 pub fn try_update(self_updating: Arc<AtomicBool>, need_restart: Arc<AtomicBool>) {
     let rt_res = Builder::new_current_thread().enable_all().build();
     if let Err(e) = rt_res {
-        warn!("runtime for try update build failed: {e:?}, will retry later");
+        warn!("runtime for try update build failed: {e}, will retry later");
         self_updating.store(false, Ordering::SeqCst);
         return;
     }
     let mut rt = rt_res.unwrap();
 
-    let adapter = InvokeAPIAdapter::new();
+    let adapter = InvokeAdapter::new();
 
     let check_update_rsp = check_update(&mut rt, &adapter);
     if let Err(e) = check_update_rsp {
-        warn!("check update http request failed: {:?}", e);
+        warn!("check update http request failed: {}", e);
         self_updating.store(false, Ordering::SeqCst);
         return;
     }
@@ -65,9 +66,9 @@ pub fn try_update(self_updating: Arc<AtomicBool>, need_restart: Arc<AtomicBool>)
     info!("new agent version found:{check_update_rsp:?}, going to download");
     let download_ret = download_file(
         &mut rt,
-        check_update_rsp.download_url().clone().unwrap(),
-        SELF_UPDATE_PATH.to_string(),
-        SELF_UPDATE_FILENAME.to_string(),
+        check_update_rsp.download_url().as_ref().unwrap(),
+        SELF_UPDATE_PATH,
+        SELF_UPDATE_FILENAME,
     );
     if let Err(e) = download_ret {
         error!("download new agent failed: {}", e);
@@ -76,7 +77,7 @@ pub fn try_update(self_updating: Arc<AtomicBool>, need_restart: Arc<AtomicBool>)
     }
     let download_content = download_ret.unwrap();
 
-    let md5_check_pass = md5_check(&download_content, check_update_rsp.md5().clone().unwrap());
+    let md5_check_pass = md5_check(&download_content, check_update_rsp.md5().as_ref().unwrap());
     if md5_check_pass {
         info!("download file md5 matched with remote");
     } else {
@@ -118,7 +119,7 @@ pub fn try_update(self_updating: Arc<AtomicBool>, need_restart: Arc<AtomicBool>)
     }
     info!(
         "try run agent --version succ ret: '{}'",
-        try_run_ret.unwrap()
+        try_run_ret.unwrap().escape_debug()
     );
 
     let update_script_ret =
@@ -132,63 +133,52 @@ pub fn try_update(self_updating: Arc<AtomicBool>, need_restart: Arc<AtomicBool>)
     need_restart.store(true, Ordering::SeqCst);
 }
 
-fn check_update(
-    rt: &mut Runtime,
-    adapter: &InvokeAPIAdapter,
-) -> Result<CheckUpdateResponse, AgentError<String>> {
-    let req = adapter.check_update();
-    let rsp = rt.block_on(req);
-    rsp
+fn check_update(rt: &mut Runtime, adapter: &InvokeAdapter) -> Result<CheckUpdateResponse> {
+    let req_fut = adapter.check_update();
+    rt.block_on(req_fut)
 }
 
-fn download_file(
-    rt: &mut Runtime,
-    url: String,
-    path: String,
-    filename: String,
-) -> Result<Bytes, String> {
-    create_dir_all(path.clone())
-        .map_err(|e| format!("path `{}` create failed because: {}", path, e))?;
+fn download_file(rt: &mut Runtime, url: &str, path: &str, filename: &str) -> Result<Bytes> {
+    create_dir_all(&path).context(format!("path `{}` create failed", path))?;
 
     let filepath = format!("{}/{}", path, filename);
-    let mut file =
-        File::create(filepath).map_err(|e| format!("download file create failed: {}", e))?;
+    let mut file = File::create(filepath).context("download file create failed")?;
 
-    let req = HttpRequester::new(&url);
-    req.with_time_out(UPDATE_DOWNLOAD_TIMEOUT);
+    let req_fut = HttpRequester::get(&url)
+        .timeout(UPDATE_DOWNLOAD_TIMEOUT)
+        .send();
 
-    let req = req.send_request::<String>(HttpMethod::GET, "", None, None);
     let rsp = rt
-        .block_on(req)
-        .map_err(|e| format!("self update download failed: {:?}", e))?;
+        .block_on(req_fut)
+        .context("self update download failed")?;
 
     let bytes = rt
         .block_on(rsp.bytes())
-        .map_err(|e| format!("self update download bytes return failed: {}", e))?;
+        .context("self update download bytes return failed")?;
 
     file.write_all(bytes.as_ref())
-        .map_err(|e| format!("self update file write failed: {}", e))?;
+        .context("self update file write failed")?;
 
     file.sync_all()
-        .map_err(|e| format!("self update file sync disk failed: {}", e))?;
+        .context("self update file sync disk failed")?;
 
     info!("self update download success");
     Ok(bytes)
 }
 
-fn md5_check(download_content: &Bytes, md5: String) -> bool {
+fn md5_check(download_content: &Bytes, md5: &str) -> bool {
     let digest = md5::compute(download_content);
     let digest = format!("{:x}", digest);
     debug!("download file md5: {}, remote md5: {}", digest, md5);
-    digest.eq_ignore_ascii_case(md5.as_str())
+    digest.eq_ignore_ascii_case(md5)
 }
 
-fn unzip_file(path: &str, zip_filename: &str, unzip_dir: &str) -> Result<UnzipperStats, io::Error> {
+fn unzip_file(path: &str, zip_filename: &str, unzip_dir: &str) -> Result<()> {
     let zip_file = format!("{}/{}", path, zip_filename);
     let file = File::open(zip_file)?;
     let abs_unzip_dir = format!("{}/{}", path, unzip_dir);
-    let unzipper = Unzipper::new(file, abs_unzip_dir);
-    unzipper.unzip()
+    ZipArchive::new(file)?.extract(abs_unzip_dir)?;
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -199,10 +189,10 @@ fn batch_set_execute_permission(
     agent_filename: &str,
 ) -> io::Result<()> {
     let script = format!("{}/{}/{}", path, unzip_dir, script_filename);
-    set_execute_permission(script)?;
+    set_execute_permission(&script)?;
 
     let agent = format!("{}/{}/{}", path, unzip_dir, agent_filename);
-    set_execute_permission(agent)
+    set_execute_permission(&agent)
 }
 
 #[cfg(windows)]
@@ -212,42 +202,33 @@ fn batch_set_execute_permission(_: &str, _: &str, _: &str, _: &str) -> io::Resul
 }
 
 #[cfg(unix)]
-fn set_execute_permission(abs_filename: String) -> io::Result<()> {
+fn set_execute_permission(abs_filename: &str) -> io::Result<()> {
     set_permissions(
         abs_filename,
         Permissions::from_mode(FILE_EXECUTE_PERMISSION_MODE),
     )
 }
 
-fn try_run_agent(path: &str, unzip_dir: &str, agent_filename: &str) -> Result<String, String> {
+fn try_run_agent(path: &str, unzip_dir: &str, agent_filename: &str) -> Result<String> {
     let agent = format!("{}{}/{}", path, unzip_dir, agent_filename);
-    let out = Command::new(agent)
-        .arg("--version")
-        .output()
-        .map_err(|e| format!("agent run ret: {:?}", e))?;
+    let out = Command::new(agent).arg("--version").output()?;
 
-    let out = String::from_utf8(out.stdout)
-        .map_err(|e| format!("version output contains non-utf8 char: {e:?}, invalid agent"))?;
-
-    let out_v: Vec<&str> = out.split(' ').collect();
-    if out_v.len() != 2 || out_v[0] != AGENT_FILENAME {
-        return Err(format!("version output invalid: {}", out));
+    let version = String::from_utf8(out.stdout).context("agent version contains invalid char")?;
+    let v = version.split(' ').collect::<Vec<_>>();
+    if v.len() != 2 || v[0] != AGENT_FILENAME {
+        return Err(anyhow!("version output invalid: {}", version));
     }
-    Ok(out)
+    Ok(version)
 }
 
-fn run_self_update_script(
-    path: &str,
-    unzip_dir: &str,
-    script_filename: &str,
-) -> Result<(), String> {
+fn run_self_update_script(path: &str, unzip_dir: &str, script_filename: &str) -> Result<()> {
     let script = format!("{}{}/{}", path, unzip_dir, script_filename);
     #[cfg(unix)]
     let cmd = Command::new("sh").arg("-c").arg(script).output();
     #[cfg(windows)]
     let cmd = wow64_disable_exc(move || Command::new(script.clone()).output());
 
-    let out = cmd.map_err(|e| format!("self update run ret: {:?}", e))?;
+    let out = cmd.context("self update failed")?;
     let stdout = String::from_utf8_lossy(out.stdout.as_slice());
     let stderr = String::from_utf8_lossy(out.stderr.as_slice());
     debug!("stdout of self update script:[{}]", stdout);
@@ -256,26 +237,24 @@ fn run_self_update_script(
     out.status
         .success()
         .then_some(())
-        .ok_or(format!("ret code: {:?}", out.status.code()))
+        .context(format!("exit code: {:?}", out.status.code()))
 }
 
-pub fn try_restart_agent() -> Result<(), String> {
-    cfg_if::cfg_if! {
-        if #[cfg(unix)] {
-            let script = format!("{}{}/{}", SELF_UPDATE_PATH, UPDATE_FILE_UNZIP_DIR, INSTALL_SCRIPT);
-            set_execute_permission(script.clone()).map_err(|e|format!("set execute permission failed: {:?}", e))?;
-            let cmd = Command::new("sh")
-            .args(&["-c", format!("{} restart", script).as_str()])
-            .output();
-        } else if #[cfg(windows)] {
-           let cmd = wow64_disable_exc(move ||{
-            Command::new("cmd.exe")
-                .args(&["/C", "sc stop tatsvc & sc start tatsvc"])
-                .output()});
-        }
-    }
+pub fn try_restart_agent() -> Result<()> {
+    #[cfg(unix)]
+    let cmd = {
+        let path = format!("{SELF_UPDATE_PATH}{UPDATE_FILE_UNZIP_DIR}/{INSTALL_SCRIPT}");
+        set_execute_permission(&path).context("set execute permission failed")?;
+        let script = format!("{path} restart");
+        Command::new("sh").args(&["-c", &script]).output()
+    };
+    #[cfg(windows)]
+    let cmd = wow64_disable_exc(move || {
+        let script = "sc stop tatsvc & sc start tatsvc";
+        Command::new("cmd.exe").args(&["/C", script]).output()
+    });
 
-    let out = cmd.map_err(|e| format!("run cmd failed: {:?}", e))?;
+    let out = cmd.context("try restart agent failed")?;
     let stdout = String::from_utf8_lossy(out.stdout.as_slice());
     let stderr = String::from_utf8_lossy(out.stderr.as_slice());
     debug!("stdout of try restart agent:[{}]", stdout);
@@ -284,7 +263,7 @@ pub fn try_restart_agent() -> Result<(), String> {
     out.status
         .success()
         .then_some(())
-        .ok_or(format!("ret code: {:?}", out.status.code()))
+        .context(format!("exit code: {:?}", out.status.code()))
 }
 
 #[cfg(test)]

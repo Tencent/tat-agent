@@ -1,5 +1,7 @@
+use super::gather::Gather;
 use super::handler::{BsonHandler, Handler};
 use crate::common::evbus::EventBus;
+use crate::conpty::handler::HandlerExt;
 use crate::network::types::ws_msg::{
     CreateFileReq, CreateFileResp, DeleteFileReq, DeleteFileResp, FileExistResp, FileExistsReq,
     FileInfoReq, FileInfoResp, ListPathReq, ListPathResp, PtyBinErrMsg, ReadFileReq, ReadFileResp,
@@ -13,7 +15,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use async_trait::async_trait;
+use anyhow::Result;
 use glob::Pattern;
 use log::info;
 use tokio::fs::{metadata, remove_dir_all, remove_file, OpenOptions};
@@ -54,29 +56,28 @@ const WS_MSG_TYPE_PTY_FILE_INFO: &str = "PtyFileInfo";
 pub fn register_file_handlers(event_bus: &Arc<EventBus>) {
     event_bus
         .slot_register(SLOT_PTY_BIN, WS_MSG_TYPE_PTY_CREATE_FILE, move |msg| {
-            BsonHandler::<CreateFileReq>::dispatch(msg, true)
+            Gather::dispatch::<BsonHandler<CreateFileReq>>(msg, true);
         })
         .slot_register(SLOT_PTY_BIN, WS_MSG_TYPE_PTY_DELETE_FILE, move |msg| {
-            BsonHandler::<DeleteFileReq>::dispatch(msg, true)
+            Gather::dispatch::<BsonHandler<DeleteFileReq>>(msg, true);
         })
         .slot_register(SLOT_PTY_BIN, WS_MSG_TYPE_PTY_LIST_PATH, move |msg| {
-            BsonHandler::<ListPathReq>::dispatch(msg, true)
+            Gather::dispatch::<BsonHandler<ListPathReq>>(msg, true);
         })
         .slot_register(SLOT_PTY_BIN, WS_MSG_TYPE_PTY_FILE_EXIST, move |msg| {
-            BsonHandler::<FileExistsReq>::dispatch(msg, true)
+            Gather::dispatch::<BsonHandler<FileExistsReq>>(msg, true);
         })
         .slot_register(SLOT_PTY_BIN, WS_MSG_TYPE_PTY_FILE_INFO, move |msg| {
-            BsonHandler::<FileInfoReq>::dispatch(msg, true)
+            Gather::dispatch::<BsonHandler<FileInfoReq>>(msg, true);
         })
         .slot_register(SLOT_PTY_BIN, WS_MSG_TYPE_PTY_WRITE_FILE, move |msg| {
-            BsonHandler::<WriteFileReq>::dispatch(msg, true)
+            Gather::dispatch::<BsonHandler<WriteFileReq>>(msg, true);
         })
         .slot_register(SLOT_PTY_BIN, WS_MSG_TYPE_PTY_READ_FILE, move |msg| {
-            BsonHandler::<ReadFileReq>::dispatch(msg, true)
+            Gather::dispatch::<BsonHandler<ReadFileReq>>(msg, true);
         });
 }
 
-#[async_trait]
 impl Handler for BsonHandler<CreateFileReq> {
     async fn process(self) {
         let d = &self.request.data;
@@ -110,14 +111,14 @@ impl Handler for BsonHandler<CreateFileReq> {
         // create file as user
         let plugin = &self.channel.as_ref().unwrap().plugin.component;
         let create_result = plugin.execute(&|| {
-            create_dir_all(parent_path).map_err(|e| e.to_string())?;
+            create_dir_all(parent_path)?;
             if d.is_dir {
-                create_dir(&d.path).map_err(|e| e.to_string())?;
+                create_dir(&d.path)?;
             } else {
-                File::create(&d.path).map_err(|e| e.to_string())?;
+                File::create(&d.path)?;
             }
             #[cfg(unix)]
-            set_permissions(&d.path, Permissions::from_mode(d.mode)).map_err(|e| e.to_string())?;
+            set_permissions(&d.path, Permissions::from_mode(d.mode))?;
             Ok(Vec::new())
         });
 
@@ -128,7 +129,6 @@ impl Handler for BsonHandler<CreateFileReq> {
     }
 }
 
-#[async_trait]
 impl Handler for BsonHandler<DeleteFileReq> {
     async fn process(self) {
         let path = &self.request.data.path;
@@ -158,7 +158,6 @@ impl Handler for BsonHandler<DeleteFileReq> {
     }
 }
 
-#[async_trait]
 impl Handler for BsonHandler<ListPathReq> {
     async fn process(self) {
         let path = &self.request.data.path;
@@ -172,7 +171,7 @@ impl Handler for BsonHandler<ListPathReq> {
             Err(e) => return self.reply(PtyBinErrMsg::new(e)).await,
         };
 
-        let files = match list_path(path, pattern.clone(), show_hidden) {
+        let files = match list_path(path, &pattern, show_hidden) {
             Ok(files) => files,
             Err(e) => return self.reply(PtyBinErrMsg::new(e)).await,
         };
@@ -194,7 +193,6 @@ impl Handler for BsonHandler<ListPathReq> {
     }
 }
 
-#[async_trait]
 impl Handler for BsonHandler<FileExistsReq> {
     async fn process(self) {
         let path = &self.request.data.path;
@@ -204,7 +202,6 @@ impl Handler for BsonHandler<FileExistsReq> {
     }
 }
 
-#[async_trait]
 impl Handler for BsonHandler<FileInfoReq> {
     async fn process(self) {
         let path = &self.request.data.path;
@@ -216,7 +213,6 @@ impl Handler for BsonHandler<FileInfoReq> {
     }
 }
 
-#[async_trait]
 impl Handler for BsonHandler<WriteFileReq> {
     async fn process(self) {
         let data = &self.request.data;
@@ -249,7 +245,6 @@ impl Handler for BsonHandler<WriteFileReq> {
     }
 }
 
-#[async_trait]
 impl Handler for BsonHandler<ReadFileReq> {
     async fn process(self) {
         let data = &self.request.data;
@@ -311,7 +306,7 @@ fn get_win32_ready_drives() -> Vec<String> {
 }
 
 //windows path format: /d:/work
-fn list_path(path: &str, filter: Pattern, show_hidden: bool) -> Result<Vec<FileInfoResp>, String> {
+fn list_path(path: &str, filter: &Pattern, show_hidden: bool) -> Result<Vec<FileInfoResp>> {
     let mut files = Vec::<FileInfoResp>::new();
     let mut path = path.to_string();
 
@@ -333,7 +328,7 @@ fn list_path(path: &str, filter: Pattern, show_hidden: bool) -> Result<Vec<FileI
         path = path[1..].to_string();
     }
 
-    let items = read_dir(path).map_err(|e| e.to_string())?;
+    let items = read_dir(path)?;
     for item in items {
         let Ok(entry) = item else {
             continue;

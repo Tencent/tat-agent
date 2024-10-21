@@ -1,10 +1,11 @@
-use crate::network::types::{GetTmpCredentialResponse, HttpMethod};
+use crate::network::types::GetTmpCredentialResponse;
 use crate::network::HttpRequester;
 
+use anyhow::Result;
 use log::{error, info};
 use serde_json::from_str;
 
-pub struct MetadataAPIAdapter {
+pub struct MetadataAdapter {
     url: String,
 }
 
@@ -12,104 +13,57 @@ const CREDENTIAL_URI: &str = "/latest/meta-data/cam/security-credentials";
 const INSTANCE_ID_URI: &str = "/latest/meta-data/instance-id";
 const REGION_URI: &str = "/latest/meta-data/placement/region";
 
-impl MetadataAPIAdapter {
+impl MetadataAdapter {
     pub fn build(url: &str) -> Self {
-        MetadataAPIAdapter {
+        Self {
             url: url.to_string(),
         }
     }
 
-    pub async fn tmp_credential(&self) -> Result<GetTmpCredentialResponse, String> {
+    pub async fn tmp_credential(&self) -> Result<GetTmpCredentialResponse> {
         let role_name = self.get_role_name().await?;
-        self.get_tmp_credential(role_name).await
+        self.get_tmp_credential(&role_name).await
     }
 
     pub async fn instance_id(&self) -> String {
-        let res = HttpRequester::new(&self.url)
-            .with_time_out(3)
-            .send_request::<String>(HttpMethod::GET, INSTANCE_ID_URI, None, None)
-            .await;
-        let resp = match res {
-            Ok(resp) => resp,
-            Err(e) => {
-                error!("request error: {:?}", e);
-                return format!("");
-            }
-        };
-        match resp.text().await {
-            Ok(txt) => {
-                info!("response text: {:?}", txt);
-                txt
-            }
-            Err(e) => {
-                error!("failed to read response: {:?}", e);
-                format!("")
-            }
-        }
+        let url = self.url.clone() + INSTANCE_ID_URI;
+        Self::get(&url)
+            .await
+            .inspect(|id| info!("Metadata instance_id response: {}", id))
+            .unwrap_or_default()
     }
 
-    pub async fn region(&self) -> Option<String> {
-        let resp = HttpRequester::new(&self.url)
-            .with_time_out(3)
-            .send_request::<String>(HttpMethod::GET, REGION_URI, None, None)
-            .await
-            .map_err(|e| error!("request region error: {:?}", e))
-            .ok()?;
-
-        match resp.text().await {
-            Ok(txt) => {
-                info!("region text: {:?}", txt);
-                Some(txt)
-            }
-            Err(e) => {
-                error!("failed to read region: {:?}", e);
-                None
-            }
-        }
+    pub async fn region(&self) -> Result<String> {
+        let url = self.url.clone() + REGION_URI;
+        let txt = Self::get(&url).await?;
+        info!("Metadata region response: {}", txt);
+        Ok(txt)
     }
 
-    async fn get_role_name(&self) -> Result<String, String> {
-        let resp = HttpRequester::new(&self.url)
-            .with_time_out(3)
-            .send_request::<String>(HttpMethod::GET, CREDENTIAL_URI, None, None)
-            .await
-            .map_err(|e| {
-                error!("request error: {:?}", e);
-                format!("Get CAM role of instance failed.")
-            })?;
-        match resp.text().await {
-            Ok(txt) => {
-                info!("response text: {:?}", txt);
-                Ok(txt)
-            }
-            Err(e) => {
-                error!("failed to read response: {:?}", e);
-                Err(format!("Get CAM role of instance failed."))
-            }
-        }
+    async fn get_role_name(&self) -> Result<String> {
+        let url = self.url.clone() + CREDENTIAL_URI;
+        let txt = Self::get(&url).await?;
+        info!("Metadata get_role_name response: {}", txt);
+        Ok(txt)
     }
 
-    async fn get_tmp_credential(
-        &self,
-        role_name: String,
-    ) -> Result<GetTmpCredentialResponse, String> {
-        let url = format!("{}/{}", CREDENTIAL_URI, role_name);
-        let resp = HttpRequester::new(&self.url)
-            .with_time_out(3)
-            .send_request::<String>(HttpMethod::GET, &*url, None, None)
+    async fn get_tmp_credential(&self, role_name: &str) -> Result<GetTmpCredentialResponse> {
+        let url = self.url.clone() + CREDENTIAL_URI + "/" + role_name;
+        let txt = Self::get(&url).await?;
+        let obj = from_str::<GetTmpCredentialResponse>(&txt)
+            .inspect_err(|e| error!("failed to parse json response: {}", e))?;
+        Ok(obj)
+    }
+
+    async fn get(url: &str) -> Result<String> {
+        let resp_text = HttpRequester::get(&url)
+            .timeout(3)
+            .send()
             .await
-            .map_err(|e| {
-                error!("request error: {:?}", e);
-                format!("Get credential of CAM role failed.")
-            })?;
-        let txt = resp.text().await.map_err(|e| {
-            error!("failed to read response: {:?}", e);
-            format!("Get credential of CAM role failed.")
-        })?;
-        let raw_resp_result: Result<GetTmpCredentialResponse, _> = from_str(&txt);
-        raw_resp_result.or_else(|e| {
-            error!("failed to parse json response: {:?}", e);
-            Err(format!("Get credential of CAM role failed."))
-        })
+            .inspect_err(|e| error!("send request error: {}", e))?
+            .text()
+            .await
+            .inspect_err(|e| error!("failed to read response: {}", e))?;
+        Ok(resp_text)
     }
 }

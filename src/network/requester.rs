@@ -1,127 +1,87 @@
-use crate::network::types::{AgentError, AgentErrorCode, HttpMethod};
-use std::fmt;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::LazyLock;
+use std::time::Duration;
 
-use log::{debug, error, info};
-use once_cell::sync::Lazy;
+use anyhow::{anyhow, Result};
+use log::{error, info, warn};
 use reqwest::header::{self, HeaderMap, HeaderValue};
-use reqwest::{Client, ClientBuilder, Response};
+use reqwest::{Client, ClientBuilder, RequestBuilder, Response};
 use serde::Serialize;
-use serde_json::to_string;
 
-const HTTP_REQUEST_TIME_OUT: u64 = 5;
+const HTTP_REQUEST_TIMEOUT: u64 = 5;
 
-static HTTP_CLIENT: Lazy<Arc<Client>> = Lazy::new(|| {
-    Arc::new({
-        ClientBuilder::new()
-            .pool_max_idle_per_host(1)
-            .build()
-            .expect("failed to create http client")
-    })
+static HTTP_CLIENT: LazyLock<Client> = LazyLock::new(|| {
+    ClientBuilder::new()
+        .pool_max_idle_per_host(1)
+        .timeout(Duration::from_secs(HTTP_REQUEST_TIMEOUT))
+        .build()
+        .expect("network: failed to create http client")
 });
 
 pub struct HttpRequester {
-    url: String,
-    time_out: AtomicU64,
+    rb: RequestBuilder,
+    retries: u64,
+    interval: Duration,
 }
 
 impl HttpRequester {
-    pub fn new(url: &str) -> HttpRequester {
-        HttpRequester {
-            url: url.to_string(),
-            time_out: AtomicU64::new(HTTP_REQUEST_TIME_OUT),
-        }
-    }
-
-    pub fn with_time_out(&self, time_out: u64) -> &Self {
-        self.time_out.store(time_out, Ordering::SeqCst);
-        self
-    }
-
-    pub async fn send_request<T: Serialize + fmt::Debug>(
-        &self,
-        method: HttpMethod,
-        path: &str,
-        body: Option<&T>,
-        extra_headers: Option<HeaderMap<HeaderValue>>,
-    ) -> Result<Response, AgentError<String>> {
-        let extra_headers = match extra_headers {
-            Some(headers) => headers,
-            None => HeaderMap::new(),
-        };
-        match (method, body) {
-            (HttpMethod::POST, Some(b)) => self.call_post(path, b, extra_headers).await,
-            (HttpMethod::POST, None) => Err(AgentError::new(
-                AgentErrorCode::RequestEmptyError,
-                "empty request body",
-            )),
-            (HttpMethod::GET, _) => self.call_get(path, extra_headers).await,
-        }
-    }
-
-    async fn call_get(
-        &self,
-        path: &str,
-        extra_headers: HeaderMap<HeaderValue>,
-    ) -> Result<Response, AgentError<String>> {
-        let url = format!("{}{}", self.url, path);
+    pub fn get(url: &str) -> Self {
         info!("send request to: {}", url);
-        let time_out = self.time_out.load(Ordering::SeqCst);
-        let request_builder = HTTP_CLIENT
-            .get(&url)
-            .header(header::CONNECTION, "close")
-            .headers(extra_headers)
-            .timeout(std::time::Duration::from_secs(time_out));
-        let resp_res = request_builder.send().await;
-        match resp_res {
-            Ok(resp) => {
-                debug!("recv response: {:?}", resp);
-                Ok(resp)
-            }
-            Err(err) => {
-                let agent_err = AgentError::wrap(
-                    AgentErrorCode::ResponseEmptyError,
-                    &format!("request error: {}", err),
-                    format!("{:?}", err),
-                );
-                error!("{:?}", agent_err);
-                Err(agent_err)
-            }
-        }
+        Self::new(HTTP_CLIENT.get(url))
     }
 
-    async fn call_post<T: Serialize + fmt::Debug>(
-        &self,
-        path: &str,
-        body: &T,
-        extra_headers: HeaderMap<HeaderValue>,
-    ) -> Result<Response, AgentError<String>> {
-        let url = format!("{}{}", self.url, path);
-        info!("send request to {}, request body: {:?}", url, body);
+    pub fn post<T: Serialize>(url: &str, body: &T) -> Self {
+        let body = serde_json::to_string(body).expect("body serde_json failed");
+        info!("send request to {}, request body: {}", url, body);
+        Self::new(HTTP_CLIENT.post(url).body(body))
+    }
 
-        let time_out = self.time_out.load(Ordering::SeqCst);
-        let request_builder = HTTP_CLIENT
-            .post(&url)
-            .header(header::CONNECTION, "close")
-            .headers(extra_headers)
-            .timeout(std::time::Duration::from_secs(time_out));
+    pub fn timeout(self, timeout: u64) -> Self {
+        let rb = self.rb.timeout(Duration::from_secs(timeout));
+        Self { rb, ..self }
+    }
 
-        let resp_res = request_builder.body(to_string(&body).unwrap()).send().await;
-        match resp_res {
-            Ok(resp) => {
-                debug!("recv response: {:?}", resp);
-                Ok(resp)
+    pub fn headers(self, headers: HeaderMap<HeaderValue>) -> Self {
+        let rb = self.rb.headers(headers);
+        Self { rb, ..self }
+    }
+
+    pub fn retries(self, retries: u64) -> Self {
+        Self { retries, ..self }
+    }
+
+    pub fn retry_interval(self, interval: Duration) -> Self {
+        Self { interval, ..self }
+    }
+
+    pub async fn send(self) -> Result<Response> {
+        let rb = self.rb.header(header::CONNECTION, "close");
+        if self.retries == 0 || rb.try_clone().is_none() {
+            if self.retries != 0 {
+                warn!("request body try_clone failed, only 1 attempt made")
             }
-            Err(err) => {
-                let agent_err = AgentError::wrap(
-                    AgentErrorCode::ResponseEmptyError,
-                    &format!("request error: {}", err),
-                    format!("{:?}", err),
-                );
-                error!("{:?}", agent_err);
-                Err(agent_err)
+            let resp = rb
+                .send()
+                .await
+                .inspect_err(|e| error!("request error: {}", e))?;
+            return Ok(resp);
+        }
+
+        for i in 1..=self.retries {
+            let rst = rb.try_clone().unwrap().send().await;
+            match rst {
+                Ok(resp) => return Ok(resp),
+                Err(e) => warn!("request error: {}, attempt {} of {}", e, i, self.retries),
             }
+            tokio::time::sleep(self.interval).await;
+        }
+        Err(anyhow!("request error reached {} times", self.retries))
+    }
+
+    fn new(rb: RequestBuilder) -> Self {
+        Self {
+            rb,
+            retries: 0,
+            interval: Duration::from_millis(500),
         }
     }
 }

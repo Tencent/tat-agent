@@ -1,4 +1,5 @@
 use super::file::register_file_handlers;
+use super::handler::HandlerExt;
 use super::proxy::register_proxy_handlers;
 use super::pty::register_pty_handlers;
 use super::session::Session;
@@ -8,11 +9,11 @@ use crate::network::types::ws_msg::{PtyBinBase, PtyJsonBase, WsMsg};
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
+use anyhow::{anyhow, Result};
 use leaky_bucket::RateLimiter;
 use log::{error, info};
-use once_cell::sync::OnceCell;
 use serde::Serialize;
 use tokio::runtime::{Builder, Runtime};
 use tokio::sync::RwLock;
@@ -20,15 +21,15 @@ use tokio::sync::RwLock;
 const SIZE_1MB: usize = 1 * 1024 * 1024;
 
 pub struct Gather {
-    pub event_bus: Arc<EventBus>,
-    pub stop_counter: Arc<AtomicU64>,
-    pub sessions: RwLock<HashMap<String, Arc<Session>>>,
-    pub ws_seq_num: AtomicU64,
+    event_bus: Arc<EventBus>,
+    stop_counter: Arc<AtomicU64>,
+    sessions: RwLock<HashMap<String, Arc<Session>>>,
+    ws_seq_num: AtomicU64,
     limiter: RwLock<RateLimiter>,
     runtime: Runtime,
 }
 
-static GATHER: OnceCell<Gather> = OnceCell::new();
+static GATHER: OnceLock<Gather> = OnceLock::new();
 
 pub fn run(event_bus: &Arc<EventBus>, running_task_num: &Arc<AtomicU64>) {
     GATHER.get_or_init(|| {
@@ -56,16 +57,22 @@ impl Gather {
         GATHER.get().expect("runtime")
     }
 
-    pub fn runtime() -> &'static Runtime {
-        &Gather::instance().runtime
+    pub fn sync_dispatch<T: HandlerExt>(msg: Vec<u8>, need_channel: bool) {
+        let rt = &Gather::instance().runtime;
+        rt.block_on(T::dispatch(msg, need_channel));
     }
 
-    pub async fn add_session(session_id: &str, session: Arc<Session>) -> Result<(), String> {
+    pub fn dispatch<T: HandlerExt>(msg: Vec<u8>, need_channel: bool) {
+        let rt = &Gather::instance().runtime;
+        rt.spawn(async move { T::dispatch(msg, need_channel).await });
+    }
+
+    pub async fn add_session(session_id: &str, session: Arc<Session>) -> Result<()> {
         let gather = Gather::instance();
         let mut sessions = gather.sessions.write().await;
         if sessions.contains_key(session_id) {
             error!("duplicate add_session: {session_id}");
-            Err(format!("session `{session_id}` already start"))?
+            Err(anyhow!("session `{session_id}` already start"))?
         }
 
         sessions.insert(session_id.to_owned(), session.clone());

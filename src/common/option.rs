@@ -1,4 +1,4 @@
-use std::sync::{Arc, OnceLock};
+use std::sync::LazyLock;
 
 use clap::{Parser, Subcommand};
 
@@ -38,9 +38,8 @@ pub enum EnumCommands {
 }
 
 impl Opts {
-    pub fn get_opts() -> Arc<Opts> {
-        static INS: OnceLock<Arc<Opts>> = OnceLock::new();
-        let ins = INS.get_or_init(|| Arc::new(Opts::parse()));
-        ins.clone()
+    pub fn get_opts() -> &'static Opts {
+        static INS: LazyLock<Opts> = LazyLock::new(|| Opts::parse());
+        &INS
     }
 }

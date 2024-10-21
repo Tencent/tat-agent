@@ -7,6 +7,7 @@ use crate::network::types::ws_msg::{PtyBinBase, PtyJsonBase};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use anyhow::{anyhow, Result};
 use log::{error, info};
 use tokio::sync::RwLock;
 
@@ -35,12 +36,12 @@ impl Session {
         self.stopper.stop().await;
     }
 
-    pub async fn add_channel(&self, channel_id: &str, channel: Arc<Channel>) -> Result<(), String> {
+    pub async fn add_channel(&self, channel_id: &str, channel: Arc<Channel>) -> Result<()> {
         let id = format!("{}:{}", self.session_id, channel_id);
         let mut chs = self.channels.write().await;
         if chs.contains_key(channel_id) {
             error!("duplicate add_channel `{id}`");
-            Err(format!("channel `{id}` already start"))?
+            Err(anyhow!("channel `{id}` already start"))?
         }
         chs.insert(channel_id.to_owned(), channel.clone());
         info!("add_channel `{id}`");
@@ -90,7 +91,7 @@ impl Drop for Session {
     fn drop(&mut self) {
         let mut this: ChannelMap = Default::default();
         std::mem::swap(&mut this, &mut self.channels);
-        Gather::runtime().spawn(async move {
+        tokio::spawn(async move {
             for ch in this.read().await.values() {
                 ch.stop().await;
             }
@@ -142,7 +143,7 @@ pub struct Plugin {
 pub enum PluginComp {
     Pty(Pty),
     Proxy(Proxy),
-    None { username: String },
+    Nil { username: String },
 }
 
 impl Plugin {
@@ -150,7 +151,7 @@ impl Plugin {
         match &self.component {
             PluginComp::Pty(_) => format!("{}:{}", self.data.session_id, self.data.channel_id),
             PluginComp::Proxy(proxy) => proxy.proxy_id.clone(),
-            PluginComp::None { .. } => format!("{}:{}", self.data.session_id, self.data.channel_id),
+            PluginComp::Nil { .. } => format!("{}:{}", self.data.session_id, self.data.channel_id),
         }
     }
 
@@ -159,7 +160,7 @@ impl Plugin {
         match &self.component {
             PluginComp::Pty(pty) => pty.process(&id, &self.data, &self.controller).await,
             PluginComp::Proxy(proxy) => proxy.process(&id, &self.data, &self.controller).await,
-            PluginComp::None { .. } => tokio::select! {
+            PluginComp::Nil { .. } => tokio::select! {
                 _ = self.controller.stopper.get_receiver().await.expect("get_receiver failed") => (),
                 _ = self.controller.timer.timeout() => info!("Channel `{id}` timeout"),
             },

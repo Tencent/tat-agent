@@ -12,23 +12,13 @@
 
 ## 编译
 
-执行以下命令编译：
-
-- Linux 系统：
-
-```shell
-cargo build --release --bin tat_agent
-```
-
-- Windows 系统：
-
-注意：在 Windows 系统下，rust 的版本**必须高于 1.70**，如果版本过低，可以通过以下命令更新版本：
+注意：rust 的版本**必须高于 1.80**，如果版本过低，可以通过以下命令更新版本：
 
 ```powershell
 rustup update
 ```
 
-然后运行：
+然后执行以下命令编译：
 
 ```powershell
 cargo build --release --bin tat_agent

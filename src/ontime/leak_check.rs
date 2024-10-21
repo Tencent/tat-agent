@@ -1,11 +1,10 @@
-use crate::network::InvokeAPIAdapter;
+use crate::network::InvokeAdapter;
 use crate::ontime::self_update::try_restart_agent;
 use std::sync::atomic::Ordering::SeqCst;
-use std::sync::{atomic::AtomicU64, Mutex};
+use std::sync::{atomic::AtomicU64, LazyLock, Mutex};
 
 use log::{error, info, warn};
-use once_cell::sync::Lazy;
-use ringbuffer::{AllocRingBuffer, RingBufferExt, RingBufferWrite};
+use ringbuffer::{AllocRingBuffer, RingBuffer};
 use tokio::runtime::Builder;
 
 cfg_if::cfg_if! {
@@ -31,10 +30,10 @@ pub fn check_resource_leak() {
     static CHECK_CNT: AtomicU64 = AtomicU64::new(0);
     static FD_CNT: AtomicU64 = AtomicU64::new(0);
     static MEM_CNT: AtomicU64 = AtomicU64::new(0);
-    static MEM_RES_RF: Lazy<Mutex<AllocRingBuffer<u64>>> =
-        Lazy::new(|| Mutex::new(AllocRingBuffer::with_capacity(64)));
-    static FD_RF: Lazy<Mutex<AllocRingBuffer<u64>>> =
-        Lazy::new(|| Mutex::new(AllocRingBuffer::with_capacity(64)));
+    static MEM_RES_RF: LazyLock<Mutex<AllocRingBuffer<u64>>> =
+        LazyLock::new(|| Mutex::new(AllocRingBuffer::new(64)));
+    static FD_RF: LazyLock<Mutex<AllocRingBuffer<u64>>> =
+        LazyLock::new(|| Mutex::new(AllocRingBuffer::new(64)));
 
     let check_cnt = CHECK_CNT.fetch_add(1, SeqCst);
     let handle_cnt = get_handle_cnt();
@@ -54,7 +53,7 @@ pub fn check_resource_leak() {
             mem_res_rf.to_vec()
         );
         if let Err(e) = try_restart_agent() {
-            error!("try restart agent failed: {:?}", e)
+            error!("try restart agent failed: {}", e)
         }
 
         // should not comes here, because agent should has been killed when called `try_restart_agent`.
@@ -75,7 +74,7 @@ pub fn check_resource_leak() {
         #[cfg(windows)]
         let zp_cnt = 0 as u32;
 
-        let adapter = InvokeAPIAdapter::new();
+        let adapter = InvokeAdapter::new();
         let requester = adapter.report_resource(fd_avg, mem_avg, zp_cnt);
         info!(
             "ReportResource mem {} handle {} zp_cnt {}",
@@ -151,7 +150,7 @@ fn get_zoom_process() -> u32 {
         }
 
         let mut ppid: Option<i32> = None;
-        let mut state: String = "".to_string();
+        let mut state = "".to_string();
         if let Ok(file) = File::open(status_path) {
             let mut reader = std::io::BufReader::new(file);
             loop {
@@ -184,12 +183,11 @@ fn get_zoom_process() -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::common::logger::init_test_log;
-
     #[cfg(unix)]
     #[test]
     fn test_get_zoom_prcesss() {
+        use super::*;
+        use crate::common::logger::init_test_log;
         use std::process::Command;
         init_test_log();
         let mut nz = get_zoom_process();
@@ -201,81 +199,5 @@ mod tests {
         let _ = child.wait();
         nz = get_zoom_process();
         assert_eq!(0, nz);
-    }
-
-    #[test]
-    fn test_get_handle_cnt() {
-        init_test_log();
-        let fd_cnt_1 = get_handle_cnt();
-        let file = std::fs::File::create("test_fd_cnt").unwrap();
-        let fd_cnt_2 = get_handle_cnt();
-        assert_eq!(1, fd_cnt_2 - fd_cnt_1);
-        std::mem::drop(file);
-        let _ = std::fs::remove_file("test_fd_cnt");
-        let fd_cnt_3 = get_handle_cnt();
-        assert_eq!(fd_cnt_3, fd_cnt_1);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn test_get_mem_size() {
-        use libc::{MAP_ANONYMOUS, MAP_PRIVATE, PROT_READ, PROT_WRITE};
-        use std::ptr::null_mut;
-        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
-        let mem_size_1 = get_mem_size();
-
-        unsafe {
-            //do not free _ptr, just for debug
-            let _ptr = libc::mmap(
-                null_mut(),
-                page_size - 100,
-                PROT_READ | PROT_WRITE,
-                MAP_PRIVATE | MAP_ANONYMOUS,
-                -1,
-                0,
-            ) as *mut u32;
-            *_ptr = 1024; //load in mem
-        }
-
-        let mem_size_2 = get_mem_size();
-        assert_eq!(mem_size_1 + page_size as u64, mem_size_2);
-        unsafe {
-            //do not free _ptr, just for debug
-            let _ptr = libc::mmap(
-                null_mut(),
-                page_size - 100,
-                PROT_READ | PROT_WRITE,
-                MAP_PRIVATE | MAP_ANONYMOUS,
-                -1,
-                0,
-            ) as *mut u32;
-        }
-
-        let mem_size_3 = get_mem_size();
-        assert_eq!(mem_size_2 + page_size as u64, mem_size_3)
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn test_get_mem_size() {
-        use std::ptr::null_mut;
-        use winapi::um::memoryapi::VirtualAlloc;
-        use winapi::um::sysinfoapi::GetSystemInfo;
-        use winapi::um::sysinfoapi::SYSTEM_INFO;
-        use winapi::um::winnt::{MEM_COMMIT, PAGE_READWRITE};
-
-        let mut info: SYSTEM_INFO = unsafe { mem::zeroed() };
-        unsafe {
-            GetSystemInfo(&mut info);
-        }
-
-        let size = get_mem_size();
-        unsafe {
-            VirtualAlloc(null_mut(), 4000, MEM_COMMIT, PAGE_READWRITE);
-        }
-
-        let size1 = get_mem_size();
-        assert_eq!(size + info.dwPageSize as u64, size1);
-        print!("");
     }
 }

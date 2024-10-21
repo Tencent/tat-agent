@@ -1,5 +1,5 @@
 use super::gather::Gather;
-use super::handler::{BsonHandler, Handler, JsonHandler};
+use super::handler::{BsonHandler, Handler, HandlerExt, JsonHandler};
 use super::session::{Channel, Plugin, PluginCtrl, PluginData, Session};
 use crate::common::evbus::EventBus;
 use crate::common::utils::get_current_username;
@@ -16,7 +16,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
+use anyhow::{anyhow, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use log::{error, info};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -52,7 +52,6 @@ cfg_if::cfg_if! {
     }
 }
 
-type PtyResult<T> = Result<T, String>;
 type PtyExecCallback = Box<
     dyn Fn(u32, bool, Option<i32>, Vec<u8>) -> Pin<Box<dyn Future<Output = ()> + Send>>
         + Send
@@ -62,33 +61,32 @@ type PtyExecCallback = Box<
 pub fn register_pty_handlers(event_bus: &Arc<EventBus>) {
     event_bus
         .slot_register(SLOT_PTY_CMD, WS_MSG_TYPE_PTY_START, move |value| {
-            JsonHandler::<PtyStart>::dispatch(value, false);
+            Gather::dispatch::<JsonHandler<PtyStart>>(value, false);
         })
         .slot_register(SLOT_PTY_CMD, WS_MSG_TYPE_PTY_STOP, move |value| {
-            JsonHandler::<PtyStop>::dispatch(value, false);
+            Gather::dispatch::<JsonHandler<PtyStop>>(value, false);
         })
         .slot_register(SLOT_PTY_CMD, WS_MSG_TYPE_PTY_RESIZE, move |value| {
-            JsonHandler::<PtyResize>::dispatch(value, true);
+            Gather::dispatch::<JsonHandler<PtyResize>>(value, true);
         })
         .slot_register(SLOT_PTY_CMD, WS_MSG_TYPE_PTY_INPUT, move |value| {
-            JsonHandler::<PtyInput>::dispatch(value, true);
+            Gather::dispatch::<JsonHandler<PtyInput>>(value, true);
         })
         .slot_register(SLOT_PTY_CMD, WS_MSG_TYPE_PTY_MAX_RATE, move |value| {
-            JsonHandler::<PtyMaxRate>::dispatch(value, false);
+            Gather::dispatch::<JsonHandler<PtyMaxRate>>(value, false);
         })
         .slot_register(SLOT_PTY_BIN, WS_MSG_TYPE_PTY_EXEC_CMD, move |value| {
-            BsonHandler::<ExecCmdReq>::dispatch(value, true);
+            Gather::dispatch::<BsonHandler<ExecCmdReq>>(value, true);
         })
         .slot_register(
             SLOT_PTY_BIN,
             WS_MSG_TYPE_PTY_EXEC_CMD_STREAM,
             move |value| {
-                BsonHandler::<ExecCmdStreamReq>::dispatch(value, true);
+                Gather::dispatch::<BsonHandler<ExecCmdStreamReq>>(value, true);
             },
         );
 }
 
-#[async_trait]
 impl Handler for JsonHandler<PtyStart> {
     async fn process(self) {
         let req = &self.request.data;
@@ -102,7 +100,7 @@ impl Handler for JsonHandler<PtyStart> {
         }
 
         let comp = if req.no_shell {
-            PluginComp::None { username }
+            PluginComp::Nil { username }
         } else {
             #[cfg(windows)]
             let pty_res = {
@@ -150,7 +148,6 @@ impl Handler for JsonHandler<PtyStart> {
     }
 }
 
-#[async_trait]
 impl Handler for JsonHandler<PtyStop> {
     async fn process(self) {
         let session_id = &self.request.session_id;
@@ -168,7 +165,6 @@ impl Handler for JsonHandler<PtyStop> {
     }
 }
 
-#[async_trait]
 impl Handler for JsonHandler<PtyResize> {
     async fn process(self) {
         info!("=>pty_resize `{}`", self.id());
@@ -184,7 +180,6 @@ impl Handler for JsonHandler<PtyResize> {
     }
 }
 
-#[async_trait]
 impl Handler for JsonHandler<PtyInput> {
     async fn process(self) {
         // info!("=>pty_input `{}`", self.id());
@@ -208,7 +203,6 @@ impl Handler for JsonHandler<PtyInput> {
 }
 
 #[cfg(windows)]
-#[async_trait]
 impl Handler for BsonHandler<ExecCmdReq> {
     async fn process(self) {
         self.reply(PtyBinErrMsg::new("not support on windows"))
@@ -217,36 +211,36 @@ impl Handler for BsonHandler<ExecCmdReq> {
 }
 
 #[cfg(unix)]
-#[async_trait]
 impl Handler for BsonHandler<ExecCmdReq> {
     async fn process(self) {
         let data = &self.request.data;
-        info!("=>exec_cmd `{}`, command: {}", self.id(), data.cmd);
-        let plugin = &self.channel.as_ref().unwrap().plugin.component;
-        let result = plugin.execute(&|| {
-            let mut command = Command::new("bash");
-            unsafe {
-                command
-                    .args(&["-c", data.cmd.as_str()])
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .pre_exec(|| {
-                        libc::dup2(1, 2);
-                        Ok(())
-                    });
-            }
+        info!(
+            "=>exec_cmd `{}`, command: {}",
+            self.id(),
+            data.cmd.escape_debug()
+        );
 
-            command
-                .output()
-                .map(|out| String::from_utf8_lossy(&out.stdout).as_bytes().to_vec())
-                .map_err(|err| format!("err_msg: {}", err))
+        let plugin = &self.channel.as_ref().unwrap().plugin.component;
+        let result = plugin.execute(&|| unsafe {
+            let output = Command::new("bash")
+                .args(&["-c", data.cmd.as_str()])
+                .stdin(Stdio::null())
+                .pre_exec(|| {
+                    libc::dup2(1, 2);
+                    Ok(())
+                })
+                .output()?;
+            Ok(String::from_utf8_lossy(&output.stdout).as_bytes().to_vec())
         });
 
         match result {
             Ok(output) => {
                 let output = String::from_utf8_lossy(&output).to_string();
-                info!("exec_cmd `{}` success, output: {}", self.id(), output);
+                info!(
+                    "exec_cmd `{}` success, output: {}",
+                    self.id(),
+                    output.escape_debug()
+                );
                 self.reply(ExecCmdResp { output }).await
             }
             Err(err) => {
@@ -257,17 +251,20 @@ impl Handler for BsonHandler<ExecCmdReq> {
     }
 }
 
-#[async_trait]
 impl Handler for BsonHandler<ExecCmdStreamReq> {
     async fn process(self) {
         let data = &self.request.data;
-        info!("=>exec_cmd_stream `{}`, command: {}", self.id(), data.cmd);
+        info!(
+            "=>exec_cmd_stream `{}`, command: {}",
+            self.id(),
+            data.cmd.escape_debug()
+        );
 
         let sid = self.request.session_id.clone();
         let cid = self.request.channel_id.clone();
         let cdata = self.request.custom_data.clone();
         let op = self.op_type.clone();
-        let cb: PtyExecCallback = Box::new(move |index, is_last, exit_code, data: Vec<u8>| {
+        let cb: PtyExecCallback = Box::new(move |index, is_last, exit_code, data| {
             let msg = PtyBinBase {
                 session_id: sid.clone(),
                 channel_id: cid.clone(),
@@ -298,7 +295,6 @@ impl Handler for BsonHandler<ExecCmdStreamReq> {
     }
 }
 
-#[async_trait]
 impl Handler for JsonHandler<PtyMaxRate> {
     async fn process(self) {
         let rate = self.request.data.rate;
@@ -320,8 +316,7 @@ impl Pty {
             .expect("get_receiver failed");
         let mut buf = [0u8; PTY_BUF_SIZE];
         let mut reader = self.get_reader().await.expect("get_reader Failed");
-        // Upon initialization, set the last reply time to an instant before the timer was created.
-        let mut last_reply = Instant::now() - Duration::from_secs(PTY_REMOVE_INTERVAL);
+        let mut last_reply = Instant::now();
 
         loop {
             tokio::select! {
@@ -366,14 +361,14 @@ pub async fn execute_stream(
     #[cfg(windows)] token: &File,
     #[cfg(windows)] pipe: File,
     #[cfg(windows)] username: &str,
-) -> PtyResult<()> {
+) -> Result<()> {
     let mut idx = 0u32;
     let mut is_last;
     let timeout_at = Instant::now() + Duration::from_secs(timeout);
     let mut buf = [0u8; PTY_EXEC_DATA_SIZE];
 
     #[allow(unused_mut)] // Unix needs MUT, Windows does not.
-    let mut child = cmd.spawn().map_err(|_| "command start failed")?;
+    let mut child = cmd.spawn().context("command start failed")?;
     let pid = child.id().unwrap();
 
     #[cfg(windows)]
@@ -388,7 +383,7 @@ pub async fn execute_stream(
     loop {
         tokio::select! {
             len = reader.read(&mut buf) => {
-                let len = len.map_err(|_| "buffer read failed")?;
+                let len = len.context("buffer read failed")?;
                 is_last = len == 0;
                 if is_last {
                     break;
@@ -400,7 +395,7 @@ pub async fn execute_stream(
             _ = tokio::time::sleep_until(timeout_at) => {
                 error!("work_as_user func timeout");
                 kill_process_group(pid);
-                Err("command timeout, process killed")?;
+                Err(anyhow!("command timeout, process killed"))?;
             }
         };
     }
@@ -408,19 +403,20 @@ pub async fn execute_stream(
     let exit_status = child
         .wait_with_output()
         .await
-        .map_err(|_| "wait command failed")?
+        .context("wait command failed")?
         .status;
     if !exit_status.success() {
         error!("work_as_user func exit failed: {}", exit_status);
     }
-    let exit_code = exit_status.code().ok_or("command terminated abnormally")?;
+    let exit_code = exit_status.code().context("command exit abnormally")?;
     callback(idx, is_last, Some(exit_code), Vec::new()).await;
     Ok(())
 }
 
 #[cfg(test)]
 mod test {
-    use super::{Pty, PtyResult};
+    use super::Pty;
+    use crate::common::logger::init_test_log;
     use crate::common::utils::get_current_username;
     use crate::conpty::pty::PtyExecCallback;
     use crate::conpty::session::PluginComp;
@@ -431,10 +427,11 @@ mod test {
 
     use log::info;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::time::timeout;
+    use tokio::time::{sleep, timeout};
 
     #[tokio::test]
     async fn test_pty() {
+        init_test_log();
         let user_name = get_current_username();
         #[cfg(windows)]
         let pty = Pty::new(&user_name, 200, 100, 0).unwrap();
@@ -473,6 +470,7 @@ mod test {
         info!("output: {}", output);
         let result = output.to_string().contains("test");
         std::mem::drop(pty);
+        sleep(Duration::from_secs(1)).await; // yield to let pty drop
         assert!(result);
     }
 
@@ -488,33 +486,30 @@ mod test {
         script: &str,
         timeout: Option<u64>,
         data_map: HashMap<u32, (bool, Option<i32>, Vec<u8>)>,
-        expect_result: PtyResult<()>,
+        expect_result: Result<(), String>,
     ) {
         let username = get_current_username();
-        let plugin = PluginComp::None { username };
+        let plugin = PluginComp::Nil { username };
 
-        let cb: PtyExecCallback = Box::new(
-            move |idx: u32, is_last: bool, exit_code: Option<i32>, data: Vec<u8>| {
-                let (expect_is_last, expect_exit_code, expect_data) = data_map
-                    .get(&idx)
-                    .expect(&format!("idx `{idx}` not expect"));
-                // info!("idx:{idx}, is_last:{is_last}, exit_code:{exit_code:?}, data:{data:?}");
-                assert_eq!(*expect_is_last, is_last);
-                assert_eq!(*expect_exit_code, exit_code);
-                assert_eq!(*expect_data, data);
-                Box::pin(async {})
-            },
-        );
+        let cb: PtyExecCallback = Box::new(move |idx, is_last, exit_code, data| {
+            let (expect_is_last, expect_exit_code, expect_data) = data_map
+                .get(&idx)
+                .expect(&format!("idx `{idx}` not expect"));
+            assert_eq!(*expect_is_last, is_last);
+            assert_eq!(*expect_exit_code, exit_code);
+            assert_eq!(*expect_data, data);
+            Box::pin(async {})
+        });
         let cmd = init_cmd(script);
         let result = plugin.execute_stream(cmd, Some(cb), timeout).await;
-        assert_eq!(expect_result, result);
+        assert_eq!(expect_result, result.map_err(|e| e.to_string()));
     }
 
     fn test_execute_stream_data() -> Vec<(
         &'static str,
         Option<u64>,
         HashMap<u32, (bool, Option<i32>, Vec<u8>)>,
-        PtyResult<()>,
+        Result<(), String>,
     )> {
         #[cfg(unix)]
         let cmd_timeout = [

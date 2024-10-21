@@ -6,27 +6,29 @@ use crate::executor::{CMD_TYPE_BAT, CMD_TYPE_POWERSHELL};
 use crate::network::types::UTF8_BOM_HEADER;
 
 use crate::common::utils::get_now_secs;
-use crate::executor::{decode_output, kill_process_group, SystemCommand};
-use crate::network::cos::{ObjectAPI, COS};
+use crate::executor::{decode_output, kill_process_group};
+use crate::network::cos_adapter::COSAdapter;
 use crate::network::urls::get_meta_url;
-use crate::network::{InvokeAPIAdapter, MetadataAPIAdapter};
+use crate::network::{InvokeAdapter, MetadataAdapter};
 
 #[cfg(test)]
 use std::fmt::{self, Debug};
+#[cfg(windows)]
+use std::os::windows::prelude::FromRawHandle;
 
-use std::fs::{create_dir_all, File, OpenOptions};
-use std::io::Write;
-use std::ops::Deref;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering::SeqCst};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use async_trait::async_trait;
+use anyhow::{anyhow, Context, Result};
 use log::{debug, error, info, warn};
-use tokio::io::AsyncReadExt;
+use tokio::fs::{create_dir_all, File, OpenOptions};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Child;
 use tokio::time::Instant;
+#[cfg(windows)]
+use winapi::um::winnt::HANDLE;
 
 use super::FINISH_RESULT_TERMINATED;
 const BUF_SIZE: usize = 1024;
@@ -35,18 +37,6 @@ const FINISH_RESULT_TIMEOUT: &str = "TIMEOUT";
 const FINISH_RESULT_SUCCESS: &str = "SUCCESS";
 const FINISH_RESULT_FAILED: &str = "FAILED";
 const FINISH_RESULT_START_FAILED: &str = "START_FAILED";
-
-#[cfg(not(test))]
-#[async_trait]
-pub trait MyCommand: Deref<Target = BaseCommand> {
-    async fn run(&mut self) -> Result<(), String>;
-}
-
-#[cfg(test)]
-#[async_trait]
-pub trait MyCommand: Deref<Target = BaseCommand> + Debug {
-    async fn run(&mut self) -> Result<(), String>;
-}
 
 pub fn new(
     cmd_path: &str,
@@ -59,29 +49,30 @@ pub fn new(
     cos_bucket: &str,
     cos_prefix: &str,
     task_id: &str,
-) -> Result<Box<dyn MyCommand + Send>, String> {
+) -> Result<Arc<Cmd>> {
     #[cfg(unix)]
     let is_matches = matches!(cmd_type, CMD_TYPE_SHELL);
     #[cfg(windows)]
     let is_matches = matches!(cmd_type, CMD_TYPE_POWERSHELL | CMD_TYPE_BAT);
 
-    if is_matches {
-        return Ok(Box::new(SystemCommand::new(
-            cmd_path,
-            username,
-            work_dir,
-            timeout,
-            bytes_max_report,
-            log_file_path,
-            cos_bucket,
-            cos_prefix,
-            task_id,
-        )));
+    if !is_matches {
+        return Err(anyhow!("invalid cmd_type: {}", cmd_type));
     }
-    Err(format!("invalid cmd_type: {}", cmd_type))
+
+    Ok(Arc::new(Cmd::new(
+        cmd_path,
+        username,
+        work_dir,
+        timeout,
+        bytes_max_report,
+        log_file_path,
+        cos_bucket,
+        cos_prefix,
+        task_id,
+    )))
 }
 
-pub struct BaseCommand {
+pub struct Cmd {
     pub cmd_path: String,
     pub username: String,
     pub work_dir: String,
@@ -93,11 +84,11 @@ pub struct BaseCommand {
     pub bytes_dropped: AtomicU64,
 
     // it's true after finish
-    pub finished: Arc<AtomicBool>,
+    pub finished: AtomicBool,
     // Only read this value if self.finished==true
-    pub exit_code: Arc<Mutex<Option<i32>>>,
+    pub exit_code: Mutex<Option<i32>>,
     // current output which ready to report
-    pub output: Arc<Mutex<Vec<u8>>>,
+    pub output: Mutex<Vec<u8>>,
     // current output report index
     pub output_idx: AtomicU32,
 
@@ -113,16 +104,19 @@ pub struct BaseCommand {
     // it's None before start, will be Some after self.run()
     pub pid: Mutex<Option<u32>>,
     // if child has been killed by kill -9
-    pub killed: Arc<AtomicBool>,
+    pub killed: AtomicBool,
     // if child is timeout
-    pub is_timeout: Arc<AtomicBool>,
+    pub is_timeout: AtomicBool,
     // the time command process finished
-    pub finish_time: Arc<AtomicU64>,
+    pub finish_time: AtomicU64,
     // err_info when command start fail
     pub err_info: Mutex<String>,
+
+    #[cfg(windows)]
+    pub token: std::fs::File,
 }
 
-impl BaseCommand {
+impl Cmd {
     pub fn new(
         cmd_path: &str,
         username: &str,
@@ -133,9 +127,16 @@ impl BaseCommand {
         cos_bucket: &str,
         cos_prefix: &str,
         task_id: &str,
-    ) -> BaseCommand {
+    ) -> Self {
+        #[cfg(windows)]
+        let cmd_path = if cmd_path.ends_with(".ps1") {
+            cmd_path.replace(" ", "` ")
+        } else {
+            cmd_path.to_string()
+        };
+
         let timestamp = get_now_secs();
-        BaseCommand {
+        Self {
             cmd_path: cmd_path.to_string(),
             username: username.to_string(),
             work_dir: work_dir.to_string(),
@@ -143,9 +144,9 @@ impl BaseCommand {
             bytes_max_report,
             bytes_reported: AtomicU64::new(0),
             bytes_dropped: AtomicU64::new(0),
-            finished: Arc::new(AtomicBool::new(false)),
-            exit_code: Arc::new(Mutex::new(None)),
-            output: Arc::new(Mutex::new(Default::default())),
+            finished: AtomicBool::new(false),
+            exit_code: Mutex::new(None),
+            output: Mutex::new(Default::default()),
             output_idx: AtomicU32::new(0),
             log_file_path: log_file_path.to_string(),
             cos_bucket: cos_bucket.to_string(),
@@ -154,10 +155,13 @@ impl BaseCommand {
             output_url: Mutex::new("".to_string()),
             output_err_info: Mutex::new("".to_string()),
             pid: Mutex::new(None),
-            killed: Arc::new(AtomicBool::new(false)),
-            is_timeout: Arc::new(AtomicBool::new(false)),
-            finish_time: Arc::new(AtomicU64::new(timestamp)),
+            killed: AtomicBool::new(false),
+            is_timeout: AtomicBool::new(false),
+            finish_time: AtomicU64::new(timestamp),
             err_info: Mutex::new("".to_string()),
+
+            #[cfg(windows)]
+            token: unsafe { std::fs::File::from_raw_handle(0 as HANDLE) },
         }
     }
 
@@ -180,7 +184,7 @@ impl BaseCommand {
             // set as the total dropped bytes
             self.bytes_dropped.store(len as u64 - bytes_needed, SeqCst);
         }
-        output.write(&data[..bytes_needed]).unwrap();
+        output.extend(&data[..bytes_needed]);
         self.bytes_reported.fetch_add(bytes_needed as u64, SeqCst);
     }
 
@@ -256,8 +260,7 @@ impl BaseCommand {
     }
 
     pub fn err_info(&self) -> String {
-        let err_info = self.err_info.lock().unwrap();
-        String::from(err_info.as_str())
+        self.err_info.lock().unwrap().clone()
     }
 
     pub fn finish_time(&self) -> u64 {
@@ -265,28 +268,26 @@ impl BaseCommand {
     }
 
     pub fn output_url(&self) -> String {
-        let output_url = self.output_url.lock().unwrap();
-        String::from(output_url.as_str())
+        self.output_url.lock().unwrap().clone()
     }
 
     pub fn output_err_info(&self) -> String {
-        let err_info = self.output_err_info.lock().unwrap();
-        String::from(err_info.as_str())
+        self.output_err_info.lock().unwrap().clone()
     }
 
     pub fn on_timeout(&self) {
         let pid = self.pid.lock().unwrap().unwrap();
-        let killed = self.killed.clone();
-        let is_timeout = self.is_timeout.clone();
+        let tid = &self.task_id;
+        let timeout = &self.timeout;
+        info!("task `{tid}` timeout, timeout value: {timeout}, pid: {pid}");
 
-        info!("process `{}` timeout, timeout value: {}", pid, self.timeout);
-        let ret = killed.compare_exchange(false, true, SeqCst, SeqCst);
+        let ret = self.killed.compare_exchange(false, true, SeqCst, SeqCst);
         if ret.is_err() {
-            return info!("pid `{}` already killed", pid);
+            return info!("task `{}` already killed, pid: {}", tid, pid);
         }
-        is_timeout.store(true, SeqCst);
+        self.is_timeout.store(true, SeqCst);
         kill_process_group(pid);
-        info!("pid `{}` killed because of timeout", pid);
+        info!("task `{}` killed because of timeout, pid: {}", tid, pid);
     }
 
     pub async fn read_output<T>(&self, mut reader: T, mut log_file: File)
@@ -322,8 +323,8 @@ impl BaseCommand {
                     let output = &decode_output(buf);
                     self.append_output(output);
                     if need_cos {
-                        if let Err(e) = log_file.write(output) {
-                            error!("write output file failed: {:?}", e)
+                        if let Err(e) = log_file.write(output).await {
+                            error!("write output file failed: {}", e)
                         }
                     }
                 }
@@ -335,14 +336,14 @@ impl BaseCommand {
         }
 
         if need_cos {
-            let invocation_task_id = self.task_id.clone();
-            self.upload_log_cos(invocation_task_id).await;
+            self.upload_log_cos(&self.task_id).await;
         }
     }
 
     pub async fn process_finish(&self, child: &mut Child) {
         let pid = child.id().unwrap();
-        info!("=>process `{}` finish", pid);
+        let tid = &self.task_id;
+        info!("=>task `{}` finish, pid: {}", tid, pid);
         let status = child
             .wait()
             .await
@@ -351,7 +352,7 @@ impl BaseCommand {
         match status.code() {
             Some(code) => exit_code.replace(code),
             None => {
-                info!("Process terminated by signal: {}", pid);
+                info!("task `{}` terminated by signal, pid: {}", tid, pid);
                 exit_code.replace(-1)
             }
         };
@@ -360,44 +361,41 @@ impl BaseCommand {
         self.finish_time.store(now, SeqCst);
     }
 
-    pub fn cancel(&self) -> Result<(), String> {
-        let pid = *self.pid.lock().unwrap();
-        match pid {
-            Some(pid) => {
-                let ret = self.killed.compare_exchange(false, true, SeqCst, SeqCst);
-                if ret.is_err() {
-                    info!("pid `{}` already killed, ignore cancel request", pid);
-                } else {
-                    kill_process_group(pid);
-                    info!("pid `{}` killed because of cancel", pid);
-                }
-                Ok(())
-            }
-            None => Err("Process not running, no pid to kill".to_string()),
-        }
-    }
+    pub fn cancel(&self) -> Result<()> {
+        let tid = &self.task_id;
+        let pid = self
+            .pid
+            .lock()
+            .unwrap()
+            .context(format!("task `{tid}` not running, no pid to kill"))?;
 
-    pub fn store_path_check(&self) -> Result<(), String> {
-        if self.cmd_path.is_empty() {
-            let ret = format!("start failed because script file store failed.");
-            *self.err_info.lock().unwrap() =
-                format!("ScriptStoreFailed: script file store failed, please check disk space or permission");
-            return Err(ret);
+        match self.killed.compare_exchange(false, true, SeqCst, SeqCst) {
+            Ok(_) => {
+                kill_process_group(pid);
+                info!("task `{}` killed because of cancel, pid: {}", tid, pid);
+            }
+            Err(_) => info!("task `{}` already killed, ignore cancel, pid: {}", tid, pid),
         }
         Ok(())
     }
 
-    pub fn open_log_file(&self) -> Result<File, String> {
+    pub fn store_path_check(&self) -> Result<()> {
+        if self.cmd_path.is_empty() {
+            *self.err_info.lock().unwrap() =
+                format!("ScriptStoreFailed: script file store failed, please check disk space or permission");
+            return Err(anyhow!("start failed because script file store failed."));
+        }
+        Ok(())
+    }
+
+    pub async fn open_log_file(&self) -> Result<File> {
         let parent = Path::new(&self.log_file_path).parent();
         match parent {
-            Some(parent) => create_dir_all(parent).map_err(|e| {
-                format!(
-                    "failed to open task log file `{}`, create parent dir `{}` failed: {:?}",
-                    self.log_file_path,
-                    parent.display(),
-                    e
-                )
-            })?,
+            Some(parent) => create_dir_all(parent).await.context(format!(
+                "failed to open task log file `{}`, create parent dir `{}` failed",
+                self.log_file_path,
+                parent.display(),
+            ))?,
             None => warn!("parent dir `{}` not found, skip.", self.log_file_path),
         }
 
@@ -405,26 +403,28 @@ impl BaseCommand {
             .create(true)
             .write(true)
             .open(&self.log_file_path)
-            .map_err(|e| {
-                format!(
-                    "failed to open task log file `{}`: {:?}",
-                    self.log_file_path, e
-                )
-            })
+            .await
+            .context(format!(
+                "failed to open task log file `{}`",
+                self.log_file_path
+            ))
     }
 
-    pub async fn upload_log_cos(&self, task_id: String) {
+    pub async fn upload_log_cos(&self, task_id: &str) {
         if !self.cos_bucket.is_empty() {
-            let metadata = MetadataAPIAdapter::build(get_meta_url().as_str());
-            let metadata_credential = metadata.tmp_credential().await;
-            let cos_credential = InvokeAPIAdapter::new().get_cos_credential(task_id).await;
+            let metadata = MetadataAdapter::build(&get_meta_url());
+            let metadata_credential = metadata
+                .tmp_credential()
+                .await
+                .context("Get CAM role of instance failed");
+            let cos_credential = InvokeAdapter::new().get_cos_credential(task_id).await;
             match metadata_credential.or(cos_credential) {
                 Ok(credential) => {
-                    let cli = COS::new(
-                        credential.secret_id,
-                        credential.secret_key,
-                        credential.token,
-                        self.cos_bucket.to_string(),
+                    let cli = COSAdapter::new(
+                        &credential.secret_id,
+                        &credential.secret_key,
+                        &credential.token,
+                        &self.cos_bucket,
                     );
                     let instance_id = metadata.instance_id().await;
                     let invocation_id = credential.invocation_id;
@@ -435,7 +435,7 @@ impl BaseCommand {
                         .put_object_from_file(&self.log_file_path, &object_name, None)
                         .await
                     {
-                        error!("pub object to cos failed: {:?}", e);
+                        error!("pub object to cos failed: {}", e);
                         *self.output_err_info.lock().unwrap() = format!(
                             "Upload output file to cos failed, \
                             please check if {} has permission to put file to COS: \
@@ -446,22 +446,21 @@ impl BaseCommand {
 
                     *self.output_url.lock().unwrap() = self.set_output_url(&invocation_id);
                 }
-                Err(err) => *self.output_err_info.lock().unwrap() = err.message.to_string(),
+                Err(err) => *self.output_err_info.lock().unwrap() = err.to_string(),
             }
         }
 
         // delete task output file.
         if let Err(e) = std::fs::remove_file(&self.log_file_path) {
             error!(
-                "cleanup task output file `{}` failed: {:?}",
+                "cleanup task output file `{}` failed: {}",
                 self.log_file_path, e
             )
         }
     }
 
     pub fn set_output_url(&self, invocation_id: &str) -> String {
-        let output_err_info = self.output_err_info.lock().expect("lock failed");
-        if !output_err_info.is_empty() {
+        if !self.output_err_info.lock().expect("lock failed").is_empty() {
             return "".to_string();
         }
 
@@ -493,13 +492,9 @@ impl BaseCommand {
 }
 
 #[cfg(test)]
-impl Debug for BaseCommand {
+impl Debug for Cmd {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let output_clone;
-        {
-            let output = self.output.lock().expect("lock failed");
-            output_clone = output.clone();
-        }
+        let output_clone = self.output.lock().expect("lock failed").clone();
         let output_debug = String::from_utf8_lossy(output_clone.as_slice());
         let may_contain_binary = String::from_utf8(output_clone.clone()).is_err();
 
@@ -624,7 +619,7 @@ mod tests {
             "",
             "",
         );
-        let mut cmd = ret.unwrap();
+        let cmd = ret.unwrap();
         let ret = cmd.run().await;
         assert!(ret.is_ok());
         info!("cmd running, pid: {}", cmd.pid());
@@ -649,7 +644,7 @@ mod tests {
             "",
             "",
         );
-        let mut cmd = ret.unwrap();
+        let cmd = ret.unwrap();
         let ret = cmd.run().await;
         info!("cmd run ret:[{}]", ret.unwrap_err());
         assert_eq!(cmd.pid(), 0);
@@ -674,7 +669,7 @@ mod tests {
             "",
             "",
         );
-        let mut cmd = ret.unwrap();
+        let cmd = ret.unwrap();
         let ret = cmd.run().await;
         info!("cmd run ret:[{}]", ret.unwrap_err());
         assert_eq!(cmd.pid(), 0);
@@ -769,7 +764,7 @@ mod tests {
             "",
             "",
         );
-        let mut cmd = ret.unwrap();
+        let cmd = ret.unwrap();
         let ret = cmd.run().await;
         assert!(ret.is_ok());
         info!("{} running, pid:{}", filename, cmd.pid());
@@ -823,7 +818,7 @@ mod tests {
             "",
             "",
         );
-        let mut cmd = ret.unwrap();
+        let cmd = ret.unwrap();
         let ret = cmd.run().await;
         assert!(ret.is_ok());
         info!("{} running, pid:{}", filename, cmd.pid());
@@ -890,7 +885,7 @@ mod tests {
             } else if #[cfg(windows)] {
                 let filename = format!("./{}.ps1", gen_rand_str());
                 create_file(
-                    format!("foreach ($i in 1..{}) {{ Write-Host 'y' -NoNewLine }};", OUTPUT_BYTE_LIMIT_EACH_REPORT + 1).as_str(),
+                    format!("[Console]::Out.Write('A' * {})", OUTPUT_BYTE_LIMIT_EACH_REPORT + 1).as_str(),
                     filename.as_str(),
                 );
             }
@@ -908,7 +903,7 @@ mod tests {
             "",
             "",
         );
-        let mut cmd = ret.unwrap();
+        let cmd = ret.unwrap();
         let ret = cmd.run().await;
         assert!(ret.is_ok());
 
@@ -950,7 +945,7 @@ mod tests {
             "",
             "",
         );
-        let mut cmd = ret.unwrap();
+        let cmd = ret.unwrap();
         let ret = cmd.run().await;
         assert!(ret.is_ok());
         info!("{} running, pid:{}", filename, cmd.pid());
@@ -960,6 +955,7 @@ mod tests {
         }
 
         let (out, idx, dropped) = cmd.next_output();
+        info!("{out:?}");
         let out = STANDARD.encode(out);
 
         assert_eq!(dropped, 0);
@@ -1003,7 +999,7 @@ mod tests {
             "",
             "",
         );
-        let mut cmd = ret.unwrap();
+        let cmd = ret.unwrap();
         let ret = cmd.run().await;
         assert!(ret.is_ok());
         let instant = Instant::now();

@@ -1,50 +1,163 @@
-MIT License
+The TATAgent-腾讯云自动化助手客户端组件 project is built on and with the aid of the following open source projects. Credits are given to these projects.
+
+
+Open Source Software Licensed under the MIT License:
 --------------------------------------------------------------------
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the Software without restriction, including without limitation the
-rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
-permit persons to whom the Software is furnished to do so, subject to the following conditions:
+1. tokio
+Copyright (c) Tokio Contributors
 
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of
-the Software.
+2. futures
+Copyright (c) 2016 Alex Crichton
+Copyright (c) 2017 The Tokio Authors
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT
-LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
-NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
-WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
-SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+3. reqwest
+Copyright (c) 2016 Sean McArthur
+
+4. serde_json
+Copyright (c) "Erick Tryzelaar <erick.tryzelaar@gmail.com>", "David Tolnay <dtolnay@gmail.com>"
+
+5. serde
+Copyright (c) "Erick Tryzelaar <erick.tryzelaar@gmail.com>", "David Tolnay <dtolnay@gmail.com>"
+
+6. url 
+Copyright (c) 2013-2016 The rust-url developers
+
+7. clap
+Copyright (c) 2015-2022 Kevin B. Knapp and Clap Contributors
+
+8. log
+Copyright (c) 2014 The Rust Project Developers
+
+9. log4rs
+Copyright (c) 2015-2016 Steven Fackler
+
+10. daemonize
+Copyright (c) daemonize original author and authors
+
+11. libc
+Copyright (c) 2014-2020 The Rust Project Developers
+
+12. rand
+Copyright 2018 Developers of the Rand project
+Copyright (c) 2014 The Rust Project Developers
+
+13. base64
+Copyright (c) 2015 Alice Maz
+
+14. chrono
+Copyright (c) 2014--2017, Kang Seonghoon and
+contributors.
+
+15. md5
+Copyright 2015–2019 The md5 Developers
+
+16. bytes
+Copyright (c) 2018 Carl Lerche
+
+17. users
+Copyright (c) 2019 Benjamin Sago
+
+18. tokio-stream
+Copyright (c) Tokio Contributors
+
+19. tokio-tungstenite
+Copyright (c) 2017 Daniel Abramov
+Copyright (c) 2017 Alexey Galakhov
+
+20. serde_bytes
+Copyright (c) 2014 The Rust Project Developers
+
+21. zip
+Copyright (c) 2014 Mathijs van de Nes
+
+22. cfg-if
+Copyright (c) 2014 Alex Crichton
+
+23. urlencoding
+© 2016 Bertram Truong
+© 2021 Kornel Lesiński
+
+24. bson
+Copyright (c) 2015 Y. T. CHUNG <zonyitoo@gmail.com>
+
+25. glob
+Copyright (c) 2014 The Rust Project Developers
+
+26. ringbuffer
+Copyright (c) 2022 Victor Roest and Jonathan Dönszelmann
+
+27. smbios-lib
+Copyright (c) 2021 jrgerber
+
+28. rsa
+Copyright (c) rsa original author and authors
+
+29. hmac
+Copyright (c) 2017 Artyom Pavlov
+
+30. sha1
+Copyright (c) 2006-2009 Graydon Hoare
+Copyright (c) 2009-2013 Mozilla Foundation
+Copyright (c) 2016 Artyom Pavlov
+
+31. anyhow
+Copyright (c) anyhow original author and authors
+
+32. leaky-bucket
+Copyright (c) 2019 John-John Tedro
+
+33. procfs
+Copyright (c) 2015 The procfs Developers
+
+34. winapi
+Copyright (c) 2015-2018 The winapi-rs Developers
+
+35. codepage-strings
+Copyright © 2021 Bart Massey
+
+36. ntapi
+Copyright (c) ntapi original author and authors
+
+37. nom
+Copyright (c) 2014-2019 Geoffroy Couprie
+
+38. zip-extract
+Copyright (c) 2020 MCOfficer
+
+39. faux
+Copyright (c) 2020 Andres Medina
 
 
-TATAgent-腾讯云自动化助手客户端组件 is licensed under the MIT License except for the third-party components listed below.
-Copyright (C) 2021-2023 THL A29 Limited, a Tencent company.  All rights reserved. 
-The below software in this distribution may have been modified by THL A29 Limited (“Tencent Modifications”).  
-All Tencent Modifications are Copyright (C) 2021-2023 THL A29 Limited.
+Terms of the MIT License:
+--------------------------------------------------------------------
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
 
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 
-Other dependencies and licenses:
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
 
 
 Open Source Software Licensed under the Apache License Version 2.0:
 --------------------------------------------------------------------
 1. openssl
 Copyright 2011-2017 Google Inc.
-2013 Jack Lloyd
-2013-2014 Steven Fackler
+          2013 Jack Lloyd
+          2013-2014 Steven Fackler
+Source code of this software can be obtained from: https://docs.rs/crate/openssl/0.10.35/source/
 
-2. time
-Copyright 2021 Jacob Pratt et al.
-
-3. unix-mode
-Copyright 2020 Google LLC
+2. unix_mode
+Copyright (c) unix_mode original author and authors
+Source code of this software can be obtained from: https://docs.rs/crate/unix_mode/0.1.3/source/
 
 
 Terms of the Apache License Version 2.0:
 --------------------------------------------------------------------
-Apache License
+Apache License 
 
 Version 2.0, January 2004
 
-http://www.apache.org/licenses/
+http://www.apache.org/licenses/ 
 
 TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
 1. Definitions.
@@ -75,15 +188,15 @@ TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
 
 4. Redistribution. You may reproduce and distribute copies of the Work or Derivative Works thereof in any medium, with or without modifications, and in Source or Object form, provided that You meet the following conditions:
 
-You must give any other recipients of the Work or Derivative Works a copy of this License; and
+You must give any other recipients of the Work or Derivative Works a copy of this License; and 
 
-You must cause any modified files to carry prominent notices stating that You changed the files; and
+You must cause any modified files to carry prominent notices stating that You changed the files; and 
 
-You must retain, in the Source form of any Derivative Works that You distribute, all copyright, patent, trademark, and attribution notices from the Source form of the Work, excluding those notices that do not pertain to any part of the Derivative Works; and
+You must retain, in the Source form of any Derivative Works that You distribute, all copyright, patent, trademark, and attribution notices from the Source form of the Work, excluding those notices that do not pertain to any part of the Derivative Works; and 
 
-If the Work includes a "NOTICE" text file as part of its distribution, then any Derivative Works that You distribute must include a readable copy of the attribution notices contained within such NOTICE file, excluding those notices that do not pertain to any part of the Derivative Works, in at least one of the following places: within a NOTICE text file distributed as part of the Derivative Works; within the Source form or documentation, if provided along with the Derivative Works; or, within a display generated by the Derivative Works, if and wherever such third-party notices normally appear. The contents of the NOTICE file are for informational purposes only and do not modify the License. You may add Your own attribution notices within Derivative Works that You distribute, alongside or as an addendum to the NOTICE text from the Work, provided that such additional attribution notices cannot be construed as modifying the License.
+If the Work includes a "NOTICE" text file as part of its distribution, then any Derivative Works that You distribute must include a readable copy of the attribution notices contained within such NOTICE file, excluding those notices that do not pertain to any part of the Derivative Works, in at least one of the following places: within a NOTICE text file distributed as part of the Derivative Works; within the Source form or documentation, if provided along with the Derivative Works; or, within a display generated by the Derivative Works, if and wherever such third-party notices normally appear. The contents of the NOTICE file are for informational purposes only and do not modify the License. You may add Your own attribution notices within Derivative Works that You distribute, alongside or as an addendum to the NOTICE text from the Work, provided that such additional attribution notices cannot be construed as modifying the License. 
 
-You may add Your own copyright statement to Your modifications and may provide additional or different license terms and conditions for use, reproduction, or distribution of Your modifications, or for any such Derivative Works as a whole, provided Your use, reproduction, and distribution of the Work otherwise complies with the conditions stated in this License.
+You may add Your own copyright statement to Your modifications and may provide additional or different license terms and conditions for use, reproduction, or distribution of Your modifications, or for any such Derivative Works as a whole, provided Your use, reproduction, and distribution of the Work otherwise complies with the conditions stated in this License. 
 
 5. Submission of Contributions. Unless You explicitly state otherwise, any Contribution intentionally submitted for inclusion in the Work by You to the Licensor shall be under the terms and conditions of this License, without any additional terms or conditions. Notwithstanding the above, nothing herein shall supersede or modify the terms of any separate license agreement you may have executed with Licensor regarding such Contributions.
 
@@ -96,151 +209,3 @@ You may add Your own copyright statement to Your modifications and may provide a
 9. Accepting Warranty or Additional Liability. While redistributing the Work or Derivative Works thereof, You may choose to offer, and charge a fee for, acceptance of support, warranty, indemnity, or other liability obligations and/or rights consistent with this License. However, in accepting such obligations, You may act only on Your own behalf and on Your sole responsibility, not on behalf of any other Contributor, and only if You agree to indemnify, defend, and hold each Contributor harmless for any liability incurred by, or claims asserted against, such Contributor by reason of your accepting any such warranty or additional liability.
 
 END OF TERMS AND CONDITIONS
-
-
-
-Open Source Software Licensed under the MIT License:
---------------------------------------------------------------------
-1. tokio (v0.2.22)
-Copyright (c) 2019 Tokio Contributors
-
-2. tokio (v0.1.22)
-Copyright (c) 2019 Tokio Contributors
-
-3. futures (v0.3)
-Copyright (c) 2016 Alex Crichton
-Copyright (c) 2017 The Tokio Authors
-
-4. futures (v0.1)
-Copyright (c) 2016 Alex Crichton
-
-5. reqwest
-Copyright (c) 2016 Sean McArthur
-
-6. serde_json
-Copyright (c) "Erick Tryzelaar <erick.tryzelaar@gmail.com>", "David Tolnay <dtolnay@gmail.com>"
-
-7. serde
-Copyright (c) "Erick Tryzelaar <erick.tryzelaar@gmail.com>", "David Tolnay <dtolnay@gmail.com>"
-
-8. url
-Copyright (c) 2013-2016 The rust-url developers
-
-9. clap
-Copyright (c) 2015-2016 Kevin B. Knapp
-
-10. tokio-test
-Copyright (c) 2019 Tokio Contributors
-
-11. log
-Copyright (c) 2014 The Rust Project Developers
-
-12. log4rs
-Copyright (c) 2015-2016 Steven Fackler
-
-13. daemonize
-Copyright (c) 2016 Fedor Gogolev
-
-14. websocket
-Copyright (c) 2014 Rust Websockets Developers
-
-15. libc
-Copyright (c) 2014-2020 The Rust Project Developers
-
-16. bytes
-Copyright (c) 2018 Carl Lerche
-
-17. unzip
-Copyright (c) “Ryan Leonard (http://ryanleonard.us)”
-
-18. hyper
-Copyright (c) 2014-2018 Sean McArthur
-
-19. users
-Copyright (c) 2019 Benjamin Sago
-
-20. rand
-Copyright 2018 Developers of the Rand project
-Copyright (c) 2014 The Rust Project Developers
-
-21. base64
-Copyright (c) 2015 Alice Maz
-
-22. chrono
-Copyright (c) 2014--2017, Kang Seonghoon and
-contributors.
-
-23. md5
-Copyright 2015–2019 The md5 Developers
-
-24. encoding
-Copyright (c) 2013, Kang Seonghoon
-
-25. cfg-if
-Copyright (c) 2014 Alex Crichton
-
-26. procfs
-Copyright (c) 2015 The procfs Developers
-
-27. winapi
-Copyright (c) 2015-2018 The winapi-rs Developers
-
-28. faux
-Copyright (c) 2020 Andres Medina
-
-29. rust-crypto
-Copyright (c) 2006-2009 Graydon Hoare
-Copyright (c) 2009-2013 Mozilla Foundation
-
-30. urlencoding
-Copyright (c) 2016 Bertram Truong
-
-31. hex
-Copyright (c) 2013-2014 The Rust Project Developers
-Copyright (c) 2015-2020 The rust-hex Developers
-
-32. derive_more
-Copyright (c) 2016 Jelte Fennema
-
-33. ntapi
-Copyright (c) ntapi authors
-
-34. field-offset
-Copyright (c) field-offset authors
-
-35. winpty
-Copyright (c) 2011-2016 Ryan Prichard
-
-36. bash-preexec
-Copyright (c) 2017 Ryan Caloras and contributors
-
-37. serde_bytes
-Copyright (c) 2014 The Rust Project Developers
-
-38. bson-rust
-Copyright (c) 2015 Y. T. CHUNG <zonyitoo@gmail.com>
-
-39. glob
-Copyright (c) 2014 The Rust Project Developers
-
-40. nom
-Copyright (c) 2014-2019 Geoffroy Couprie
-
-41. ringbuffer
-Copyright (c) 2022 Victor Roest and Jonathan Dönszelmann
-
-Terms of the MIT License:
---------------------------------------------------------------------
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-Open Source Software Licensed under the MIT and Apache License Version 2.0:
---------------------------------------------------------------------
-1. once_cell
-Copyright once_cell authors and contributrs
-
-The terms of the MIT and Apache v2 license are included in this text file.
-

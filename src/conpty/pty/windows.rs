@@ -5,10 +5,10 @@ use super::bind::{
     winpty_spawn_config_new, winpty_t,
 };
 use super::parser::{do_parse, AnsiItem, EscapeItem};
-use super::{execute_stream, PtyExecCallback, PtyResult};
+use super::{execute_stream, PtyExecCallback};
 use crate::common::utils::{str2wsz, wsz2string};
 use crate::conpty::session::PluginComp;
-use crate::conpty::{gather::Gather, PTY_FLAG_ENABLE_BLOCK, PTY_INSPECT_WRITE};
+use crate::conpty::{PTY_FLAG_ENABLE_BLOCK, PTY_INSPECT_WRITE};
 use crate::executor::windows::{
     anon_pipe, get_user_token, kill_process_group, load_environment, prepare_cmd,
 };
@@ -23,6 +23,7 @@ use std::os::windows::raw::HANDLE;
 use std::ptr::null_mut;
 use std::{mem, ptr};
 
+use anyhow::{anyhow, bail, Result};
 use log::{error, info};
 use ntapi::ntpsapi::{
     NtResumeProcess, NtSetInformationProcess, ProcessAccessToken, PROCESS_ACCESS_TOKEN,
@@ -54,7 +55,7 @@ pub struct Pty {
 }
 
 impl Pty {
-    pub fn new(user_name: &str, cols: u16, rows: u16, flag: u32) -> PtyResult<Pty> {
+    pub fn new(user_name: &str, cols: u16, rows: u16, flag: u32) -> Result<Pty> {
         let (mut pty_ptr, token) = openpty(user_name, cols, rows)?;
         let writer = unsafe {
             let conin_name = winpty_conin_name(pty_ptr.as_mut());
@@ -70,7 +71,7 @@ impl Pty {
             );
             if conin == INVALID_HANDLE_VALUE {
                 let err = Error::last_os_error();
-                Err(format!("CreateFileW error: {}", err))?
+                Err(anyhow!("CreateFileW error: {}", err))?
             }
             File::from_raw_handle(conin)
         };
@@ -83,7 +84,7 @@ impl Pty {
         })
     }
 
-    pub async fn resize(&self, cols: u16, rows: u16) -> PtyResult<()> {
+    pub async fn resize(&self, cols: u16, rows: u16) -> Result<()> {
         unsafe {
             winpty_set_size(
                 self.pty_ptr.lock().await.as_mut(),
@@ -95,7 +96,7 @@ impl Pty {
         Ok(())
     }
 
-    pub async fn get_reader(&self) -> PtyResult<tokioFile> {
+    pub async fn get_reader(&self) -> Result<tokioFile> {
         unsafe {
             let conin_name = winpty_conout_name(self.pty_ptr.lock().await.as_mut());
 
@@ -111,7 +112,7 @@ impl Pty {
             );
 
             if !self.enable_block {
-                return Ok(tokioFile::from_std(File::from_raw_handle(conin)));
+                return Ok(tokioFile::from_raw_handle(conin));
             }
             let input = File::from_raw_handle(conin);
             let (read_pipe, write_pipe) = anon_pipe(true)?;
@@ -123,20 +124,17 @@ impl Pty {
         }
     }
 
-    pub async fn get_writer(&self) -> PtyResult<tokioFile> {
-        self.writer
-            .try_clone()
-            .await
-            .map_err(|e| format!("error: {e}"))
+    pub async fn get_writer(&self) -> Result<tokioFile> {
+        Ok(self.writer.try_clone().await?)
     }
 }
 
 impl Drop for Pty {
     fn drop(&mut self) {
         unsafe {
-            let mut this: Mutex<Box<winpty_t>> = Mutex::new(Box::from_raw(ptr::null_mut()));
+            let mut this = Mutex::new(Box::new(winpty_t::new()));
             std::mem::swap(&mut self.pty_ptr, &mut this);
-            Gather::runtime().spawn(async move {
+            tokio::spawn(async move {
                 let process = winpty_agent_process(this.lock().await.as_mut()) as HANDLE;
                 let pid = GetProcessId(process);
                 kill_process_group(pid);
@@ -147,7 +145,7 @@ impl Drop for Pty {
 }
 
 impl PluginComp {
-    pub async fn inspect_access(&self, path: &str, access: u8) -> PtyResult<()> {
+    pub async fn inspect_access(&self, path: &str, access: u8) -> Result<()> {
         unsafe {
             let desired_access = if access == PTY_INSPECT_WRITE {
                 FILE_GENERIC_WRITE
@@ -170,11 +168,11 @@ impl PluginComp {
                 CloseHandle(handle);
                 return Ok(());
             }
-            return Err("access deny".to_string());
+            return Err(anyhow!("access deny"));
         }
     }
 
-    pub fn execute(&self, f: &dyn Fn() -> PtyResult<Vec<u8>>) -> PtyResult<Vec<u8>> {
+    pub fn execute(&self, f: &dyn Fn() -> Result<Vec<u8>>) -> Result<Vec<u8>> {
         unsafe {
             let handle = self.get_token()?.as_raw_handle();
             ImpersonateLoggedOnUser(handle);
@@ -189,7 +187,7 @@ impl PluginComp {
         cmd: tokio::process::Command,
         callback: Option<PtyExecCallback>,
         timeout: Option<u64>,
-    ) -> PtyResult<()> {
+    ) -> Result<()> {
         let token = self.get_token()?;
         let username = self.get_username()?;
         let mut work_dir = wsz2string(get_cwd(token.as_raw_handle()).as_ptr());
@@ -204,19 +202,19 @@ impl PluginComp {
         execute_stream(cmd, &callback, timeout, &token, receiver, &username).await
     }
 
-    fn get_token(&self) -> PtyResult<File> {
+    fn get_token(&self) -> Result<File> {
         match self {
-            Self::Pty(pty) => pty.token.try_clone().map_err(|e| format!("error: {e}")),
-            Self::None { username } => get_user_token(username),
-            _ => Err("unsupported channel plugin")?,
+            Self::Pty(pty) => Ok(pty.token.try_clone()?),
+            Self::Nil { username } => get_user_token(username),
+            _ => Err(anyhow!("unsupported channel plugin"))?,
         }
     }
 
-    fn get_username(&self) -> PtyResult<String> {
+    fn get_username(&self) -> Result<String> {
         match self {
             Self::Pty(pty) => Ok(pty.user_name.clone()),
-            Self::None { username } => Ok(username.clone()),
-            _ => Err("unsupported channel plugin")?,
+            Self::Nil { username } => Ok(username.clone()),
+            _ => Err(anyhow!("unsupported channel plugin"))?,
         }
     }
 }
@@ -337,7 +335,7 @@ fn get_cwd(token: HANDLE) -> Vec<u16> {
     cwd
 }
 
-fn openpty(user_name: &str, cols: u16, rows: u16) -> PtyResult<(Box<winpty_t>, File)> {
+fn openpty(user_name: &str, cols: u16, rows: u16) -> Result<(Box<winpty_t>, File)> {
     unsafe {
         let token = get_user_token(user_name)?;
         let mut err_ptr: *mut winpty_error_ptr_t = ptr::null_mut();
@@ -345,7 +343,7 @@ fn openpty(user_name: &str, cols: u16, rows: u16) -> PtyResult<(Box<winpty_t>, F
         if config.is_null() {
             let err = wsz2string(winpty_error_msg(err_ptr));
             winpty_error_free(err_ptr);
-            return Err(err);
+            bail!(err);
         }
 
         winpty_config_set_initial_size(config, cols as i32, rows as i32);
@@ -355,7 +353,7 @@ fn openpty(user_name: &str, cols: u16, rows: u16) -> PtyResult<(Box<winpty_t>, F
         if pty_ptr.is_null() {
             let err = wsz2string(winpty_error_msg(err_ptr));
             winpty_error_free(err_ptr);
-            return Err(err);
+            bail!(err);
         }
 
         let cmdline = str2wsz("powershell.exe");
@@ -373,7 +371,7 @@ fn openpty(user_name: &str, cols: u16, rows: u16) -> PtyResult<(Box<winpty_t>, F
         if spawn_config.is_null() {
             let err = wsz2string(winpty_error_msg(err_ptr));
             winpty_error_free(err_ptr);
-            return Err(err);
+            bail!(err);
         }
 
         err_ptr = ptr::null_mut();
@@ -390,7 +388,7 @@ fn openpty(user_name: &str, cols: u16, rows: u16) -> PtyResult<(Box<winpty_t>, F
         if !succ {
             let err = wsz2string(winpty_error_msg(err_ptr));
             winpty_error_free(err_ptr);
-            return Err(err);
+            bail!(err);
         }
 
         //change process token

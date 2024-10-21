@@ -14,7 +14,6 @@ pub use self::windows::get_hostname;
 
 pub struct Uname {
     pub sys_name: String,
-    pub node_name: String,
     pub release: String,
     pub version: String,
     pub machine: String,

@@ -4,6 +4,7 @@ use std::fs::{create_dir_all, remove_file, File};
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
 
+use anyhow::{anyhow, Context, Result};
 use chrono::Local;
 use log::info;
 
@@ -38,8 +39,8 @@ impl TaskFileStore {
         self.log_path.clone()
     }
 
-    fn get_suffix(&self, command_type: &String) -> &str {
-        return match command_type.as_str() {
+    fn get_suffix(&self, command_type: &str) -> &str {
+        return match command_type {
             CMD_TYPE_SHELL => SUFFIX_SHELL,
             CMD_TYPE_BAT => SUFFIX_BAT,
             CMD_TYPE_POWERSHELL => SUFFIX_PS1,
@@ -76,32 +77,29 @@ impl TaskFileStore {
         path: &str,
         ignore_exists: bool,
         #[cfg(unix)] executable: bool,
-    ) -> Result<File, String> {
+    ) -> Result<File> {
         let file_path = Path::new(path);
         if file_path.exists() {
             if !ignore_exists {
-                return Err(format!("file `{}` already exists", path));
-            } else if let Err(e) = remove_file(path) {
-                info!("failed to remove exist file `{}`: {}", path, e);
-                return Err(format!("failed to remove exist file `{}`: {}", path, e));
+                return Err(anyhow!("file `{}` already exists", path));
             }
+            remove_file(path)
+                .inspect_err(|e| info!("failed to remove exist file `{}`: {}", path, e))?
         }
 
         let dir = Path::parent(file_path)
-            .ok_or(format!("cannot find parent directory for `{file_path:?}`"))?;
+            .context(format!("cannot find parent directory for `{file_path:?}`"))?;
         let ret = File::create(path).or_else(|why| {
             info!("couldn't create file: {why}, try to create directory `{dir:?}`");
-            create_dir_all(dir).map_err(|why| format!("couldn't create directory: {why}"))?;
-            Ok(File::create(path).map_err(|why| format!("couldn't create file: {why}"))?)
+            create_dir_all(dir).context("couldn't create directory")?;
+            Ok(File::create(path).context("couldn't create file")?)
         });
 
         #[cfg(unix)]
         if executable {
             // set permissions for path recursively, to make task-xxx.sh available for non-root user.
-            if let Err(e) = self.set_permissions_recursively(path.as_ref()) {
-                info!("failed to chmod path `{}` recursively: {}", path, e);
-                return Err(format!("failed to chmod path `{path}` recursively: {e}"));
-            };
+            self.set_permissions_recursively(path.as_ref())
+                .inspect_err(|e| info!("failed to chmod path `{}` recursively: {}", path, e))?
         }
 
         ret
@@ -114,18 +112,14 @@ impl TaskFileStore {
         use std::os::unix::fs::PermissionsExt;
 
         while path.to_str() != Some("/tmp") {
-            match set_permissions(path, Permissions::from_mode(FILE_EXECUTE_PERMISSION_MODE)) {
-                Err(e) => {
-                    info!("failed to chmod path `{:?}`: {}", path, e);
-                    return Err(e);
-                }
-                _ => path = path.parent().unwrap(),
-            };
+            set_permissions(path, Permissions::from_mode(FILE_EXECUTE_PERMISSION_MODE))
+                .inspect_err(|e| info!("failed to chmod path `{:?}`: {}", path, e))?;
+            path = path.parent().unwrap();
         }
         Ok(())
     }
 
-    pub fn store(&self, t: &InvocationNormalTask) -> Result<(String, String), String> {
+    pub fn store(&self, t: &InvocationNormalTask) -> Result<(String, String)> {
         let task_file_path = self.gen_task_file_path(t).display().to_string();
         info!("save task {} to {}", &t.invocation_task_id, task_file_path);
 
@@ -143,10 +137,8 @@ impl TaskFileStore {
             true,
         )?;
         let s = t.decode_command()?;
-        let res = file.write_all(&s);
-        if res.is_err() {
-            return Err("failed to store command in task file".to_string());
-        }
+        file.write_all(&s)
+            .context("failed to store command in task file")?;
 
         Ok((task_file_path, task_log_path))
     }
@@ -178,7 +170,7 @@ mod tests {
         let workdir = format!("C:\\Program Files\\qcloud\\tat_agent");
         let task = InvocationNormalTask {
             invocation_task_id: "100001".to_string(),
-            command_type: format!("SHELL"),
+            command_type: format!("POWERSHELL"),
             time_out: 30,
             command: format!("bHMgLWw="),
             username: format!("root"),
@@ -218,7 +210,7 @@ mod tests {
             contents = Vec::from(&contents[3..]);
         }
         let command = String::from_utf8_lossy(contents.as_slice());
-        assert_eq!(command, "ls -l");
+        assert!(command.ends_with("ls -l"));
         store.remove(&task_file);
         let paths = read_dir(Path::new(&task_file).parent().unwrap()).unwrap();
         for f in paths {

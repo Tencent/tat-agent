@@ -1,11 +1,11 @@
 use super::UTF8_BOM_HEADER;
 use crate::executor::CMD_TYPE_POWERSHELL;
-use crate::network::types::AgentErrorCode;
 use crate::network::AGENT_VERSION;
 use crate::sysinfo::Uname;
 
 use std::fmt;
 
+use anyhow::{anyhow, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
 
@@ -51,12 +51,6 @@ pub struct ResponseError {
     message: String,
 }
 
-impl ResponseError {
-    pub fn message(&self) -> &str {
-        &self.message
-    }
-}
-
 // standard response format
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]
@@ -71,7 +65,7 @@ impl<T> AgentRequest<T> {
         };
         AgentRequest {
             general_params: g,
-            custom_params: custom_params,
+            custom_params,
         }
     }
 }
@@ -95,28 +89,16 @@ impl<T> GeneralResponse<T> {
 }
 
 impl<T> ServerRawResponse<T> {
-    pub fn into_response(self) -> Result<T, ResponseError> {
-        if self.response.is_ok() {
-            match self.response.content() {
-                Some(content) => Ok(content),
-                None => Err(ResponseError {
-                    code: format!("{:?}", AgentErrorCode::UnexpectedResponseFormat),
-                    message: format!("cannot get response content"),
-                }),
-            }
-        } else {
-            match self.response.error() {
-                Some(err) => Err(err),
-                None => Err(ResponseError {
-                    code: format!("{:?}", AgentErrorCode::UnexpectedResponseFormat),
-                    message: format!("cannot get response error"),
-                }),
-            }
+    pub fn into_response(self) -> Result<T> {
+        if !self.response.is_ok() {
+            let e = self.response.error().context("cannot get response error")?;
+            return Err(anyhow!("{}: {}", e.code, e.message));
         }
-    }
-
-    pub fn _into_request_id(&self) -> String {
-        self.response._request_id()
+        let resp = self
+            .response
+            .content()
+            .context("cannot get response content")?;
+        Ok(resp)
     }
 }
 
@@ -152,10 +134,8 @@ pub struct InvocationNormalTask {
 }
 
 impl InvocationNormalTask {
-    pub fn decode_command(&self) -> Result<Vec<u8>, String> {
-        let mut command = STANDARD
-            .decode(&self.command)
-            .map_err(|e| format!("decode error: {:?}", e))?;
+    pub fn decode_command(&self) -> Result<Vec<u8>> {
+        let mut command = STANDARD.decode(&self.command)?;
 
         // powershell dont support utf8, but support utf8 with bom.
         // utf8 bom start with 0xEF, 0xBB, 0xBF,
@@ -257,9 +237,9 @@ impl UploadTaskLogRequest {
     pub fn new(invocation_task_id: &str, index: u32, output: Vec<u8>, dropped: u64) -> Self {
         UploadTaskLogRequest {
             invocation_task_id: String::from(invocation_task_id),
-            index: index,
+            index,
             output: STANDARD.encode(&output),
-            dropped: dropped,
+            dropped,
         }
     }
 }
@@ -415,10 +395,10 @@ pub struct ValidateInstanceRequest {
 }
 
 impl ValidateInstanceRequest {
-    pub fn new(hostname: String, local_ip: String) -> Self {
-        ValidateInstanceRequest {
-            hostname,
-            local_ip,
+    pub fn new(hostname: &str, local_ip: &str) -> Self {
+        Self {
+            hostname: hostname.to_owned(),
+            local_ip: local_ip.to_owned(),
             #[cfg(windows)]
             sys_name: "Windows".to_string(),
             #[cfg(unix)]
@@ -463,8 +443,10 @@ pub struct GetCosCredentialRequest {
 }
 
 impl GetCosCredentialRequest {
-    pub fn new(invocation_task_id: String) -> Self {
-        GetCosCredentialRequest { invocation_task_id }
+    pub fn new(invocation_task_id: &str) -> Self {
+        Self {
+            invocation_task_id: invocation_task_id.to_owned(),
+        }
     }
 }
 
@@ -647,6 +629,5 @@ mod tests {
             .expect("failed to read random-file");
         assert_eq!(remove_file("./random-file").is_ok(), true);
         let _req = UploadTaskLogRequest::new("invk-123123", 0, buffer, 0);
-        // println!("{:?}", req);
     }
 }

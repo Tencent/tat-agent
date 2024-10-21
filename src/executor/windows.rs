@@ -1,18 +1,17 @@
 use crate::common::utils::{gen_rand_str_with, get_current_username, str2wsz, wsz2string};
 use crate::daemonizer::wow64_disable_exc;
-use crate::executor::proc::{BaseCommand, MyCommand};
+use crate::executor::proc::Cmd;
 
 use std::collections::HashMap;
 use std::fs::{remove_file, File, OpenOptions};
-use std::ops::Deref;
 use std::os::windows::prelude::{AsRawHandle, FromRawHandle};
 use std::path::Path;
 use std::process::Stdio;
 use std::ptr::null_mut;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, LazyLock};
 use std::{mem, slice};
 
-use async_trait::async_trait;
+use anyhow::{anyhow, Result};
 use libc::{c_void, free, malloc, memcpy};
 use log::{error, info, warn};
 use ntapi::ntpsapi::{
@@ -53,60 +52,19 @@ use winapi::um::winnt::{
     PROCESS_TERMINATE, PTOKEN_GROUPS, QUOTA_LIMITS, TOKEN_ALL_ACCESS, TOKEN_SOURCE,
 };
 
-pub struct WindowsCommand {
-    base: Arc<BaseCommand>,
-    token: File,
-}
-
-impl WindowsCommand {
-    pub fn new(
-        cmd_path: &str,
-        username: &str,
-        work_dir: &str,
-        timeout: u64,
-        bytes_max_report: u64,
-        log_file_path: &str,
-        cos_bucket: &str,
-        cos_prefix: &str,
-        task_id: &str,
-    ) -> WindowsCommand {
-        let cmd_path = if cmd_path.ends_with(".ps1") {
-            String::from(cmd_path).replace(" ", "` ")
-        } else {
-            cmd_path.to_string()
-        };
-        WindowsCommand {
-            base: Arc::new(BaseCommand::new(
-                cmd_path.as_str(),
-                username,
-                work_dir,
-                timeout,
-                bytes_max_report,
-                log_file_path,
-                cos_bucket,
-                cos_prefix,
-                task_id,
-            )),
-            token: unsafe { File::from_raw_handle(0 as HANDLE) },
-        }
-    }
-
-    fn work_dir_check(&self) -> Result<(), String> {
+impl Cmd {
+    fn work_dir_check(&self) -> Result<()> {
         if !wow64_disable_exc(|| Path::new(self.work_dir.as_str()).exists()) {
-            let ret = format!(
-                "WindowsCommand `{}` start failed, working_directory:{}, username:{}, working directory not exists",
-                self.cmd_path, self.work_dir, self.username
-            );
             *self.err_info.lock().unwrap() = format!(
                 "DirectoryNotExists: working_directory `{}` not exists",
                 self.work_dir
             );
-            return Err(ret);
+            return Err(anyhow!("working directory not exists",));
         };
         Ok(())
     }
 
-    fn prepare_cmd(&mut self, pipe: File) -> Result<Command, String> {
+    fn prepare_cmd(&self, pipe: File) -> Result<Command> {
         info!("=>prepare_cmd");
         let command = if self.cmd_path.ends_with(".ps1") {
             info!("execute powershell command {}", self.cmd_path);
@@ -116,43 +74,33 @@ impl WindowsCommand {
             init_bat_cmd(&self.cmd_path)
         };
 
-        prepare_cmd(command, &self.username, &self.work_dir, pipe).map_err(|e| {
-            *self.err_info.lock().unwrap() = e.clone();
-            e
-        })
+        prepare_cmd(command, &self.username, &self.work_dir, pipe)
+            .inspect_err(|e| *self.err_info.lock().unwrap() = e.to_string().clone())
     }
 
-    fn spawn_cmd(&mut self, pipe: File) -> Result<Child, String> {
+    fn spawn_cmd(&self, pipe: File) -> Result<Child> {
         //spawn suspended process
-        let child = self.prepare_cmd(pipe)?.spawn().map_err(|e| {
+        let child = self.prepare_cmd(pipe)?.spawn().inspect_err(|e| {
             *self.err_info.lock().unwrap() = e.to_string();
             // remove log_file when process run failed.
-            if let Err(e) = remove_file(self.log_file_path.as_str()) {
-                warn!("remove log file failed: {:?}", e)
-            }
-            format!(
-                "WindowsCommand {}, working_directory:{}, start failed: {}",
-                self.cmd_path, self.work_dir, e
-            )
+            let _ = remove_file(self.log_file_path.as_str())
+                .inspect_err(|e| warn!("remove log file failed: {}", e));
         })?;
         let pid = child.id().unwrap();
         *self.pid.lock().unwrap() = Some(pid);
         resume_as_user(pid, &self.username, &self.token);
         Ok(child)
     }
-}
 
-#[async_trait]
-impl MyCommand for WindowsCommand {
-    async fn run(&mut self) -> Result<(), String> {
+    pub async fn run(self: &Arc<Self>) -> Result<()> {
         info!("=>WindowsCommand::run()");
         self.store_path_check()?;
         self.work_dir_check()?;
 
         let (our_pipe, their_pipe) = anon_pipe(true)?;
-        let log_file = self.open_log_file()?;
+        let log_file = self.open_log_file().await?;
         let mut child = self.spawn_cmd(their_pipe)?;
-        let base = self.base.clone();
+        let base = self.clone();
 
         // async read output.
         info!("=>WindowsCommand::tokio::spawn");
@@ -162,21 +110,6 @@ impl MyCommand for WindowsCommand {
             base.process_finish(&mut child).await;
         });
         Ok(())
-    }
-}
-
-#[cfg(test)]
-impl std::fmt::Debug for WindowsCommand {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.base.fmt(f)
-    }
-}
-
-impl Deref for WindowsCommand {
-    type Target = BaseCommand;
-
-    fn deref(&self) -> &Self::Target {
-        &self.base
     }
 }
 
@@ -202,15 +135,13 @@ pub fn prepare_cmd(
     username: &str,
     work_dir: &str,
     pipe: File,
-) -> Result<Command, String> {
-    let std_out = pipe.try_clone().map_err(|e| {
-        error!("prepare_cmd, clone pipe std_out failed: {}", e);
-        e.to_string()
-    })?;
-    let std_err = pipe.try_clone().map_err(|e| {
-        error!("prepare_cmd, clone pipe std_err failed: {}", e);
-        e.to_string()
-    })?;
+) -> Result<Command> {
+    let std_out = pipe
+        .try_clone()
+        .inspect_err(|e| error!("prepare_cmd, clone pipe std_out failed: {}", e))?;
+    let std_err = pipe
+        .try_clone()
+        .inspect_err(|e| error!("prepare_cmd, clone pipe std_err failed: {}", e))?;
     cmd.stdin(Stdio::null())
         .stdout(std_out)
         .stderr(std_err)
@@ -295,7 +226,7 @@ pub fn kill_process_group(pid: u32) {
     }
 }
 
-pub fn anon_pipe(ours_readable: bool) -> Result<(File, File), String> {
+pub fn anon_pipe(ours_readable: bool) -> Result<(File, File)> {
     unsafe {
         let mut tries = 0;
         let mut name;
@@ -335,7 +266,7 @@ pub fn anon_pipe(ours_readable: bool) -> Result<(File, File), String> {
                     }
                 }
                 error!("create namepipe failed: {}", err);
-                return Err(format!("create namepipe failed: {}", err));
+                return Err(anyhow!("create namepipe failed: {}", err));
             }
             ours = File::from_raw_handle(handle);
             break;
@@ -345,7 +276,7 @@ pub fn anon_pipe(ours_readable: bool) -> Result<(File, File), String> {
         opts.write(ours_readable);
         opts.read(!ours_readable);
 
-        let theirs = opts.open(Path::new(&name)).map_err(|e| e.to_string())?;
+        let theirs = opts.open(Path::new(&name))?;
         Ok((ours, theirs))
     }
 }
@@ -355,7 +286,12 @@ pub fn load_environment(token: HANDLE) -> HashMap<String, String> {
         let mut envs = HashMap::new();
         let mut environment: PVOID = null_mut();
         if 0 != CreateEnvironmentBlock(&mut environment as *mut LPVOID, token, FALSE) {
-            let data = slice::from_raw_parts(environment as *const u16, usize::MAX);
+            // The total size len * mem::size_of::<T>() of the slice must be no larger than isize::MAX
+            // See doc: https://doc.rust-lang.org/std/slice/fn.from_raw_parts.html
+            let data = slice::from_raw_parts(
+                environment as *const u16,
+                isize::MAX as usize / mem::size_of::<u16>(),
+            );
             let mut start = 0;
             loop {
                 let item = wsz2string(data[start..].as_ptr());
@@ -374,7 +310,7 @@ pub fn load_environment(token: HANDLE) -> HashMap<String, String> {
     }
 }
 
-fn create_user_token(user_name: &str) -> Result<File, String> {
+fn create_user_token(user_name: &str) -> Result<File> {
     info!("=>enter create_user_token");
     unsafe {
         let mut tat_name = "tat".to_string();
@@ -388,7 +324,7 @@ fn create_user_token(user_name: &str) -> Result<File, String> {
         let mut mode: LSA_OPERATIONAL_MODE = mem::zeroed();
         let code = LsaRegisterLogonProcess(&mut tat_lsa as PLSA_STRING, &mut lsa_handle, &mut mode);
         if code != 0 {
-            return Err(format!("RegisterLogonProcess Failed: {}", code));
+            return Err(anyhow!("RegisterLogonProcess Failed: {}", code));
         }
 
         let mut pkg_name = "MICROSOFT_AUTHENTICATION_PACKAGE_V1_0".to_string();
@@ -479,7 +415,7 @@ fn create_user_token(user_name: &str) -> Result<File, String> {
             LsaFreeReturnBuffer(profile);
         }
         if status != 0 {
-            return Err(format!("LsaLogonUser Failed, {}", status));
+            return Err(anyhow!("LsaLogonUser Failed, {}", status));
         }
 
         let _token = File::from_raw_handle(token);
@@ -495,14 +431,13 @@ fn create_user_token(user_name: &str) -> Result<File, String> {
         return if primary_token != null_mut() {
             Ok(File::from_raw_handle(primary_token))
         } else {
-            Err(format!("DuplicateTokenEx Failed, {}", GetLastError()))
+            Err(anyhow!("DuplicateTokenEx Failed, {}", GetLastError()))
         };
     }
 }
 
-pub fn get_user_token(user_name: &str) -> Result<File, String> {
-    static IS_2008: OnceLock<bool> = OnceLock::new();
-    let is_2008 = IS_2008.get_or_init(|| {
+pub fn get_user_token(user_name: &str) -> Result<File> {
+    static IS_2008: LazyLock<bool> = LazyLock::new(|| {
         let output = std::process::Command::new("wmic")
             .args(&["os", "get", "Caption"])
             .stdout(Stdio::piped())
@@ -512,19 +447,18 @@ pub fn get_user_token(user_name: &str) -> Result<File, String> {
             .escape_debug()
             .to_string();
         info!("OS version: {}", version);
-        let result = version.contains("2008");
-        result
+        version.contains("2008")
     });
 
-    if get_current_username().eq_ignore_ascii_case(user_name) || *is_2008 {
+    if get_current_username().eq_ignore_ascii_case(user_name) || *IS_2008 {
         info!(
             "use current token, user:{}, is_2008:{}",
-            user_name, *is_2008
+            user_name, *IS_2008
         );
         let mut token: HANDLE = 0 as HANDLE;
         unsafe {
             if 0 == OpenProcessToken(GetCurrentProcess(), TOKEN_ALL_ACCESS, &mut token) {
-                return Err(format!("OpenProcessToken Failed: {}", GetLastError()));
+                return Err(anyhow!("OpenProcessToken Failed: {}", GetLastError()));
             }
             return Ok(File::from_raw_handle(token));
         }
@@ -533,11 +467,11 @@ pub fn get_user_token(user_name: &str) -> Result<File, String> {
 }
 
 pub fn decode_output(v: &[u8]) -> Vec<u8> {
-    static CODEPAGE: OnceLock<u16> = OnceLock::new();
-    let codepage = *CODEPAGE.get_or_init(|| unsafe { GetOEMCP() } as u16);
+    static CODEPAGE: LazyLock<u16> = LazyLock::new(|| unsafe { GetOEMCP() } as u16);
+
     match std::str::from_utf8(&v) {
         Ok(output) => output.into(),
-        Err(_) => codepage_strings::Coding::new(codepage)
+        Err(_) => codepage_strings::Coding::new(*CODEPAGE)
             .expect("create decoder failed")
             .decode(&v)
             .expect("output_string decode failed"),
