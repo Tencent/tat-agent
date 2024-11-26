@@ -1,119 +1,118 @@
-use crate::common::utils::{gen_rand_str_with, get_current_username, str2wsz, wsz2string};
-use crate::daemonizer::wow64_disable_exc;
-use crate::executor::proc::Cmd;
+use super::task::{Task, TaskInfo};
+use crate::common::daemonizer::wow64_disable_exc;
+use crate::common::{gen_rand_str_with, get_current_username, str2wsz, wsz2string};
 
 use std::collections::HashMap;
-use std::fs::{remove_file, File, OpenOptions};
+use std::fs::{exists, File as StdFile, OpenOptions};
 use std::os::windows::prelude::{AsRawHandle, FromRawHandle};
-use std::path::Path;
-use std::process::Stdio;
-use std::ptr::null_mut;
-use std::sync::{Arc, LazyLock};
-use std::{mem, slice};
+use std::{mem, ptr::null_mut, slice};
+use std::{path::Path, process::Stdio, sync::LazyLock};
 
-use anyhow::{anyhow, Result};
+use anyhow::{bail, Context, Result};
 use libc::{c_void, free, malloc, memcpy};
-use log::{error, info, warn};
+use log::{error, info};
+use tokio::fs::File;
+use tokio::io::AsyncReadExt;
+use tokio::process::{Child, Command};
+
 use ntapi::ntpsapi::{
     NtResumeProcess, NtSetInformationProcess, ProcessAccessToken, PROCESS_ACCESS_TOKEN,
 };
-use tokio::process::{Child, Command};
-
-use winapi::shared::minwindef::{DWORD, FALSE, LPVOID, ULONG, USHORT};
-use winapi::shared::ntdef::{LUID, NTSTATUS, NULL, PCHAR, PVOID};
-use winapi::shared::winerror::ERROR_ACCESS_DENIED;
-use winapi::um::errhandlingapi::GetLastError;
-use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
-use winapi::um::lsalookup::{LSA_STRING, PLSA_STRING};
-use winapi::um::minwinbase::LPSECURITY_ATTRIBUTES;
-use winapi::um::namedpipeapi::CreateNamedPipeW;
-use winapi::um::ntlsa::{
-    LsaDeregisterLogonProcess, LsaFreeReturnBuffer, LsaLogonUser, LsaLookupAuthenticationPackage,
-    LsaRegisterLogonProcess, LSA_OPERATIONAL_MODE,
-};
-use winapi::um::ntsecapi::{MsV1_0S4ULogon, MSV1_0_S4U_LOGON};
-use winapi::um::processthreadsapi::{
-    GetCurrentProcess, GetCurrentProcessId, OpenProcess, OpenProcessToken, TerminateProcess,
-};
-use winapi::um::securitybaseapi::{AllocateLocallyUniqueId, DuplicateTokenEx};
-use winapi::um::subauth::UNICODE_STRING;
-use winapi::um::tlhelp32::{
-    CreateToolhelp32Snapshot, Process32First, Process32Next, LPPROCESSENTRY32, PROCESSENTRY32,
-    TH32CS_SNAPPROCESS,
-};
-use winapi::um::userenv::{CreateEnvironmentBlock, DestroyEnvironmentBlock};
-use winapi::um::winbase::{
-    CREATE_SUSPENDED, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, PIPE_ACCESS_INBOUND,
-    PIPE_ACCESS_OUTBOUND, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT,
-};
-use winapi::um::winnls::GetOEMCP;
-use winapi::um::winnt::{
-    RtlZeroMemory, SecurityImpersonation, TokenPrimary, HANDLE, PROCESS_ALL_ACCESS,
-    PROCESS_TERMINATE, PTOKEN_GROUPS, QUOTA_LIMITS, TOKEN_ALL_ACCESS, TOKEN_SOURCE,
+use winapi::{
+    shared::{
+        minwindef::{DWORD, FALSE, LPVOID, ULONG, USHORT},
+        ntdef::{LUID, NTSTATUS, NULL, PCHAR, PVOID},
+        winerror::ERROR_ACCESS_DENIED,
+    },
+    um::{
+        errhandlingapi::GetLastError,
+        handleapi::{CloseHandle, INVALID_HANDLE_VALUE},
+        lsalookup::LSA_STRING,
+        minwinbase::LPSECURITY_ATTRIBUTES,
+        namedpipeapi::CreateNamedPipeW,
+        ntlsa::{LsaDeregisterLogonProcess, LsaFreeReturnBuffer, LsaLogonUser},
+        ntlsa::{LsaLookupAuthenticationPackage, LsaRegisterLogonProcess, LSA_OPERATIONAL_MODE},
+        ntsecapi::{MsV1_0S4ULogon, MSV1_0_S4U_LOGON},
+        processthreadsapi::{GetCurrentProcess, GetCurrentProcessId, OpenProcess},
+        processthreadsapi::{OpenProcessToken, TerminateProcess},
+        securitybaseapi::{AllocateLocallyUniqueId, DuplicateTokenEx},
+        subauth::UNICODE_STRING,
+        tlhelp32::{CreateToolhelp32Snapshot, Process32First, Process32Next},
+        tlhelp32::{LPPROCESSENTRY32, PROCESSENTRY32, TH32CS_SNAPPROCESS},
+        userenv::{CreateEnvironmentBlock, DestroyEnvironmentBlock},
+        winbase::{CREATE_SUSPENDED, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED},
+        winbase::{PIPE_ACCESS_INBOUND, PIPE_ACCESS_OUTBOUND},
+        winbase::{PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT},
+        winnls::GetOEMCP,
+        winnt::{RtlZeroMemory, SecurityImpersonation, TokenPrimary, HANDLE, PROCESS_ALL_ACCESS},
+        winnt::{PROCESS_TERMINATE, PTOKEN_GROUPS, QUOTA_LIMITS, TOKEN_ALL_ACCESS, TOKEN_SOURCE},
+    },
 };
 
-impl Cmd {
-    fn work_dir_check(&self) -> Result<()> {
-        if !wow64_disable_exc(|| Path::new(self.work_dir.as_str()).exists()) {
-            *self.err_info.lock().unwrap() = format!(
-                "DirectoryNotExists: working_directory `{}` not exists",
-                self.work_dir
-            );
-            return Err(anyhow!("working directory not exists",));
-        };
-        Ok(())
-    }
+pub const UTF8_BOM_HEADER: [u8; 3] = [0xEF, 0xBB, 0xBF];
+pub const CMD_TYPE_POWERSHELL: &str = "POWERSHELL";
+const CMD_TYPE_BAT: &str = "BAT";
+const EXTENSION_BAT: &str = "bat";
+const EXTENSION_PS1: &str = "ps1";
 
-    fn prepare_cmd(&self, pipe: File) -> Result<Command> {
-        info!("=>prepare_cmd");
-        let command = if self.cmd_path.ends_with(".ps1") {
-            info!("execute powershell command {}", self.cmd_path);
-            init_powershell_cmd(&self.cmd_path)
+pub struct User {
+    pub token: File,
+    pub is_current: bool,
+}
+
+impl Task {
+    pub async fn spawn(&mut self) -> Result<(Child, impl AsyncReadExt + Unpin)> {
+        let info = &self.info;
+        let script = info.script_path()?.into_os_string().into_string().unwrap();
+        let mut cmd = if info.command_type == CMD_TYPE_POWERSHELL {
+            init_powershell_command(&script.replace(" ", "` "))
         } else {
-            info!("execute bat command {}", self.cmd_path);
-            init_bat_cmd(&self.cmd_path)
+            init_bat_command(&script)
         };
 
-        prepare_cmd(command, &self.username, &self.work_dir, pipe)
-            .inspect_err(|e| *self.err_info.lock().unwrap() = e.to_string().clone())
-    }
+        let (reader, writer) = unsafe { anon_pipe(true)? };
+        configure_command(&mut cmd, &info.user, &info.working_directory, writer).await?;
 
-    fn spawn_cmd(&self, pipe: File) -> Result<Child> {
-        //spawn suspended process
-        let child = self.prepare_cmd(pipe)?.spawn().inspect_err(|e| {
-            *self.err_info.lock().unwrap() = e.to_string();
-            // remove log_file when process run failed.
-            let _ = remove_file(self.log_file_path.as_str())
-                .inspect_err(|e| warn!("remove log file failed: {}", e));
-        })?;
-        let pid = child.id().unwrap();
-        *self.pid.lock().unwrap() = Some(pid);
-        resume_as_user(pid, &self.username, &self.token);
-        Ok(child)
-    }
-
-    pub async fn run(self: &Arc<Self>) -> Result<()> {
-        info!("=>WindowsCommand::run()");
-        self.store_path_check()?;
-        self.work_dir_check()?;
-
-        let (our_pipe, their_pipe) = anon_pipe(true)?;
-        let log_file = self.open_log_file().await?;
-        let mut child = self.spawn_cmd(their_pipe)?;
-        let base = self.clone();
-
-        // async read output.
-        info!("=>WindowsCommand::tokio::spawn");
-        tokio::spawn(async move {
-            let reader = tokio::fs::File::from_std(our_pipe);
-            base.read_output(reader, log_file).await;
-            base.process_finish(&mut child).await;
-        });
-        Ok(())
+        let child = cmd.spawn()?;
+        unsafe { resume_as_user(child.id().unwrap(), &info.user) };
+        Ok((child, reader))
     }
 }
 
-pub fn init_powershell_cmd(script: &str) -> Command {
+impl TaskInfo {
+    pub fn script_extension(&self) -> Result<&'static str> {
+        let extension = match self.command_type.as_str() {
+            CMD_TYPE_BAT => EXTENSION_BAT,
+            CMD_TYPE_POWERSHELL => EXTENSION_PS1,
+            _ => bail!("invalid `{}` type in Windows.", self.command_type),
+        };
+        Ok(extension)
+    }
+
+    pub async fn check_working_directory(&self) -> Result<()> {
+        let dir = &self.working_directory;
+        // Compatible with Windows 32bit
+        match wow64_disable_exc(|| exists(dir)) {
+            Ok(exist) if exist => Ok(()),
+            Ok(_) => bail!("working_directory `{dir}` not exists"),
+            Err(e) => bail!("working_directory `{dir}` check failed: `{e}`"),
+        }
+    }
+}
+
+impl User {
+    pub fn new(username: &str) -> Result<Self> {
+        let token = unsafe { get_token(username)? };
+        let is_current = get_current_username().eq_ignore_ascii_case(username);
+        Ok(Self { token, is_current })
+    }
+}
+
+pub async fn init_command(script: &str) -> Command {
+    init_powershell_command(script)
+}
+
+fn init_powershell_command(script: &str) -> Command {
     let mut cmd = Command::new("powershell");
     cmd.args(&[
         "-ExecutionPolicy",
@@ -124,351 +123,304 @@ pub fn init_powershell_cmd(script: &str) -> Command {
     cmd
 }
 
-pub fn init_bat_cmd(script: &str) -> Command {
+fn init_bat_command(script: &str) -> Command {
     let mut cmd = Command::new("cmd.exe");
     cmd.args(&["/C", script]);
     cmd
 }
 
-pub fn prepare_cmd(
-    mut cmd: Command,
-    username: &str,
+pub async fn configure_command(
+    cmd: &mut Command,
+    user: &User,
     work_dir: &str,
-    pipe: File,
-) -> Result<Command> {
-    let std_out = pipe
-        .try_clone()
-        .inspect_err(|e| error!("prepare_cmd, clone pipe std_out failed: {}", e))?;
-    let std_err = pipe
-        .try_clone()
-        .inspect_err(|e| error!("prepare_cmd, clone pipe std_err failed: {}", e))?;
+    pipe: StdFile,
+) -> Result<()> {
+    let stdout = pipe.try_clone().context("stdout clone failed")?;
+    let stderr = pipe.try_clone().context("stderr clone failed")?;
     cmd.stdin(Stdio::null())
-        .stdout(std_out)
-        .stderr(std_err)
+        .stdout(stdout)
+        .stderr(stderr)
         .current_dir(work_dir)
         .creation_flags(CREATE_SUSPENDED); //create as suspend
-    if !get_current_username().eq_ignore_ascii_case(username) {
-        let token = get_user_token(username)?;
-        let envs = load_environment(token.as_raw_handle());
+    if !user.is_current {
+        let envs = unsafe { load_envs(user.token.as_raw_handle()) };
         cmd.env_clear().envs(envs);
     }
-    Ok(cmd)
+    Ok(())
 }
 
-pub fn resume_as_user(pid: u32, username: &str, token: &File) {
-    unsafe {
-        let process = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
-        let current_user = get_current_username();
-        if !current_user.eq_ignore_ascii_case(username) {
-            let mut access_token = PROCESS_ACCESS_TOKEN {
-                Token: token.as_raw_handle(),
-                Thread: 0 as HANDLE,
-            };
-            let status = NtSetInformationProcess(
-                process,
-                ProcessAccessToken,
-                &mut access_token as *mut PROCESS_ACCESS_TOKEN as PVOID,
-                mem::size_of::<PROCESS_ACCESS_TOKEN>() as u32,
-            );
-            info!("NtSetInformationProcess result is {}", status);
-        }
-        NtResumeProcess(process);
-        CloseHandle(process);
-    }
-}
-
-pub fn kill_process_group(pid: u32) {
-    info!("=>kill_process_group, pid:{}", pid);
-    unsafe {
-        let mut proc_list: Vec<(u32, u32)> = Vec::new();
-        let mut child_pids: Vec<u32> = Vec::new();
-
-        //get process snapshot
-        let hp = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-        let mut pe: PROCESSENTRY32 = mem::zeroed();
-        pe.dwSize = mem::size_of::<PROCESSENTRY32>() as DWORD;
-        if 0 != Process32First(hp, &mut pe as LPPROCESSENTRY32) {
-            loop {
-                proc_list.push((pe.th32ParentProcessID, pe.th32ProcessID));
-                if 0 == Process32Next(hp, &mut pe as LPPROCESSENTRY32) {
-                    break;
-                }
-            }
-        }
-        CloseHandle(hp);
-
-        //find all child process
-        child_pids.push(pid);
-        let mut index = 0;
-        loop {
-            if index == child_pids.len() {
-                break;
-            }
-            for (_, (ppid, pid)) in proc_list.iter().enumerate() {
-                if *ppid == *child_pids.get(index).unwrap() {
-                    child_pids.push(*pid);
-                }
-            }
-            index = index + 1;
-        }
-
-        //kill process
-        for (_, pid) in child_pids.iter().enumerate() {
-            info!("pid need to kill: {}", pid);
-            let handle = OpenProcess(PROCESS_TERMINATE, FALSE, *pid);
-            if handle != NULL {
-                TerminateProcess(handle, 0xffffffff as u32);
-                CloseHandle(handle);
-            } else {
-                error!("open pid error: {}", GetLastError());
-            }
-        }
-    }
-}
-
-pub fn anon_pipe(ours_readable: bool) -> Result<(File, File)> {
-    unsafe {
-        let mut tries = 0;
-        let mut name;
-        let ours: File;
-        loop {
-            tries += 1;
-            name = format!(
-                r"\\.\pipe\__tat_anon_pipe__.{}.{}",
-                GetCurrentProcessId(),
-                gen_rand_str_with(10)
-            );
-
-            let wide_name = str2wsz(&name);
-            let mut flags = FILE_FLAG_FIRST_PIPE_INSTANCE | FILE_FLAG_OVERLAPPED;
-            if ours_readable {
-                flags |= PIPE_ACCESS_INBOUND;
-            } else {
-                flags |= PIPE_ACCESS_OUTBOUND;
-            }
-
-            let handle = CreateNamedPipeW(
-                wide_name.as_ptr(),
-                flags,
-                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
-                1,
-                4096,
-                4096,
-                0,
-                null_mut(),
-            );
-
-            if handle == INVALID_HANDLE_VALUE {
-                let err = GetLastError();
-                if tries < 10 {
-                    if err == ERROR_ACCESS_DENIED {
-                        continue;
-                    }
-                }
-                error!("create namepipe failed: {}", err);
-                return Err(anyhow!("create namepipe failed: {}", err));
-            }
-            ours = File::from_raw_handle(handle);
-            break;
-        }
-
-        let mut opts = OpenOptions::new();
-        opts.write(ours_readable);
-        opts.read(!ours_readable);
-
-        let theirs = opts.open(Path::new(&name))?;
-        Ok((ours, theirs))
-    }
-}
-
-pub fn load_environment(token: HANDLE) -> HashMap<String, String> {
-    unsafe {
-        let mut envs = HashMap::new();
-        let mut environment: PVOID = null_mut();
-        if 0 != CreateEnvironmentBlock(&mut environment as *mut LPVOID, token, FALSE) {
-            // The total size len * mem::size_of::<T>() of the slice must be no larger than isize::MAX
-            // See doc: https://doc.rust-lang.org/std/slice/fn.from_raw_parts.html
-            let data = slice::from_raw_parts(
-                environment as *const u16,
-                isize::MAX as usize / mem::size_of::<u16>(),
-            );
-            let mut start = 0;
-            loop {
-                let item = wsz2string(data[start..].as_ptr());
-                if item.len() == 0 {
-                    break;
-                }
-                let env_part: Vec<&str> = item.splitn(2, '=').collect();
-                if env_part.len() == 2 {
-                    envs.insert(env_part[0].to_string(), env_part[1].to_string());
-                }
-                start = start + item.chars().count() + 1;
-            }
-            DestroyEnvironmentBlock(environment as LPVOID);
-        }
-        envs
-    }
-}
-
-fn create_user_token(user_name: &str) -> Result<File> {
-    info!("=>enter create_user_token");
-    unsafe {
-        let mut tat_name = "tat".to_string();
-        let mut tat_lsa = LSA_STRING {
-            Length: tat_name.len() as USHORT,
-            MaximumLength: tat_name.len() as USHORT,
-            Buffer: tat_name.as_mut_ptr() as PCHAR,
+pub unsafe fn resume_as_user(pid: u32, user: &User) {
+    let process = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
+    if !user.is_current {
+        let mut access_token = PROCESS_ACCESS_TOKEN {
+            Token: user.token.as_raw_handle(),
+            Thread: 0 as HANDLE,
         };
-
-        let mut lsa_handle = 0 as HANDLE;
-        let mut mode: LSA_OPERATIONAL_MODE = mem::zeroed();
-        let code = LsaRegisterLogonProcess(&mut tat_lsa as PLSA_STRING, &mut lsa_handle, &mut mode);
-        if code != 0 {
-            return Err(anyhow!("RegisterLogonProcess Failed: {}", code));
-        }
-
-        let mut pkg_name = "MICROSOFT_AUTHENTICATION_PACKAGE_V1_0".to_string();
-        let mut auth_package_name = LSA_STRING {
-            Length: pkg_name.len() as USHORT,
-            MaximumLength: pkg_name.len() as USHORT,
-            Buffer: pkg_name.as_mut_ptr() as PCHAR,
-        };
-
-        let mut auth_package_id: ULONG = 0;
-        LsaLookupAuthenticationPackage(lsa_handle, &mut auth_package_name, &mut auth_package_id);
-
-        let logon_info_size =
-            mem::size_of::<MSV1_0_S4U_LOGON>() + (user_name.len() + ".".len()) * 2;
-        let buffer = malloc(logon_info_size) as *mut u8;
-        RtlZeroMemory(buffer as *mut c_void, logon_info_size);
-
-        let s4u_logon = buffer as *mut MSV1_0_S4U_LOGON;
-        (*s4u_logon).MessageType = MsV1_0S4ULogon;
-        (*s4u_logon).MSV1_0_LOGON_SUBMIT_TYPE = 0;
-
-        let name_buffer = buffer.add(mem::size_of::<MSV1_0_S4U_LOGON>());
-        let wname = str2wsz(user_name);
-        let wname_size = (wname.len() - 1) * 2;
-        memcpy(
-            name_buffer as *mut c_void,
-            wname.as_ptr() as *const c_void,
-            wname_size,
+        let status = NtSetInformationProcess(
+            process,
+            ProcessAccessToken,
+            &raw mut access_token as PVOID,
+            mem::size_of::<PROCESS_ACCESS_TOKEN>() as u32,
         );
-        (*s4u_logon).UserPrincipalName = UNICODE_STRING {
-            Length: wname_size as USHORT,
-            MaximumLength: wname_size as USHORT,
-            Buffer: name_buffer as *mut u16,
-        };
-
-        let domain_buffer = name_buffer.add(wname_size);
-        let wdomain = str2wsz(".");
-        let wdomain_size = (wdomain.len() - 1) * 2;
-        memcpy(
-            domain_buffer as *mut c_void,
-            wdomain.as_ptr() as *const c_void,
-            wdomain_size,
-        );
-        (*s4u_logon).DomainName = UNICODE_STRING {
-            Length: wdomain_size as USHORT,
-            MaximumLength: wdomain_size as USHORT,
-            Buffer: domain_buffer as *mut u16,
-        };
-
-        let mut source_context: TOKEN_SOURCE = mem::zeroed();
-        memcpy(
-            source_context.SourceName.as_mut_ptr() as *mut c_void,
-            tat_name.as_ptr() as *const c_void,
-            wdomain_size,
-        );
-        AllocateLocallyUniqueId(&mut source_context.SourceIdentifier);
-
-        let mut profile: PVOID = NULL;
-        let mut profile_size: DWORD = 0;
-        let mut logon_id = LUID {
-            LowPart: 0,
-            HighPart: 0,
-        };
-        let mut token = 0 as HANDLE;
-        let mut quotas: QUOTA_LIMITS = mem::zeroed();
-        let mut sub_status: NTSTATUS = 0;
-
-        let status = LsaLogonUser(
-            lsa_handle,
-            &mut tat_lsa,
-            3,
-            auth_package_id,
-            s4u_logon as PVOID,
-            logon_info_size as ULONG,
-            NULL as PTOKEN_GROUPS,
-            &mut source_context,
-            &mut profile,
-            &mut profile_size,
-            &mut logon_id,
-            &mut token,
-            &mut quotas,
-            &mut sub_status,
-        );
-
-        free(buffer as *mut c_void);
-        LsaDeregisterLogonProcess(lsa_handle);
-        if profile != null_mut() {
-            LsaFreeReturnBuffer(profile);
-        }
-        if status != 0 {
-            return Err(anyhow!("LsaLogonUser Failed, {}", status));
-        }
-
-        let _token = File::from_raw_handle(token);
-        let mut primary_token = 0 as HANDLE;
-        DuplicateTokenEx(
-            _token.as_raw_handle(),
-            TOKEN_ALL_ACCESS,
-            null_mut() as LPSECURITY_ATTRIBUTES,
-            SecurityImpersonation,
-            TokenPrimary,
-            &mut primary_token,
-        );
-        return if primary_token != null_mut() {
-            Ok(File::from_raw_handle(primary_token))
-        } else {
-            Err(anyhow!("DuplicateTokenEx Failed, {}", GetLastError()))
-        };
+        info!("NtSetInformationProcess result is {}", status);
     }
+    NtResumeProcess(process);
+    CloseHandle(process);
 }
 
-pub fn get_user_token(user_name: &str) -> Result<File> {
+pub unsafe fn get_token(username: &str) -> Result<File> {
     static IS_2008: LazyLock<bool> = LazyLock::new(|| {
         let output = std::process::Command::new("wmic")
             .args(&["os", "get", "Caption"])
-            .stdout(Stdio::piped())
             .output()
             .unwrap();
-        let version = String::from_utf8_lossy(&output.stdout)
-            .escape_debug()
-            .to_string();
-        info!("OS version: {}", version);
+        let version = String::from_utf8_lossy(&output.stdout);
+        info!("OS version: {}", version.escape_debug());
         version.contains("2008")
     });
 
-    if get_current_username().eq_ignore_ascii_case(user_name) || *IS_2008 {
-        info!(
-            "use current token, user:{}, is_2008:{}",
-            user_name, *IS_2008
-        );
-        let mut token: HANDLE = 0 as HANDLE;
-        unsafe {
-            if 0 == OpenProcessToken(GetCurrentProcess(), TOKEN_ALL_ACCESS, &mut token) {
-                return Err(anyhow!("OpenProcessToken Failed: {}", GetLastError()));
-            }
-            return Ok(File::from_raw_handle(token));
+    if get_current_username().eq_ignore_ascii_case(username) || *IS_2008 {
+        info!("use current token, user:{}, is_2008:{}", username, *IS_2008);
+        let mut token = 0 as HANDLE;
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_ALL_ACCESS, &mut token) == 0 {
+            bail!("OpenProcessToken failed: {}", GetLastError());
         }
+        return Ok(File::from_raw_handle(token));
     }
-    create_user_token(user_name)
+
+    create_user_token(username)
+}
+
+unsafe fn create_user_token(username: &str) -> Result<File> {
+    info!("=>enter create_user_token");
+
+    let mut tat_name = "tat".to_string();
+    let mut tat_lsa = LSA_STRING {
+        Length: tat_name.len() as USHORT,
+        MaximumLength: tat_name.len() as USHORT,
+        Buffer: tat_name.as_mut_ptr() as PCHAR,
+    };
+
+    let mut lsa_handle = 0 as HANDLE;
+    let mut mode: LSA_OPERATIONAL_MODE = mem::zeroed();
+    let code = LsaRegisterLogonProcess(&raw mut tat_lsa, &raw mut lsa_handle, &raw mut mode);
+    if code != 0 {
+        bail!("RegisterLogonProcess failed: {}", code);
+    }
+
+    let mut pkg_name = "MICROSOFT_AUTHENTICATION_PACKAGE_V1_0".to_string();
+    let mut auth_pkg_name = LSA_STRING {
+        Length: pkg_name.len() as USHORT,
+        MaximumLength: pkg_name.len() as USHORT,
+        Buffer: pkg_name.as_mut_ptr() as PCHAR,
+    };
+
+    let mut auth_pkg_id: ULONG = 0;
+    LsaLookupAuthenticationPackage(lsa_handle, &raw mut auth_pkg_name, &raw mut auth_pkg_id);
+
+    let logon_info_size = mem::size_of::<MSV1_0_S4U_LOGON>() + (username.len() + ".".len()) * 2;
+    let buffer = malloc(logon_info_size);
+    RtlZeroMemory(buffer, logon_info_size);
+
+    let s4u_logon = buffer as *mut MSV1_0_S4U_LOGON;
+    (*s4u_logon).MessageType = MsV1_0S4ULogon;
+    (*s4u_logon).MSV1_0_LOGON_SUBMIT_TYPE = 0;
+
+    let name_buf = buffer.add(mem::size_of::<MSV1_0_S4U_LOGON>());
+    let wname = str2wsz(username);
+    let wname_size = (wname.len() - 1) * 2;
+    memcpy(name_buf, wname.as_ptr() as *const c_void, wname_size);
+    (*s4u_logon).UserPrincipalName = UNICODE_STRING {
+        Length: wname_size as USHORT,
+        MaximumLength: wname_size as USHORT,
+        Buffer: name_buf as *mut u16,
+    };
+
+    let domain_buf = name_buf.add(wname_size);
+    let wdomain = str2wsz(".");
+    let wdomain_size = (wdomain.len() - 1) * 2;
+    memcpy(domain_buf, wdomain.as_ptr() as *const c_void, wdomain_size);
+    (*s4u_logon).DomainName = UNICODE_STRING {
+        Length: wdomain_size as USHORT,
+        MaximumLength: wdomain_size as USHORT,
+        Buffer: domain_buf as *mut u16,
+    };
+
+    let mut source_context: TOKEN_SOURCE = mem::zeroed();
+    memcpy(
+        source_context.SourceName.as_mut_ptr() as *mut c_void,
+        tat_name.as_ptr() as *const c_void,
+        wdomain_size,
+    );
+    AllocateLocallyUniqueId(&raw mut source_context.SourceIdentifier);
+
+    let mut profile: PVOID = NULL;
+    let mut profile_size: DWORD = 0;
+    let mut logon_id = LUID {
+        LowPart: 0,
+        HighPart: 0,
+    };
+    let mut token = 0 as HANDLE;
+    let mut quotas: QUOTA_LIMITS = mem::zeroed();
+    let mut sub_status: NTSTATUS = 0;
+
+    let status = LsaLogonUser(
+        lsa_handle,
+        &raw mut tat_lsa,
+        3,
+        auth_pkg_id,
+        s4u_logon as PVOID,
+        logon_info_size as ULONG,
+        NULL as PTOKEN_GROUPS,
+        &raw mut source_context,
+        &raw mut profile,
+        &raw mut profile_size,
+        &raw mut logon_id,
+        &raw mut token,
+        &raw mut quotas,
+        &raw mut sub_status,
+    );
+
+    free(buffer);
+    LsaDeregisterLogonProcess(lsa_handle);
+    if profile != null_mut() {
+        LsaFreeReturnBuffer(profile);
+    }
+    if status != 0 {
+        bail!("LsaLogonUser failed: {}", status);
+    }
+
+    let token = File::from_raw_handle(token);
+    let mut primary_token = 0 as HANDLE;
+    DuplicateTokenEx(
+        token.as_raw_handle(),
+        TOKEN_ALL_ACCESS,
+        null_mut() as LPSECURITY_ATTRIBUTES,
+        SecurityImpersonation,
+        TokenPrimary,
+        &raw mut primary_token,
+    );
+    if primary_token == null_mut() {
+        bail!("DuplicateTokenEx failed: {}", GetLastError());
+    }
+    Ok(File::from_raw_handle(primary_token))
+}
+
+pub unsafe fn load_envs(token: HANDLE) -> HashMap<String, String> {
+    let mut environment: PVOID = null_mut();
+    if CreateEnvironmentBlock(&raw mut environment, token, FALSE) == 0 {
+        return HashMap::new();
+    }
+    // The total size len * mem::size_of::<T>() of the slice must be no larger than isize::MAX
+    // See doc: https://doc.rust-lang.org/std/slice/fn.from_raw_parts.html
+    let data = slice::from_raw_parts(
+        environment as *const u16,
+        isize::MAX as usize / mem::size_of::<u16>(),
+    );
+    let envs = data
+        .split_inclusive(|c| *c == 0)
+        .map(|d| wsz2string(d.as_ptr()))
+        .take_while(|s| !s.is_empty())
+        .filter_map(|s| s.split_once('=').map(|(k, v)| (k.to_owned(), v.to_owned())))
+        .collect();
+    DestroyEnvironmentBlock(environment as LPVOID);
+    envs
+}
+
+pub unsafe fn anon_pipe(ours_readable: bool) -> Result<(File, StdFile)> {
+    let mut tries = 0;
+    let mut name;
+    let ours: File;
+    loop {
+        tries += 1;
+        name = format!(
+            r"\\.\pipe\__tat_anon_pipe__.{}.{}",
+            GetCurrentProcessId(),
+            gen_rand_str_with(10)
+        );
+
+        let wide_name = str2wsz(&name);
+        let mut flags = FILE_FLAG_FIRST_PIPE_INSTANCE | FILE_FLAG_OVERLAPPED;
+        if ours_readable {
+            flags |= PIPE_ACCESS_INBOUND;
+        } else {
+            flags |= PIPE_ACCESS_OUTBOUND;
+        }
+
+        let handle = CreateNamedPipeW(
+            wide_name.as_ptr(),
+            flags,
+            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+            1,
+            4096,
+            4096,
+            0,
+            null_mut(),
+        );
+
+        if handle == INVALID_HANDLE_VALUE {
+            let err = GetLastError();
+            if tries < 10 {
+                if err == ERROR_ACCESS_DENIED {
+                    continue;
+                }
+            }
+            bail!("create namepipe failed: {}", err);
+        }
+        ours = File::from_raw_handle(handle);
+        break;
+    }
+
+    let mut opts = OpenOptions::new();
+    opts.write(ours_readable);
+    opts.read(!ours_readable);
+
+    let theirs = opts.open(Path::new(&name))?;
+    Ok((ours, theirs))
+}
+
+pub unsafe fn kill_process_group(pid: u32) {
+    info!("=>kill_process_group, pid:{}", pid);
+
+    // get process snapshot
+    let hp = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    let mut pe: PROCESSENTRY32 = mem::zeroed();
+    pe.dwSize = mem::size_of::<PROCESSENTRY32>() as DWORD;
+
+    let mut snapshot: HashMap<u32, Vec<u32>> = HashMap::new(); // PPID -> PIDs
+    let mut code = Process32First(hp, &raw mut pe as LPPROCESSENTRY32);
+    while code != 0 {
+        let (ppid, pid) = (pe.th32ParentProcessID, pe.th32ProcessID);
+        snapshot.entry(ppid).or_default().push(pid);
+        code = Process32Next(hp, &raw mut pe as LPPROCESSENTRY32);
+    }
+    CloseHandle(hp);
+
+    // find all child process
+    let mut childs = vec![pid];
+    let mut i = 0;
+    while i < childs.len() {
+        if let Some(pids) = snapshot.get_mut(&childs[i]) {
+            childs.append(pids);
+        }
+        i += 1;
+    }
+
+    // kill process
+    for pid in childs {
+        info!("pid need to kill: {}", pid);
+        let handle = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
+        if handle == NULL {
+            error!("open pid error: {}", GetLastError());
+            continue;
+        }
+        TerminateProcess(handle, 0xffffffff as u32);
+        CloseHandle(handle);
+    }
 }
 
 pub fn decode_output(v: &[u8]) -> Vec<u8> {
     static CODEPAGE: LazyLock<u16> = LazyLock::new(|| unsafe { GetOEMCP() } as u16);
-
     match std::str::from_utf8(&v) {
         Ok(output) => output.into(),
         Err(_) => codepage_strings::Coding::new(*CODEPAGE)
@@ -478,19 +430,4 @@ pub fn decode_output(v: &[u8]) -> Vec<u8> {
     }
     .into_owned()
     .into_bytes()
-}
-
-#[cfg(test)]
-mod test {
-    use crate::executor::windows::anon_pipe;
-    use std::io::{Read, Write};
-    #[test]
-    fn test() {
-        let (mut ours, mut theirs) = anon_pipe(true).unwrap();
-        theirs.write("test".as_bytes()).unwrap();
-        let mut buffer = [0; 1024];
-        let size = ours.read(&mut buffer).unwrap();
-        let result = String::from_utf8_lossy(&buffer[0..size]);
-        assert_eq!(result, "test".to_string());
-    }
 }

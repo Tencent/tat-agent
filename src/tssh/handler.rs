@@ -1,5 +1,5 @@
-use super::{gather::Gather, session::Channel};
-use crate::network::types::ws_msg::{PtyBinBase, PtyBinErrMsg, PtyError, PtyJsonBase, WsMsg};
+use super::{session::Channel, TSSH};
+use crate::network::{PtyBinBase, PtyBinErrMsg, PtyError, PtyJsonBase, WsMsg};
 
 use std::sync::Arc;
 use std::{future::Future, io::Cursor};
@@ -69,7 +69,7 @@ where
         let session_id = &handler.request.session_id;
         let channel_id = &handler.request.channel_id;
 
-        if let Some(session) = Gather::get_session(session_id).await {
+        if let Some(session) = TSSH::get_session(session_id).await {
             if let Some(channel) = session.get_channel(channel_id).await {
                 handler.channel = Some(channel);
             }
@@ -90,7 +90,7 @@ where
             custom_data: self.request.custom_data.clone(),
             data,
         };
-        Gather::reply_bson_msg(&self.op_type, msg).await
+        TSSH::reply_bson_msg(&self.op_type, msg).await
     }
 }
 
@@ -145,7 +145,7 @@ where
             request,
         };
 
-        if let Some(session) = Gather::get_session(&session_id).await {
+        if let Some(session) = TSSH::get_session(&session_id).await {
             if let Some(channel) = session.get_channel(&channel_id).await {
                 handler.channel = Some(channel);
             }
@@ -166,7 +166,7 @@ where
             channel_id: self.request.channel_id.clone(),
             data,
         };
-        Gather::reply_json_msg(&msg_type, body).await
+        TSSH::reply_json_msg(&msg_type, body).await
     }
 }
 
@@ -184,7 +184,7 @@ fn get_msg_type<M: Serialize>(_: &M) -> String {
 #[cfg(test)]
 mod test {
     use super::get_msg_type;
-    use crate::network::types::ws_msg::{PtyError, PtyOutput, PtyReady};
+    use crate::network::{PtyError, PtyOutput, PtyReady};
 
     #[test]
     fn test_get_msg_type() {

@@ -1,8 +1,9 @@
-use super::gather::Gather;
 use super::proxy::Proxy;
 use super::pty::Pty;
-use crate::common::utils::{Stopper, Timer};
-use crate::network::types::ws_msg::{PtyBinBase, PtyJsonBase};
+use super::TSSH;
+use crate::common::{Stopper, Timer};
+use crate::executor::User;
+use crate::network::{PtyBinBase, PtyJsonBase};
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -82,17 +83,16 @@ impl Session {
             _ = stopper_rx => info!("session `{}` stopped", self.session_id),
             _ = self.timer.timeout() => info!("session `{}` timeout", self.session_id),
         };
-        Gather::remove_session(&self.session_id).await;
+        TSSH::remove_session(&self.session_id).await;
         info!("session `{}` process_output finished", self.session_id);
     }
 }
 
 impl Drop for Session {
     fn drop(&mut self) {
-        let mut this: ChannelMap = Default::default();
-        std::mem::swap(&mut this, &mut self.channels);
+        let channels = std::mem::take(&mut self.channels);
         tokio::spawn(async move {
-            for ch in this.read().await.values() {
+            for ch in channels.read().await.values() {
                 ch.stop().await;
             }
         });
@@ -127,7 +127,7 @@ impl Channel {
         info!("=>Channel::process_output: {}", id);
         self.plugin.process().await;
         info!("channel `{}` process_output finished", id);
-        let Some(session) = Gather::get_session(&self.session_id).await else {
+        let Some(session) = TSSH::get_session(&self.session_id).await else {
             return;
         };
         session.remove_channel(&self.channel_id).await;
@@ -138,12 +138,6 @@ pub struct Plugin {
     pub component: PluginComp,
     pub data: PluginData,
     pub controller: PluginCtrl,
-}
-
-pub enum PluginComp {
-    Pty(Pty),
-    Proxy(Proxy),
-    Nil { username: String },
 }
 
 impl Plugin {
@@ -179,6 +173,22 @@ impl Plugin {
             return None;
         };
         Some(proxy)
+    }
+}
+
+pub enum PluginComp {
+    Pty(Pty),
+    Proxy(Proxy),
+    Nil { username: String },
+}
+
+impl PluginComp {
+    pub fn get_user(&self) -> Result<Arc<User>> {
+        match self {
+            Self::Pty(pty) => Ok(pty.user.clone()),
+            Self::Nil { username } => User::new(username).map(Arc::new),
+            _ => Err(anyhow!("unsupported channel plugin"))?,
+        }
     }
 }
 

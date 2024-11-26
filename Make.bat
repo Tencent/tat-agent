@@ -10,7 +10,7 @@ echo "Please provide an argument: win64-bin|win64-update-pkg|win64-install-pkg|w
 goto end
 
 :test
-    cargo test --package tat_agent -- --nocapture --skip ontime --skip executor::thread::tests::test_cancel  --skip executor::proc::tests::test_shell_cmd_timeout
+    cargo test --package tat_agent -- --nocapture --skip ontime
     goto end
     
 :win64-bin

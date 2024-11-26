@@ -1,4 +1,4 @@
-use crate::network::InvokeAdapter;
+use crate::network::{Invoke, InvokeAdapter};
 use crate::ontime::self_update::try_restart_agent;
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::{atomic::AtomicU64, LazyLock, Mutex};
@@ -53,7 +53,7 @@ pub fn check_resource_leak() {
             mem_res_rf.to_vec()
         );
         if let Err(e) = try_restart_agent() {
-            error!("try restart agent failed: {}", e)
+            error!("try restart agent failed: {:#}", e)
         }
 
         // should not comes here, because agent should has been killed when called `try_restart_agent`.
@@ -74,17 +74,12 @@ pub fn check_resource_leak() {
         #[cfg(windows)]
         let zp_cnt = 0 as u32;
 
-        let adapter = InvokeAdapter::new();
-        let requester = adapter.report_resource(fd_avg, mem_avg, zp_cnt);
-        info!(
-            "ReportResource mem {} handle {} zp_cnt {}",
-            mem_avg, fd_avg, zp_cnt
-        );
+        info!("ReportResource mem {mem_avg} handle {fd_avg} zp_cnt {zp_cnt}");
         let _ = Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap()
-            .block_on(requester);
+            .block_on(InvokeAdapter::report_resource(fd_avg, mem_avg, zp_cnt));
     }
 }
 

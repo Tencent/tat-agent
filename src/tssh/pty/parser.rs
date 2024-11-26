@@ -36,10 +36,10 @@ pub enum EscapeItem {
     ShowCursor,
 }
 
-use core::fmt::{Display, Formatter, Result as DisplayResult};
+use core::fmt::{self, Display, Formatter};
 
 impl Display for EscapeItem {
-    fn fmt(&self, formatter: &mut Formatter) -> DisplayResult {
+    fn fmt(&self, formatter: &mut Formatter) -> fmt::Result {
         write!(formatter, "\u{1b}")?;
         use EscapeItem::*;
         match self {
@@ -258,7 +258,7 @@ pub enum AnsiItem {
 }
 
 impl Display for AnsiItem {
-    fn fmt(&self, formatter: &mut Formatter) -> DisplayResult {
+    fn fmt(&self, formatter: &mut Formatter) -> fmt::Result {
         match self {
             Text(txt) => write!(formatter, "{}", txt),
             Escape(seq) => write!(formatter, "{}", seq),

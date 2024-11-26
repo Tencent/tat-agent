@@ -1,5 +1,4 @@
-use crate::network::types::GetTmpCredentialResponse;
-use crate::network::HttpRequester;
+use crate::network::{GetTmpCredentialResponse, HttpRequester};
 
 use anyhow::Result;
 use log::{error, info};

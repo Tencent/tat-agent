@@ -1,6 +1,7 @@
 use super::{execute_stream, PtyExecCallback};
-use crate::conpty::{session::PluginComp, PTY_INSPECT_READ};
-use crate::executor::unix::{build_envs, prepare_cmd};
+use crate::executor::unix::{configure_command, load_envs, User};
+use crate::tssh::{session::PluginComp, PTY_INSPECT_READ};
+use crate::EXE_DIR;
 
 use std::collections::HashMap;
 use std::ffi::CStr;
@@ -9,9 +10,10 @@ use std::io::{Read, Write};
 use std::os::linux::fs::MetadataExt;
 use std::os::unix::prelude::{AsRawFd, FromRawFd, RawFd};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::{env, io, ptr};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use libc::{self, getsid, pid_t, ttyname, uid_t, winsize, STDIN_FILENO, TIOCSCTTY};
 use log::{error, info};
 use tokio::fs::{metadata, File};
@@ -19,25 +21,24 @@ use tokio::process::Command;
 use tokio::sync::oneshot::{channel, Sender};
 use unix_mode::{is_allowed, Access, Accessor};
 use users::os::unix::UserExt;
-use users::{get_user_by_name, User};
 
 const LOGIN_SHELL_SUPPORTED: [&str; 4] = ["bash", "zsh", "fish", "tcsh"];
 
 pub struct Pty {
     _kill_on_drop: Sender<()>,
     master: File,
-    user: User,
     pid: i32,
+    pub user: Arc<User>,
 }
 
 impl Pty {
     pub async fn new(
-        user_name: &str,
+        username: &str,
         cols: u16,
         rows: u16,
         envs: HashMap<String, String>,
     ) -> Result<Pty> {
-        let user = get_user_by_name(user_name).context(format!("user {} not exist", user_name))?;
+        let user = Arc::new(User::new(username)?);
         let shell_path = user.shell();
         let shell_name = Path::new(shell_path)
             .file_name()
@@ -46,8 +47,8 @@ impl Pty {
             .to_string();
 
         let home_path = user.home_dir().to_str().unwrap_or_else(|| "/tmp");
-        let local_envs = build_envs(user_name, home_path, &shell_path.to_string_lossy());
-        let (master, slave) = openpty(user.clone(), cols, rows)?;
+        let local_envs = load_envs(username, home_path, &shell_path.to_string_lossy()).await;
+        let (master, slave) = openpty(&user, cols, rows)?;
         let mut cmd = Command::new(&shell_name);
         if LOGIN_SHELL_SUPPORTED.contains(&shell_name.as_str()) {
             cmd.arg("-l");
@@ -83,11 +84,11 @@ impl Pty {
             let tty_name_c = ttyname(slave.as_raw_fd());
             CStr::from_ptr(tty_name_c).to_string_lossy().to_string()
         };
-        call_utmpx(&tty_name, user_name, pid, sid, &utmx_type).await;
+        call_utmpx(&tty_name, username, pid, sid, &utmx_type).await;
 
         // Kill terminal process when Pty is dropped
         let (send, mut recv) = channel::<()>();
-        let user_name = user_name.to_owned();
+        let username = username.to_owned();
         tokio::spawn(async move {
             tokio::select! {
                 biased;
@@ -96,7 +97,7 @@ impl Pty {
             }
             let _ = child.wait().await; // Release zombie process after kill
             let utmx_type = "EXIT";
-            call_utmpx(&tty_name, &user_name, pid, sid, &utmx_type).await;
+            call_utmpx(&tty_name, &username, pid, sid, &utmx_type).await;
         });
 
         return Ok(Pty {
@@ -217,28 +218,17 @@ impl PluginComp {
 
     pub async fn execute_stream(
         &self,
-        cmd: Command,
+        mut cmd: Command,
         callback: Option<PtyExecCallback>,
         timeout: Option<u64>,
     ) -> Result<()> {
         let user = self.get_user()?;
         let cwd_path = self.get_cwd(&user);
-        let cmd = prepare_cmd(cmd, &user, cwd_path);
+        configure_command(&mut cmd, &user, cwd_path).await;
 
         let callback = callback.unwrap_or_else(|| Box::new(|_, _, _, _| Box::pin(async {})));
         let timeout = timeout.unwrap_or(60);
         execute_stream(cmd, &callback, timeout).await
-    }
-
-    fn get_user(&self) -> Result<User> {
-        let user = match self {
-            Self::Pty(pty) => pty.user.clone(),
-            Self::Nil { username } => {
-                get_user_by_name(username).context(format!("user {} not exist", username))?
-            }
-            _ => Err(anyhow!("unsupported channel plugin"))?,
-        };
-        Ok(user)
     }
 
     fn get_cwd(&self, user: &User) -> PathBuf {
@@ -249,7 +239,7 @@ impl PluginComp {
     }
 }
 
-fn openpty(user: User, cols: u16, rows: u16) -> Result<(File, StdFile)> {
+fn openpty(user: &User, cols: u16, rows: u16) -> Result<(File, StdFile)> {
     let mut master: RawFd = -1;
     let mut slave: RawFd = -1;
 
@@ -284,9 +274,7 @@ async fn call_utmpx(ttyname: &str, username: &str, pid: pid_t, sid: pid_t, ut_ty
         "=>call_utmpx tty:{}, user:{}, pid:{}, sid:{}, type:{}",
         ttyname, username, pid, sid, ut_type
     );
-    let current_bin = env::current_exe().expect("current path failed");
-    let current_path = current_bin.parent().expect("parent path failed");
-    let utmpx_path = format!("{}/utmpx", current_path.to_string_lossy());
+    let utmpx_path = format!("{}/utmpx", EXE_DIR.to_string_lossy());
     match Command::new(utmpx_path)
         .arg(ttyname)
         .arg(username)
@@ -317,7 +305,7 @@ fn audit_setloginuid(uid: uid_t) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{common::utils::get_current_username, conpty::session::PluginComp};
+    use crate::{common::get_current_username, tssh::session::PluginComp};
 
     #[tokio::test]
     async fn test_work_as_user() {

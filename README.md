@@ -12,7 +12,7 @@ For more information, please visit <https://cloud.tencent.com/product/tat> .
 
 ## Compile
 
-The version of rust must be **higher than 1.80**, If the version is too low, you can update the version with the following command:
+The version of rust must be **higher than 1.82**, If the version is too low, you can update the version with the following command:
 
 ```powershell
 rustup update

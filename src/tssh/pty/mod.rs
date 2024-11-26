@@ -1,15 +1,14 @@
-use super::gather::Gather;
 use super::handler::{BsonHandler, Handler, HandlerExt, JsonHandler};
 use super::session::{Channel, Plugin, PluginCtrl, PluginData, Session};
-use crate::common::evbus::EventBus;
-use crate::common::utils::get_current_username;
-use crate::conpty::session::PluginComp;
-use crate::conpty::{WS_MSG_TYPE_PTY_ERROR, WS_MSG_TYPE_PTY_OUTPUT};
-use crate::executor::{decode_output, init_cmd, kill_process_group};
-use crate::network::types::ws_msg::{
+use super::TSSH;
+use crate::common::{evbus::EventBus, get_current_username};
+use crate::executor::{decode_output, init_command, kill_process_group};
+use crate::network::{
     ExecCmdReq, ExecCmdStreamReq, ExecCmdStreamResp, PtyBinBase, PtyBinErrMsg, PtyError, PtyInput,
     PtyJsonBase, PtyMaxRate, PtyOutput, PtyReady, PtyResize, PtyStart, PtyStop,
 };
+use crate::tssh::session::PluginComp;
+use crate::tssh::{WS_MSG_TYPE_PTY_ERROR, WS_MSG_TYPE_PTY_OUTPUT};
 
 use std::future::Future;
 use std::pin::Pin;
@@ -20,6 +19,7 @@ use anyhow::{anyhow, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use log::{error, info};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::process::Command;
 use tokio::time::Instant;
 
 use super::{
@@ -37,18 +37,18 @@ cfg_if::cfg_if! {
         mod unix;
         pub use unix::Pty;
 
-        use crate::network::types::ws_msg::ExecCmdResp;
+        use crate::network::ExecCmdResp;
         use std::os::unix::process::CommandExt;
-        use std::process::{Command, Stdio};
+        use std::process::{Command as StdCommand, Stdio};
     } else if #[cfg(windows)] {
         mod bind;
         mod parser;
         mod windows;
         pub use windows::Pty;
 
-        use crate::executor::windows::resume_as_user;
+        use crate::executor::windows::{resume_as_user, User};
         use super::PTY_FLAG_ENABLE_BLOCK;
-        use std::fs::File;
+        use tokio::fs::File;
     }
 }
 
@@ -61,28 +61,28 @@ type PtyExecCallback = Box<
 pub fn register_pty_handlers(event_bus: &Arc<EventBus>) {
     event_bus
         .slot_register(SLOT_PTY_CMD, WS_MSG_TYPE_PTY_START, move |value| {
-            Gather::dispatch::<JsonHandler<PtyStart>>(value, false);
+            TSSH::dispatch::<JsonHandler<PtyStart>>(value, false);
         })
         .slot_register(SLOT_PTY_CMD, WS_MSG_TYPE_PTY_STOP, move |value| {
-            Gather::dispatch::<JsonHandler<PtyStop>>(value, false);
+            TSSH::dispatch::<JsonHandler<PtyStop>>(value, false);
         })
         .slot_register(SLOT_PTY_CMD, WS_MSG_TYPE_PTY_RESIZE, move |value| {
-            Gather::dispatch::<JsonHandler<PtyResize>>(value, true);
+            TSSH::dispatch::<JsonHandler<PtyResize>>(value, true);
         })
         .slot_register(SLOT_PTY_CMD, WS_MSG_TYPE_PTY_INPUT, move |value| {
-            Gather::dispatch::<JsonHandler<PtyInput>>(value, true);
+            TSSH::dispatch::<JsonHandler<PtyInput>>(value, true);
         })
         .slot_register(SLOT_PTY_CMD, WS_MSG_TYPE_PTY_MAX_RATE, move |value| {
-            Gather::dispatch::<JsonHandler<PtyMaxRate>>(value, false);
+            TSSH::dispatch::<JsonHandler<PtyMaxRate>>(value, false);
         })
         .slot_register(SLOT_PTY_BIN, WS_MSG_TYPE_PTY_EXEC_CMD, move |value| {
-            Gather::dispatch::<BsonHandler<ExecCmdReq>>(value, true);
+            TSSH::dispatch::<BsonHandler<ExecCmdReq>>(value, true);
         })
         .slot_register(
             SLOT_PTY_BIN,
             WS_MSG_TYPE_PTY_EXEC_CMD_STREAM,
             move |value| {
-                Gather::dispatch::<BsonHandler<ExecCmdStreamReq>>(value, true);
+                TSSH::dispatch::<BsonHandler<ExecCmdStreamReq>>(value, true);
             },
         );
 }
@@ -117,7 +117,7 @@ impl Handler for JsonHandler<PtyStart> {
             let pty = match pty_res {
                 Ok(pty) => pty,
                 Err(e) => {
-                    error!("pty_start `{}` failed, open pty err: {}", self.id(), e);
+                    error!("pty_start `{}` failed, open pty err: {:#}", self.id(), e);
                     return self.reply(PtyError::new(e)).await;
                 }
             };
@@ -130,11 +130,11 @@ impl Handler for JsonHandler<PtyStart> {
         };
 
         let channel = Arc::new(Channel::new(session_id, channel_id, plugin));
-        let session = match Gather::get_session(session_id).await {
+        let session = match TSSH::get_session(session_id).await {
             Some(s) => s,
             None => {
                 let s = Arc::new(Session::new(session_id));
-                let _ = Gather::add_session(session_id, s.clone()).await;
+                let _ = TSSH::add_session(session_id, s.clone()).await;
                 s
             }
         };
@@ -154,11 +154,11 @@ impl Handler for JsonHandler<PtyStop> {
         let channel_id = &self.request.channel_id;
         info!("=>pty_stop `{}`", self.id());
 
-        let Some(session) = Gather::get_session(session_id).await else {
+        let Some(session) = TSSH::get_session(session_id).await else {
             return;
         };
         if channel_id.is_empty() {
-            Gather::remove_session(session_id).await;
+            TSSH::remove_session(session_id).await;
         } else if self.channel.is_some() {
             session.remove_channel(channel_id).await;
         }
@@ -222,7 +222,7 @@ impl Handler for BsonHandler<ExecCmdReq> {
 
         let plugin = &self.channel.as_ref().unwrap().plugin.component;
         let result = plugin.execute(&|| unsafe {
-            let output = Command::new("bash")
+            let output = StdCommand::new("bash")
                 .args(&["-c", data.cmd.as_str()])
                 .stdin(Stdio::null())
                 .pre_exec(|| {
@@ -277,10 +277,10 @@ impl Handler for BsonHandler<ExecCmdStreamReq> {
                 },
             };
             let op = op.clone();
-            Box::pin(async move { Gather::reply_bson_msg(&op, msg).await })
+            Box::pin(async move { TSSH::reply_bson_msg(&op, msg).await })
         });
 
-        let cmd = init_cmd(&data.cmd);
+        let cmd = init_command(&data.cmd).await;
         let plugin = &self.channel.as_ref().unwrap().plugin;
         plugin.controller.timer.freeze();
         let result = plugin
@@ -289,7 +289,7 @@ impl Handler for BsonHandler<ExecCmdStreamReq> {
             .await;
         plugin.controller.timer.unfreeze().await;
         if let Err(e) = result {
-            error!("exec_cmd_stream `{}` failed: {}", self.id(), e);
+            error!("exec_cmd_stream `{}` failed: {:#}", self.id(), e);
             self.reply(PtyBinErrMsg::new(e)).await
         }
     }
@@ -299,7 +299,7 @@ impl Handler for JsonHandler<PtyMaxRate> {
     async fn process(self) {
         let rate = self.request.data.rate;
         info!("=>pty_max_rate: {} MB/s", rate);
-        Gather::set_limiter(rate).await
+        TSSH::set_limiter(rate).await
     }
 }
 
@@ -329,7 +329,7 @@ impl Pty {
                             channel_id: channel_id.clone(),
                             data: PtyOutput { output: data },
                         };
-                        Gather::reply_json_msg(WS_MSG_TYPE_PTY_OUTPUT, pty_output).await;
+                        TSSH::reply_json_msg(WS_MSG_TYPE_PTY_OUTPUT, pty_output).await;
                         last_reply = Instant::now();
                     }
                     Err(e) => {
@@ -342,7 +342,7 @@ impl Pty {
                             channel_id: channel_id.clone(),
                             data: PtyError::new("logout"),
                         };
-                        break Gather::reply_json_msg(WS_MSG_TYPE_PTY_ERROR, pty_logout).await;
+                        break TSSH::reply_json_msg(WS_MSG_TYPE_PTY_ERROR, pty_logout).await;
                     }
                 },
                 _ = &mut stopper_rx => break info!("Pty `{id}` stopped"),
@@ -355,12 +355,11 @@ impl Pty {
 }
 
 pub async fn execute_stream(
-    mut cmd: tokio::process::Command,
+    mut cmd: Command,
     callback: &PtyExecCallback,
     timeout: u64,
-    #[cfg(windows)] token: &File,
     #[cfg(windows)] pipe: File,
-    #[cfg(windows)] username: &str,
+    #[cfg(windows)] user: &User,
 ) -> Result<()> {
     let mut idx = 0u32;
     let mut is_last;
@@ -374,8 +373,8 @@ pub async fn execute_stream(
     #[cfg(windows)]
     let mut reader = {
         drop(cmd); // move pipe sender
-        resume_as_user(pid, username, &token);
-        tokio::fs::File::from_std(pipe)
+        unsafe { resume_as_user(pid, user) };
+        pipe
     };
     #[cfg(unix)]
     let mut reader = child.stdout.take().unwrap();
@@ -393,20 +392,16 @@ pub async fn execute_stream(
                 idx += 1;
             }
             _ = tokio::time::sleep_until(timeout_at) => {
-                error!("work_as_user func timeout");
-                kill_process_group(pid);
+                info!("execute_stream func timeout");
+                unsafe { kill_process_group(pid) };
                 Err(anyhow!("command timeout, process killed"))?;
             }
         };
     }
 
-    let exit_status = child
-        .wait_with_output()
-        .await
-        .context("wait command failed")?
-        .status;
+    let exit_status = child.wait().await.context("wait command failed")?;
     if !exit_status.success() {
-        error!("work_as_user func exit failed: {}", exit_status);
+        info!("execute_stream func exit failed: {}", exit_status);
     }
     let exit_code = exit_status.code().context("command exit abnormally")?;
     callback(idx, is_last, Some(exit_code), Vec::new()).await;
@@ -416,11 +411,11 @@ pub async fn execute_stream(
 #[cfg(test)]
 mod test {
     use super::Pty;
+    use crate::common::get_current_username;
     use crate::common::logger::init_test_log;
-    use crate::common::utils::get_current_username;
-    use crate::conpty::pty::PtyExecCallback;
-    use crate::conpty::session::PluginComp;
-    use crate::executor::init_cmd;
+    use crate::executor::init_command;
+    use crate::tssh::pty::PtyExecCallback;
+    use crate::tssh::session::PluginComp;
 
     use std::collections::HashMap;
     use std::time::Duration;
@@ -432,13 +427,11 @@ mod test {
     #[tokio::test]
     async fn test_pty() {
         init_test_log();
-        let user_name = get_current_username();
+        let username = get_current_username();
         #[cfg(windows)]
-        let pty = Pty::new(&user_name, 200, 100, 0).unwrap();
+        let pty = Pty::new(&username, 200, 100, 0).unwrap();
         #[cfg(unix)]
-        let pty = Pty::new(&user_name, 200, 100, HashMap::new())
-            .await
-            .unwrap();
+        let pty = Pty::new(&username, 200, 100, HashMap::new()).await.unwrap();
         let mut reader = pty.get_reader().await.unwrap();
         let mut writer = pty.get_writer().await.unwrap();
 
@@ -500,7 +493,7 @@ mod test {
             assert_eq!(*expect_data, data);
             Box::pin(async {})
         });
-        let cmd = init_cmd(script);
+        let cmd = init_command(script).await;
         let result = plugin.execute_stream(cmd, Some(cb), timeout).await;
         assert_eq!(expect_result, result.map_err(|e| e.to_string()));
     }
@@ -516,13 +509,13 @@ mod test {
             // Below data length with stderr
             ("echo -n foo >&2", None),
             // Below data length multiple outputs
-            ("echo -n foo; sleep 0.5; echo -n foo", None),
+            ("echo -n foo; sleep 1; echo -n foo", None),
             // Exceeding data length
             ("echo -n foo; echo -n foo", None),
             // Timeout without output
             ("while true; do sleep 100; done", Some(1)),
             // Timeout with exceeding data length multiple output
-            ("while true; do echo -n foofoo; sleep 0.7; done", Some(1)),
+            ("while true; do echo -n foofoo; sleep 1; done", Some(1)),
             // Failed without output
             ("exit 1", None),
             // Failed with output
@@ -534,7 +527,7 @@ mod test {
             (r#"[Console]::Error.Write("foo")"#, None),
             // Below data length multiple outputs
             (
-                r#"[Console]::Write("foo"); Start-Sleep -Seconds 0.5; [Console]::Error.Write("foo")"#,
+                r#"[Console]::Write("foo"); Start-Sleep -Seconds 1; [Console]::Error.Write("foo")"#,
                 None,
             ),
             // Exceeding data length
@@ -543,7 +536,7 @@ mod test {
             ("while ($true) { Start-Sleep -Seconds 100 }", Some(1)),
             // Timeout with exceeding data length multiple output
             (
-                r#"while ($true) { [Console]::Write("foofoo"); Start-Sleep -Seconds 0.7 }"#,
+                r#"while ($true) { [Console]::Write("foofoo"); Start-Sleep -Seconds 1 }"#,
                 Some(1),
             ),
             // Failed without output

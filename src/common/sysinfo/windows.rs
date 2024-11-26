@@ -1,4 +1,5 @@
-use crate::{common::utils::wsz2string, sysinfo::Uname};
+use crate::common::{sysinfo::Uname, wsz2string};
+
 use std::{io, ptr};
 
 use winapi::um::sysinfoapi::{ComputerNamePhysicalDnsHostname, GetComputerNameExW};
@@ -34,11 +35,10 @@ pub fn get_hostname() -> Option<String> {
     };
 
     if result == 0 {
-        None
-    } else {
-        unsafe {
-            buffer.set_len(size as usize);
-        }
+        return None;
+    }
+    unsafe {
+        buffer.set_len(size as usize);
         Some(wsz2string(buffer.as_ptr()))
     }
 }

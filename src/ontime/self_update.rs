@@ -1,5 +1,5 @@
-use crate::network::types::CheckUpdateResponse;
-use crate::network::{HttpRequester, InvokeAdapter};
+use crate::network::{CheckUpdateResponse, HttpRequester, Invoke, InvokeAdapter};
+
 use std::fs::{create_dir_all, File};
 use std::io::{self, Write};
 use std::process::Command;
@@ -19,33 +19,31 @@ const UPDATE_DOWNLOAD_TIMEOUT: u64 = 20 * 60;
 
 cfg_if::cfg_if! {
     if #[cfg(unix)] {
-        use crate::executor::FILE_EXECUTE_PERMISSION_MODE;
+        use crate::executor::unix::EXEC_MODE;
         use std::os::unix::fs::PermissionsExt;
         use std::fs::{set_permissions, Permissions};
         const INSTALL_SCRIPT: &str = "install.sh";
         const SELF_UPDATE_PATH: &str = "/tmp/tat_agent/self_update/";
         const SELF_UPDATE_SCRIPT: &str = "self_update.sh";
     } else if #[cfg(windows)] {
-        use crate::daemonizer::wow64_disable_exc;
+        use crate::common::daemonizer::wow64_disable_exc;
         const SELF_UPDATE_PATH: &str = "C:\\Program Files\\qcloud\\tat_agent\\tmp\\self_update\\";
         const SELF_UPDATE_SCRIPT: &str = "self_update.bat";
     }
 }
 
 pub fn try_update(self_updating: Arc<AtomicBool>, need_restart: Arc<AtomicBool>) {
-    let rt_res = Builder::new_current_thread().enable_all().build();
-    if let Err(e) = rt_res {
-        warn!("runtime for try update build failed: {e}, will retry later");
-        self_updating.store(false, Ordering::SeqCst);
-        return;
-    }
-    let mut rt = rt_res.unwrap();
-
-    let adapter = InvokeAdapter::new();
-
-    let check_update_rsp = check_update(&mut rt, &adapter);
+    let rt = match Builder::new_current_thread().enable_all().build() {
+        Ok(rt) => rt,
+        Err(e) => {
+            warn!("runtime for try update build failed: {e}, will retry later");
+            self_updating.store(false, Ordering::SeqCst);
+            return;
+        }
+    };
+    let check_update_rsp = check_update(&rt);
     if let Err(e) = check_update_rsp {
-        warn!("check update http request failed: {}", e);
+        warn!("check update http request failed: {:#}", e);
         self_updating.store(false, Ordering::SeqCst);
         return;
     }
@@ -65,13 +63,13 @@ pub fn try_update(self_updating: Arc<AtomicBool>, need_restart: Arc<AtomicBool>)
 
     info!("new agent version found:{check_update_rsp:?}, going to download");
     let download_ret = download_file(
-        &mut rt,
+        &rt,
         check_update_rsp.download_url().as_ref().unwrap(),
         SELF_UPDATE_PATH,
         SELF_UPDATE_FILENAME,
     );
     if let Err(e) = download_ret {
-        error!("download new agent failed: {}", e);
+        error!("download new agent failed: {:#}", e);
         self_updating.store(false, Ordering::SeqCst);
         return;
     }
@@ -113,7 +111,7 @@ pub fn try_update(self_updating: Arc<AtomicBool>, need_restart: Arc<AtomicBool>)
 
     let try_run_ret = try_run_agent(SELF_UPDATE_PATH, UPDATE_FILE_UNZIP_DIR, AGENT_FILENAME);
     if let Err(e) = try_run_ret {
-        warn!("try run agent failed: {}, ignore this update", e);
+        warn!("try run agent failed: {:#}, ignore this update", e);
         self_updating.store(false, Ordering::SeqCst);
         return;
     }
@@ -125,7 +123,7 @@ pub fn try_update(self_updating: Arc<AtomicBool>, need_restart: Arc<AtomicBool>)
     let update_script_ret =
         run_self_update_script(SELF_UPDATE_PATH, UPDATE_FILE_UNZIP_DIR, SELF_UPDATE_SCRIPT);
     if let Err(e) = update_script_ret {
-        warn!("run self update script failed: {}", e);
+        warn!("run self update script failed: {:#}", e);
         self_updating.store(false, Ordering::SeqCst);
         return;
     }
@@ -133,12 +131,11 @@ pub fn try_update(self_updating: Arc<AtomicBool>, need_restart: Arc<AtomicBool>)
     need_restart.store(true, Ordering::SeqCst);
 }
 
-fn check_update(rt: &mut Runtime, adapter: &InvokeAdapter) -> Result<CheckUpdateResponse> {
-    let req_fut = adapter.check_update();
-    rt.block_on(req_fut)
+fn check_update(rt: &Runtime) -> Result<CheckUpdateResponse> {
+    rt.block_on(InvokeAdapter::check_update())
 }
 
-fn download_file(rt: &mut Runtime, url: &str, path: &str, filename: &str) -> Result<Bytes> {
+fn download_file(rt: &Runtime, url: &str, path: &str, filename: &str) -> Result<Bytes> {
     create_dir_all(&path).context(format!("path `{}` create failed", path))?;
 
     let filepath = format!("{}/{}", path, filename);
@@ -203,10 +200,7 @@ fn batch_set_execute_permission(_: &str, _: &str, _: &str, _: &str) -> io::Resul
 
 #[cfg(unix)]
 fn set_execute_permission(abs_filename: &str) -> io::Result<()> {
-    set_permissions(
-        abs_filename,
-        Permissions::from_mode(FILE_EXECUTE_PERMISSION_MODE),
-    )
+    set_permissions(abs_filename, Permissions::from_mode(EXEC_MODE))
 }
 
 fn try_run_agent(path: &str, unzip_dir: &str, agent_filename: &str) -> Result<String> {

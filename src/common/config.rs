@@ -1,4 +1,4 @@
-use crate::common::utils::update_file_permission;
+use crate::common::update_file_permission;
 
 use std::fs::{self, File};
 use std::io::{ErrorKind, Read, Write};

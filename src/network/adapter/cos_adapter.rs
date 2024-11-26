@@ -3,7 +3,7 @@ use std::convert::TryInto;
 use std::iter::IntoIterator;
 use std::str;
 
-use anyhow::{anyhow, Result};
+use anyhow::{bail, Result};
 use chrono::{Local, Utc};
 use hmac::{Hmac, Mac};
 use log::info;
@@ -40,7 +40,7 @@ impl<'a> COSAdapter<'a> {
 
     pub async fn put_object_from_file(
         &self,
-        file: &str,
+        file: File,
         object_name: &str,
         headers: Option<HashMap<String, String>>,
     ) -> Result<()> {
@@ -50,10 +50,7 @@ impl<'a> COSAdapter<'a> {
         headers.insert(HOST, self.host.parse()?);
         headers.insert(DATE, date().parse()?);
         headers.insert(CONTENT_TYPE, "application/xml".parse()?);
-        headers.insert(
-            CONTENT_LENGTH,
-            File::open(file).await?.metadata().await?.len().into(),
-        );
+        headers.insert(CONTENT_LENGTH, file.metadata().await?.len().into());
         let authorization = cos_sign(
             "PUT",
             &self.secret_id,
@@ -66,7 +63,7 @@ impl<'a> COSAdapter<'a> {
         headers.insert("x-cos-security-token", self.token.parse()?);
         info!("{}", authorization);
 
-        let body = Body::from(File::open(file).await?);
+        let body = Body::from(file);
         let resp = self
             .client
             .put(&format!("{}{}", self.endpoint, object_name))
@@ -75,11 +72,10 @@ impl<'a> COSAdapter<'a> {
             .send()
             .await?;
 
-        if resp.status().is_success() {
-            Ok(())
-        } else {
-            Err(anyhow!("can not put object, status code {}", resp.status()))
+        if !resp.status().is_success() {
+            bail!("can not put object, status code {}", resp.status());
         }
+        Ok(())
     }
 }
 

@@ -78,14 +78,14 @@ mod unix {
         copy_to_cstring_field(&mut new_entry.ut_host, "orcaterm");
 
         unsafe { setutxent() };
-        if unsafe { pututxline(&new_entry as *const _) }.is_null() {
+        if unsafe { pututxline(&raw const new_entry) }.is_null() {
             unsafe { endutxent() };
             return;
         }
         unsafe { endutxent() };
 
         let wtmp_path = CString::new(_PATH_WTMP).expect("CString::new failed");
-        unsafe { updwtmp(wtmp_path.as_ptr(), &new_entry as *const _) };
+        unsafe { updwtmp(wtmp_path.as_ptr(), &raw const new_entry) };
 
         return;
     }

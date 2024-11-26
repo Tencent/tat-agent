@@ -1,12 +1,12 @@
-use super::gather::Gather;
 use super::handler::{BsonHandler, Handler};
+use super::TSSH;
 use crate::common::evbus::EventBus;
-use crate::conpty::handler::HandlerExt;
-use crate::network::types::ws_msg::{
+use crate::network::{
     CreateFileReq, CreateFileResp, DeleteFileReq, DeleteFileResp, FileExistResp, FileExistsReq,
     FileInfoReq, FileInfoResp, ListPathReq, ListPathResp, PtyBinErrMsg, ReadFileReq, ReadFileResp,
     WriteFileReq, WriteFileResp,
 };
+use crate::tssh::handler::HandlerExt;
 
 use std::fs::{create_dir, create_dir_all, read_dir, File, Metadata};
 use std::io::SeekFrom;
@@ -23,7 +23,7 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 cfg_if::cfg_if! {
     if #[cfg(windows)] {
-        use crate::common::utils::str2wsz;
+        use crate::common::str2wsz;
         use std::os::windows::fs::MetadataExt;
         use winapi::um::winnt::FILE_ATTRIBUTE_HIDDEN;
         use winapi::um::fileapi::{GetDriveTypeW, GetLogicalDrives};
@@ -56,25 +56,25 @@ const WS_MSG_TYPE_PTY_FILE_INFO: &str = "PtyFileInfo";
 pub fn register_file_handlers(event_bus: &Arc<EventBus>) {
     event_bus
         .slot_register(SLOT_PTY_BIN, WS_MSG_TYPE_PTY_CREATE_FILE, move |msg| {
-            Gather::dispatch::<BsonHandler<CreateFileReq>>(msg, true);
+            TSSH::dispatch::<BsonHandler<CreateFileReq>>(msg, true);
         })
         .slot_register(SLOT_PTY_BIN, WS_MSG_TYPE_PTY_DELETE_FILE, move |msg| {
-            Gather::dispatch::<BsonHandler<DeleteFileReq>>(msg, true);
+            TSSH::dispatch::<BsonHandler<DeleteFileReq>>(msg, true);
         })
         .slot_register(SLOT_PTY_BIN, WS_MSG_TYPE_PTY_LIST_PATH, move |msg| {
-            Gather::dispatch::<BsonHandler<ListPathReq>>(msg, true);
+            TSSH::dispatch::<BsonHandler<ListPathReq>>(msg, true);
         })
         .slot_register(SLOT_PTY_BIN, WS_MSG_TYPE_PTY_FILE_EXIST, move |msg| {
-            Gather::dispatch::<BsonHandler<FileExistsReq>>(msg, true);
+            TSSH::dispatch::<BsonHandler<FileExistsReq>>(msg, true);
         })
         .slot_register(SLOT_PTY_BIN, WS_MSG_TYPE_PTY_FILE_INFO, move |msg| {
-            Gather::dispatch::<BsonHandler<FileInfoReq>>(msg, true);
+            TSSH::dispatch::<BsonHandler<FileInfoReq>>(msg, true);
         })
         .slot_register(SLOT_PTY_BIN, WS_MSG_TYPE_PTY_WRITE_FILE, move |msg| {
-            Gather::dispatch::<BsonHandler<WriteFileReq>>(msg, true);
+            TSSH::dispatch::<BsonHandler<WriteFileReq>>(msg, true);
         })
         .slot_register(SLOT_PTY_BIN, WS_MSG_TYPE_PTY_READ_FILE, move |msg| {
-            Gather::dispatch::<BsonHandler<ReadFileReq>>(msg, true);
+            TSSH::dispatch::<BsonHandler<ReadFileReq>>(msg, true);
         });
 }
 

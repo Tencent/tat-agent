@@ -1,7 +1,7 @@
-use super::UTF8_BOM_HEADER;
-use crate::executor::CMD_TYPE_POWERSHELL;
+use crate::common::sysinfo::Uname;
+#[cfg(windows)]
+use crate::executor::windows::{CMD_TYPE_POWERSHELL, UTF8_BOM_HEADER};
 use crate::network::AGENT_VERSION;
-use crate::sysinfo::Uname;
 
 use std::fmt;
 
@@ -135,11 +135,13 @@ pub struct InvocationNormalTask {
 
 impl InvocationNormalTask {
     pub fn decode_command(&self) -> Result<Vec<u8>> {
+        #[allow(unused_mut)] // Windows needs MUT, Unix does not.
         let mut command = STANDARD.decode(&self.command)?;
 
-        // powershell dont support utf8, but support utf8 with bom.
-        // utf8 bom start with 0xEF, 0xBB, 0xBF,
+        #[cfg(windows)]
         if self.command_type == CMD_TYPE_POWERSHELL {
+            // powershell dont support utf8, but support utf8 with bom.
+            // utf8 bom start with 0xEF, 0xBB, 0xBF,
             command.splice(0..0, UTF8_BOM_HEADER);
         }
 
@@ -454,8 +456,8 @@ impl GetCosCredentialRequest {
 #[cfg(test)]
 mod tests {
     #[cfg(windows)]
-    use crate::network::types::UTF8_BOM_HEADER;
-    use crate::network::types::{InvocationNormalTask, ServerRawResponse};
+    use crate::executor::windows::UTF8_BOM_HEADER;
+    use crate::network::{InvocationNormalTask, ServerRawResponse};
 
     #[test]
     fn serialize_agent_request() {
@@ -604,30 +606,27 @@ mod tests {
         assert_eq!(tasks1.decode_command().is_err(), true);
     }
 
-    #[cfg(target_family = "unix")]
+    #[cfg(unix)]
     #[test]
     fn test_encode_log() {
-        use std::fs::remove_file;
-        use std::fs::File;
-        use std::io::Read;
-        use std::process::Command;
+        use std::fs::{remove_file, File};
+        use std::{io::Read, process::Command};
 
-        use crate::network::types::UploadTaskLogRequest;
-        let _cmd = Command::new("time")
+        use crate::network::UploadTaskLogRequest;
+        let _ = Command::new("time")
             .arg("dd")
             .arg("if=/dev/urandom")
-            .arg("of=random-file")
+            .arg("of=/tmp/random-file")
             .arg("bs=1")
             .arg("count=1024")
             .output()
             .expect("failed to generate random binary file");
         // read binary file
-        let mut f = File::open("./random-file").unwrap();
-        let mut buffer = Vec::new();
+        let mut f = File::open("/tmp/random-file").expect("/tmp/random-file not found");
+        let mut buf = Vec::new();
         // read the whole file
-        f.read_to_end(&mut buffer)
-            .expect("failed to read random-file");
-        assert_eq!(remove_file("./random-file").is_ok(), true);
-        let _req = UploadTaskLogRequest::new("invk-123123", 0, buffer, 0);
+        f.read_to_end(&mut buf).expect("random-file read failed");
+        assert_eq!(remove_file("/tmp/random-file").is_ok(), true);
+        let _ = UploadTaskLogRequest::new("invk-123123", 0, buf, 0);
     }
 }

@@ -21,17 +21,11 @@ pub struct winpty_config_s {
 pub type winpty_config_t = winpty_config_s;
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Default)]
 pub struct winpty_s {
     _unused: [u8; 0],
 }
 pub type winpty_t = winpty_s;
-
-impl winpty_t {
-    pub fn new() -> Self {
-        Self { _unused: [] }
-    }
-}
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]

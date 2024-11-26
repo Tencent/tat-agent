@@ -1,5 +1,4 @@
-use crate::common::utils::update_file_permission;
-use crate::common::Opts;
+use crate::common::{update_file_permission, Opts};
 
 use std::fs::{create_dir_all, OpenOptions};
 
@@ -72,7 +71,7 @@ pub struct SnapshortFilter;
 
 impl Filter for SnapshortFilter {
     fn filter(&self, _: &Record) -> Response {
-        use super::utils::cbs_exist;
+        use super::cbs_exist;
         if cbs_exist() {
             Response::Reject
         } else {

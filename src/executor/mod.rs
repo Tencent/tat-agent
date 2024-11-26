@@ -1,25 +1,376 @@
-pub mod proc;
-mod store;
-pub mod thread;
+mod task;
+#[cfg(unix)]
+pub mod unix;
+#[cfg(windows)]
+pub mod windows;
 
-pub const FINISH_RESULT_TERMINATED: &str = "TERMINATED";
-pub const CMD_TYPE_BAT: &str = "BAT";
-pub const CMD_TYPE_SHELL: &str = "SHELL";
-pub const CMD_TYPE_POWERSHELL: &str = "POWERSHELL";
+use self::task::{Task, EXIT_CODE_ERROR, TASK_RESULT_START_FAILED};
+#[cfg(unix)]
+pub use self::unix::{decode_output, init_command, kill_process_group, User};
+#[cfg(windows)]
+pub use self::windows::{decode_output, init_command, kill_process_group, User};
+use crate::common::{evbus::EventBus, get_now_secs, Stopper};
+use crate::network::{ws::SOURCE_WS, Invoke, InvokeAdapter, EVENT_KICK};
+use crate::network::{InvocationCancelTask, InvocationNormalTask};
 
-cfg_if::cfg_if! {
-    if #[cfg(unix)] {
-        pub mod unix;
-        pub use unix::{decode_output, init_cmd, kill_process_group};
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
-        pub const TASK_STORE_PATH: &str = "/tmp/tat_agent/commands/";
-        pub const TASK_LOG_PATH: &str = "/tmp/tat_agent/logs/";
-        pub const FILE_EXECUTE_PERMISSION_MODE: u32 = 0o755;
-    } else if #[cfg(windows)] {
-        pub mod windows;
-        pub use windows::{decode_output, init_powershell_cmd as init_cmd, kill_process_group};
+use log::{error, info};
+use tokio::{runtime::Runtime, sync::Mutex, time::sleep};
 
-        pub const TASK_STORE_PATH: &str = "C:\\Program Files\\qcloud\\tat_agent\\tmp\\commands\\";
-        pub const TASK_LOG_PATH: &str = "C:\\Program Files\\qcloud\\tat_agent\\tmp\\logs\\";
+pub fn run(dispatcher: &Arc<EventBus>, stop_counter: &Arc<AtomicU64>) {
+    let runtime = Runtime::new().expect("executor-runtime build failed");
+    let exc = Arc::new(Executor::new(stop_counter.clone()));
+
+    dispatcher.register(EVENT_KICK, move |source| {
+        runtime.spawn({
+            let exc = exc.clone();
+            let source = String::from_utf8_lossy(&source).to_string();
+            async move { exc.process::<InvokeAdapter>(&source).await }
+        });
+    });
+}
+
+struct Executor {
+    running: Mutex<HashMap<String, Stopper>>,
+    cache: Mutex<HashSet<String>>,
+    stop_counter: Arc<AtomicU64>,
+}
+
+impl Executor {
+    fn new(stop_counter: Arc<AtomicU64>) -> Self {
+        Self {
+            running: Default::default(),
+            cache: Default::default(),
+            stop_counter,
+        }
+    }
+
+    async fn process<T: Invoke>(self: Arc<Self>, source: &str) {
+        info!("executor start processing dispatch from: {}", source);
+        let max_retry = if source == SOURCE_WS { 3 } else { 1 };
+        for _ in 0..max_retry {
+            let resp = match T::describe_tasks().await {
+                Ok(resp) => resp,
+                Err(e) => return error!("describe task failed: {e:#}"),
+            };
+            info!("describe task success: {:?}", resp);
+
+            let mut found_new = false;
+            for task in resp.invocation_normal_task_set {
+                found_new |= self.clone().execute::<T>(task).await;
+            }
+            for cancel in resp.invocation_cancel_task_set {
+                found_new |= self.cancel(cancel).await;
+            }
+
+            if found_new {
+                break;
+            }
+            sleep(Duration::from_millis(500)).await;
+        }
+    }
+
+    async fn execute<T: Invoke>(self: Arc<Self>, task: InvocationNormalTask) -> bool {
+        let id = task.invocation_task_id.clone();
+        if self.cache.lock().await.replace(id.clone()).is_some() {
+            return false;
+        }
+
+        self.stop_counter.fetch_add(1, Ordering::SeqCst);
+        tokio::spawn(async move {
+            info!("task `{id}` execute begin");
+            if let Err(e) = T::report_task_start(&id, get_now_secs()).await {
+                error!("task `{id}` report_task_start error: {e:#}");
+                self.stop_counter.fetch_sub(1, Ordering::SeqCst);
+                self.cache.lock().await.remove(&id); // id is not cached if report_task_start fails
+                return;
+            }
+            if let Err(e) = Task::start::<T>(task, &self).await {
+                info!("task `{id}` start failed: {e:#}");
+                let r = TASK_RESULT_START_FAILED;
+                let e = format!("{e:#}");
+                let code = EXIT_CODE_ERROR;
+                let time = get_now_secs();
+                if let Err(e) = T::report_task_finish(&id, r, &e, code, 0, time, "", "", 0).await {
+                    error!("task `{id}` report_task_finish error: {e:#}")
+                }
+            };
+            self.stop_counter.fetch_sub(1, Ordering::SeqCst);
+            sleep(Duration::from_secs(120)).await; // cache the id
+            self.cache.lock().await.remove(&id);
+        });
+        true
+    }
+
+    async fn cancel(&self, cancel: InvocationCancelTask) -> bool {
+        let Some(stopper) = self.running.lock().await.remove(&cancel.invocation_task_id) else {
+            return false;
+        };
+        info!("task `{}` cancel begin", &cancel.invocation_task_id);
+        stopper.stop().await;
+        true
+    }
+}
+
+#[cfg(test)]
+pub mod test {
+    use super::{task::*, *};
+    use crate::{common::*, network::*, EXE_DIR};
+
+    use std::iter::repeat_n;
+    use std::sync::Arc;
+
+    use anyhow::{bail, Result};
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use logger::init_test_log;
+
+    #[cfg(unix)]
+    const SLEEP: &str = "sleep";
+    #[cfg(unix)]
+    const ECHO: &str = "echo -n";
+    #[cfg(windows)]
+    const SLEEP: &str = "Start-Sleep -s";
+    #[cfg(windows)]
+    const ECHO: &str = "Write-Host -NoNewline";
+
+    pub fn new_task(cmd: &str) -> InvocationNormalTask {
+        #[cfg(unix)]
+        let command_type = "SHELL";
+        #[cfg(windows)]
+        let command_type = "POWERSHELL";
+        InvocationNormalTask {
+            invocation_task_id: format!("invt-{}", gen_rand_str_with(10)),
+            time_out: 60,
+            command: STANDARD.encode(&cmd),
+            command_type: command_type.to_string(),
+            username: get_current_username(),
+            working_directory: EXE_DIR.display().to_string(),
+            cos_bucket_url: "".to_string(),
+            cos_bucket_prefix: "".to_string(),
+        }
+    }
+
+    macro_rules! impl_invoke {
+        ($type:ty, $closure:expr) => {
+            impl Invoke for $type {
+                async fn call_invoke_api<T, R>(_: &str, _: &str, _: T, _: u64) -> Result<R> {
+                    unreachable!()
+                }
+                async fn report_task_start(_: &str, _: u64) -> Result<ReportTaskStartResponse> {
+                    Ok(ReportTaskStartResponse {})
+                }
+                async fn report_task_finish(
+                    _: &str,
+                    result: &str,
+                    _: &str,
+                    exit_code: i32,
+                    final_log_index: u32,
+                    _: u64,
+                    _: &str,
+                    _: &str,
+                    dropped: u64,
+                ) -> Result<ReportTaskFinishResponse> {
+                    let closure = $closure;
+                    closure(result, exit_code, final_log_index, dropped)
+                }
+                async fn upload_task_log(
+                    _: &str,
+                    _: u32,
+                    _: Vec<u8>,
+                    _: u64,
+                ) -> Result<UploadTaskLogResponse> {
+                    Ok(UploadTaskLogResponse {})
+                }
+            }
+        };
+    }
+
+    #[tokio::test]
+    async fn test_report_task_start_error() {
+        struct ReportTaskStartError;
+        impl Invoke for ReportTaskStartError {
+            async fn call_invoke_api<T, R>(_: &str, _: &str, _: T, _: u64) -> Result<R> {
+                unreachable!()
+            }
+            async fn report_task_start(_: &str, _: u64) -> Result<ReportTaskStartResponse> {
+                bail!("mock report_task_start error")
+            }
+        }
+
+        let exc = Arc::new(Executor::new(Default::default()));
+        let task = new_task("");
+        let found_new = exc.clone().execute::<ReportTaskStartError>(task).await;
+        assert!(found_new);
+        sleep(Duration::from_secs(1)).await;
+        assert_eq!(exc.cache.lock().await.len(), 0); // id is not cached if report_task_start fails
+    }
+
+    #[tokio::test]
+    async fn test_report_task_finish_error() {
+        struct ReportTaskFinishError;
+        impl_invoke!(ReportTaskFinishError, |_, _, _, _| bail!(""));
+
+        let exc = Arc::new(Executor::new(Default::default()));
+        let task = new_task("");
+        let found_new = exc.clone().execute::<ReportTaskFinishError>(task).await;
+        assert!(found_new);
+        sleep(Duration::from_secs(1)).await;
+        assert_eq!(exc.cache.lock().await.len(), 1); // id is cached if report_task_start success
+    }
+
+    #[tokio::test]
+    async fn test_start_failed() {
+        struct DoNothing;
+        impl_invoke!(DoNothing, |_, _, _, _| Ok(ReportTaskFinishResponse {}));
+        let exc = Arc::new(Executor::new(Default::default()));
+
+        let mut task = new_task("");
+        task.command_type = "NOT_EXIST_TYPE".to_string();
+        let res = Task::start::<DoNothing>(task, &exc).await;
+        assert!(res.is_err());
+
+        let mut task = new_task("");
+        task.username = "NOT_EXIST_USERNAME".to_string();
+        let res = Task::start::<DoNothing>(task, &exc).await;
+        assert!(res.is_err());
+
+        let mut task = new_task("");
+        task.working_directory = "NOT_EXIST_WORKDIR".to_string();
+        let res = Task::start::<DoNothing>(task, &exc).await;
+        assert!(res.is_err());
+
+        let mut task = new_task("");
+        task.command = "NOT_BASE64_CMD".to_string();
+        let res = Task::start::<DoNothing>(task, &exc).await;
+        assert!(res.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_success() {
+        struct Success;
+        impl_invoke!(Success, |result, exit_code, _, _| {
+            assert_eq!(result, "SUCCESS");
+            assert_eq!(exit_code, 0);
+            Ok(ReportTaskFinishResponse {})
+        });
+        let exc = Arc::new(Executor::new(Default::default()));
+        let task = new_task("exit 0");
+        let res = Task::start::<Success>(task, &exc).await;
+        assert!(res.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_failed() {
+        struct Failed;
+        impl_invoke!(Failed, |result, exit_code, _, _| {
+            assert_eq!(result, "FAILED");
+            assert_eq!(exit_code, 1);
+            Ok(ReportTaskFinishResponse {})
+        });
+        let exc = Arc::new(Executor::new(Default::default()));
+        let task = new_task("exit 1");
+        let res = Task::start::<Failed>(task, &exc).await;
+        assert!(res.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_timeout() {
+        struct Timeout;
+        impl_invoke!(Timeout, |result, exit_code, _, _| {
+            assert_eq!(result, "TIMEOUT");
+            assert_eq!(exit_code, -1);
+            Ok(ReportTaskFinishResponse {})
+        });
+        let exc = Arc::new(Executor::new(Default::default()));
+        let exc_clone = exc.clone();
+        let mut task = new_task(&format!("{SLEEP} 10"));
+        task.time_out = 1;
+        let jh = tokio::spawn(async move { Task::start::<Timeout>(task, &exc_clone).await });
+        sleep(Duration::from_secs(1)).await;
+        let res = jh.await;
+        assert!(res.is_ok()); // no panic
+        assert!(res.unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_cancel() {
+        struct Cancel;
+        impl_invoke!(Cancel, |result, exit_code, _, _| {
+            assert_eq!(result, "TERMINATED");
+            assert_eq!(exit_code, -1);
+            Ok(ReportTaskFinishResponse {})
+        });
+        let exc = Arc::new(Executor::new(Default::default()));
+        let exc_clone = exc.clone();
+        let task = new_task(&format!("{SLEEP} 10"));
+        let cancel = InvocationCancelTask {
+            invocation_task_id: task.invocation_task_id.clone(),
+        };
+        let jh = tokio::spawn(async move { Task::start::<Cancel>(task, &exc_clone).await });
+        sleep(Duration::from_secs(1)).await;
+        assert_eq!(exc.running.lock().await.len(), 1);
+        let found_new = exc.cancel(cancel).await;
+        assert!(found_new);
+        let res = jh.await;
+        assert!(res.is_ok()); // no panic
+        assert!(res.unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_output() {
+        struct Output;
+        impl_invoke!(Output, |_, _, idx, dropped| {
+            assert_eq!(idx, 2);
+            assert_eq!(dropped, 0);
+            Ok(ReportTaskFinishResponse {})
+        });
+
+        let exc = Arc::new(Executor::new(Default::default()));
+        let task = new_task(&format!("{ECHO} 1\n{SLEEP} 2\n{ECHO} 2"));
+        let res = Task::start::<Output>(task, &exc).await;
+        assert!(res.is_ok());
+
+        let long_output = repeat_n('x', MAX_SINGLE_REPORT_BYTES * 2).collect::<String>();
+        let task = new_task(&format!("{ECHO} {long_output}"));
+        let res = Task::start::<Output>(task, &exc).await;
+        assert!(res.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_full_and_dropped() {
+        init_test_log();
+        struct Full;
+        impl_invoke!(Full, |_, _, idx, dropped| {
+            assert_eq!(
+                idx as u64,
+                MAX_REPORT_BYTES.div_ceil(MAX_SINGLE_REPORT_BYTES as u64)
+            );
+            assert_eq!(dropped, 0);
+            Ok(ReportTaskFinishResponse {})
+        });
+        let exc = Arc::new(Executor::new(Default::default()));
+        let long_output = repeat_n('x', MAX_REPORT_BYTES as usize).collect::<String>();
+        let task = new_task(&format!("{ECHO} {long_output}"));
+        let res = Task::start::<Full>(task, &exc).await;
+        assert!(res.is_ok());
+
+        struct Dropped;
+        impl_invoke!(Dropped, |_, _, idx, dropped| {
+            assert_eq!(
+                idx as u64,
+                MAX_REPORT_BYTES.div_ceil(MAX_SINGLE_REPORT_BYTES as u64) + 1
+            );
+            assert_eq!(dropped, 1);
+            Ok(ReportTaskFinishResponse {})
+        });
+        let exc = Arc::new(Executor::new(Default::default()));
+        let long_output = repeat_n('x', MAX_REPORT_BYTES as usize + 1).collect::<String>();
+        let task = new_task(&format!("{ECHO} {long_output}"));
+        let res = Task::start::<Dropped>(task, &exc).await;
+        assert!(res.is_ok());
     }
 }

@@ -1,3 +1,6 @@
+use super::{build_extra_headers, urls::get_ws_url};
+use crate::common::{evbus::EventBus, Opts};
+
 use std::cmp::min;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
 use std::sync::Arc;
@@ -19,17 +22,16 @@ use tokio_tungstenite::tungstenite::Error;
 use tokio_tungstenite::tungstenite::Message::{self, *};
 use tokio_tungstenite::{accept_async, connect_async};
 
-use super::{build_extra_headers, urls::get_ws_url};
-use crate::common::{evbus::EventBus, Opts};
-
-use super::types::ws_msg::{WS_MSG_TYPE_CHECK_UPDATE, WS_MSG_TYPE_KICK};
-use crate::conpty::{WS_BIN_MSG, WS_TXT_MSG};
+use super::{EVENT_CHECK_UPDATE, EVENT_KICK};
+use crate::tssh::{WS_BIN_MSG, WS_TXT_MSG};
 const WS_PASSIVE_CLOSE: &str = "cli_passive_close";
 const WS_ACTIVE_CLOSE: &str = "cli_active_close";
 const MAX_PING_FROM_LAST_PONG: usize = 3;
 const BASE_DELAY: u64 = 8;
 const MIN_DELAY: u64 = 3;
 const MAX_DELAY: u64 = 512;
+const SOURCE_START: &str = "start";
+pub const SOURCE_WS: &str = "ws";
 
 type WsRes = Result<Message, Error>;
 
@@ -66,7 +68,7 @@ async fn work_as_client(event_bus: &Arc<EventBus>) -> Result<(), Error> {
     info!("ws: connection established");
     let (sink, stream) = ws_stream.split();
 
-    ctx.event_bus.dispatch(WS_MSG_TYPE_KICK, Vec::from("ws"));
+    ctx.event_bus.dispatch(EVENT_KICK, Vec::from(SOURCE_START));
     let select = stream_select!(
         ctx.receiver.take().unwrap().boxed(),
         ctx.ping_check().boxed(),
@@ -75,7 +77,7 @@ async fn work_as_client(event_bus: &Arc<EventBus>) -> Result<(), Error> {
     let _ = select
         .forward(sink)
         .await
-        .inspect_err(|e| error!("ws: connection ended with error, {e}"));
+        .inspect_err(|e| error!("ws: connection ended with error: {e}"));
     Ok(())
 }
 
@@ -98,7 +100,7 @@ async fn work_as_server(event_bus: &Arc<EventBus>) {
         let _ = select
             .forward(sink)
             .await
-            .inspect_err(|e| error!("ws server: connection ended with error, {e}"));
+            .inspect_err(|e| error!("ws server: connection ended with error: {e}"));
     }
 }
 
@@ -138,7 +140,7 @@ impl WsContext {
             receiver: Some(UnboundedReceiverStream::new(rx)),
             ping_cnt_from_last_pong: AtomicUsize::new(0),
             close_sent: AtomicBool::new(false),
-            event_bus: event_bus.clone(),
+            event_bus,
         }
     }
 
@@ -173,9 +175,9 @@ impl WsContext {
         let Some(Some(msg_type)) = json.get("Type").map(Value::as_str) else {
             return;
         };
-        if matches!(msg_type, WS_MSG_TYPE_KICK | WS_MSG_TYPE_CHECK_UPDATE) {
+        if matches!(msg_type, EVENT_KICK | EVENT_CHECK_UPDATE) {
             info!("ws: receive `{msg_type}`");
-            msg = "ws";
+            msg = SOURCE_WS;
         }
         self.event_bus.dispatch(msg_type, Vec::from(msg));
     }

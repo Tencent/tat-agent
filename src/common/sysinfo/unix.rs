@@ -1,4 +1,5 @@
-use crate::sysinfo::Uname;
+use super::Uname;
+
 use std::ffi::CStr;
 use std::io;
 
