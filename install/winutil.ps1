@@ -52,10 +52,6 @@ function Install-Service() {
         sc.exe create tatsvc binPath= $agentPath start= auto
         sc.exe failure tatsvc actions= restart/1000 reset= -1
     }
-    else {
-        sc.exe config tatsvc obj= LocalSystem
-        net user TAT-AGENT /delete
-    }
 }
 
 Install-Files;

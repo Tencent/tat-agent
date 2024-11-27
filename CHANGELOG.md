@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.2] - 2024-11-27
+
+### Changed
+
+- Remove unused net user commands in winutil.ps1.
+
 ## [1.1.1] - 2024-11-25
 
 ### Changed
