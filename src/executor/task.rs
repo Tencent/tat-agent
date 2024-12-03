@@ -6,7 +6,8 @@ use crate::network::{COSAdapter, InvocationNormalTask, Invoke, MetadataAdapter};
 use crate::EXE_DIR;
 
 use std::fmt::{self, Display};
-use std::{cmp::min, mem::take, sync::Arc, time::Duration};
+use std::mem::{swap, take};
+use std::{cmp::min, sync::Arc, time::Duration};
 use std::{path::PathBuf, process::ExitStatus};
 
 use anyhow::{bail, Context, Result};
@@ -212,7 +213,7 @@ impl Task {
     async fn on_finish<T: Invoke>(&mut self, status: ExitStatus) {
         let tid = &self.info.task_id;
         let pid = self.status.pid.unwrap();
-        let idx = self.output.idx;
+        let idx = self.output.idx.unwrap_or_default();
         let drp = self.output.dropped();
         info!("=>on_finish: task:{tid}, pid:{pid}, idx:{idx}, dropped:{drp}");
         self.status.finish(status);
@@ -332,7 +333,7 @@ impl TaskStatus {
 struct TaskOutput {
     buffer: Vec<u8>,
     total: u64,
-    idx: u32,
+    idx: Option<u32>,
 }
 
 impl TaskOutput {
@@ -351,18 +352,25 @@ impl TaskOutput {
     }
 
     fn bytes_to_report(&mut self) -> Vec<Vec<u8>> {
-        let v = take(&mut self.buffer);
-        if v.len() < MAX_SINGLE_REPORT_BYTES {
+        let mut v = Vec::with_capacity(self.buffer.capacity());
+        swap(&mut self.buffer, &mut v);
+        if v.len() <= MAX_SINGLE_REPORT_BYTES {
             return vec![v];
         }
-        let chunks = v.chunks_exact(MAX_SINGLE_REPORT_BYTES);
-        self.buffer = chunks.remainder().to_vec();
-        chunks.map(|v| v.to_vec()).collect()
+        // like chunks_exact(), but without clone
+        let mut output = Vec::new();
+        while v.len() >= MAX_SINGLE_REPORT_BYTES {
+            let remain = v.split_off(MAX_SINGLE_REPORT_BYTES);
+            output.push(take(&mut v));
+            v = remain
+        }
+        self.buffer.append(&mut v);
+        output
     }
 
     fn idx(&mut self) -> u32 {
-        let i = self.idx;
-        self.idx += 1;
+        let i = self.idx.map(|i| i + 1).unwrap_or_default();
+        self.idx = Some(i);
         i
     }
 
@@ -564,25 +572,32 @@ mod test {
         assert_eq!(btr, vec![vec![0; MAX_SINGLE_REPORT_BYTES]]);
         assert_eq!(op.buffer, Vec::<u8>::new());
 
-        let mut op = task_output_with_buffer(vec![0; MAX_SINGLE_REPORT_BYTES + 2]);
+        let mut op = task_output_with_buffer(vec![0; MAX_SINGLE_REPORT_BYTES + 1]);
         let btr = op.bytes_to_report();
         assert_eq!(btr, vec![vec![0; MAX_SINGLE_REPORT_BYTES]]);
-        assert_eq!(op.buffer, vec![0; 2]);
+        assert_eq!(op.buffer, vec![0]);
 
-        let mut op = task_output_with_buffer(vec![0; MAX_SINGLE_REPORT_BYTES * 2 + 2]);
+        let mut op = task_output_with_buffer(vec![0; MAX_SINGLE_REPORT_BYTES * 2]);
         let btr = op.bytes_to_report();
         assert_eq!(btr, vec![vec![0; MAX_SINGLE_REPORT_BYTES]; 2]);
-        assert_eq!(op.buffer, vec![0; 2]);
+        assert_eq!(op.buffer, Vec::<u8>::new());
+
+        let mut op = task_output_with_buffer(vec![0; MAX_SINGLE_REPORT_BYTES * 2 + 1]);
+        let btr = op.bytes_to_report();
+        assert_eq!(btr, vec![vec![0; MAX_SINGLE_REPORT_BYTES]; 2]);
+        assert_eq!(op.buffer, vec![0]);
     }
 
     #[test]
     fn test_idx() {
         let mut op = TaskOutput::default();
+        assert_eq!(op.idx.unwrap_or_default(), 0); // set last index to 0 if no report
         assert_eq!(op.idx(), 0);
-        assert_eq!(op.idx, 1);
+        assert_eq!(op.idx.unwrap_or_default(), 0);
         assert_eq!(op.idx(), 1);
-        assert_eq!(op.idx, 2);
+        assert_eq!(op.idx.unwrap_or_default(), 1);
         assert_eq!(op.idx(), 2);
+        assert_eq!(op.idx.unwrap_or_default(), 2);
     }
 
     #[test]

@@ -10,8 +10,8 @@ pub use self::unix::{decode_output, init_command, kill_process_group, User};
 #[cfg(windows)]
 pub use self::windows::{decode_output, init_command, kill_process_group, User};
 use crate::common::{evbus::EventBus, get_now_secs, Stopper};
-use crate::network::{ws::SOURCE_WS, Invoke, InvokeAdapter, EVENT_KICK};
 use crate::network::{InvocationCancelTask, InvocationNormalTask};
+use crate::network::{Invoke, InvokeAdapter, EVENT_KICK};
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -51,26 +51,17 @@ impl Executor {
 
     async fn process<T: Invoke>(self: Arc<Self>, source: &str) {
         info!("executor start processing dispatch from: {}", source);
-        let max_retry = if source == SOURCE_WS { 3 } else { 1 };
-        for _ in 0..max_retry {
-            let resp = match T::describe_tasks().await {
-                Ok(resp) => resp,
-                Err(e) => return error!("describe task failed: {e:#}"),
-            };
-            info!("describe task success: {:?}", resp);
+        let resp = match T::describe_tasks().await {
+            Ok(resp) => resp,
+            Err(e) => return error!("describe task failed: {e:#}"),
+        };
+        info!("describe task success: {:?}", resp);
 
-            let mut found_new = false;
-            for task in resp.invocation_normal_task_set {
-                found_new |= self.clone().execute::<T>(task).await;
-            }
-            for cancel in resp.invocation_cancel_task_set {
-                found_new |= self.cancel(cancel).await;
-            }
-
-            if found_new {
-                break;
-            }
-            sleep(Duration::from_millis(500)).await;
+        for task in resp.invocation_normal_task_set {
+            self.clone().execute::<T>(task).await;
+        }
+        for cancel in resp.invocation_cancel_task_set {
+            self.cancel(cancel).await;
         }
     }
 
@@ -324,7 +315,7 @@ pub mod test {
     async fn test_output() {
         struct Output;
         impl_invoke!(Output, |_, _, idx, dropped| {
-            assert_eq!(idx, 2);
+            assert_eq!(idx, 1);
             assert_eq!(dropped, 0);
             Ok(ReportTaskFinishResponse {})
         });
@@ -347,7 +338,7 @@ pub mod test {
         impl_invoke!(Full, |_, _, idx, dropped| {
             assert_eq!(
                 idx as u64,
-                MAX_REPORT_BYTES.div_ceil(MAX_SINGLE_REPORT_BYTES as u64)
+                MAX_REPORT_BYTES.div_ceil(MAX_SINGLE_REPORT_BYTES as u64) - 1
             );
             assert_eq!(dropped, 0);
             Ok(ReportTaskFinishResponse {})
@@ -362,7 +353,7 @@ pub mod test {
         impl_invoke!(Dropped, |_, _, idx, dropped| {
             assert_eq!(
                 idx as u64,
-                MAX_REPORT_BYTES.div_ceil(MAX_SINGLE_REPORT_BYTES as u64) + 1
+                MAX_REPORT_BYTES.div_ceil(MAX_SINGLE_REPORT_BYTES as u64)
             );
             assert_eq!(dropped, 1);
             Ok(ReportTaskFinishResponse {})

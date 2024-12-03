@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.3] - 2024-12-02
+
+### Changed
+
+- Fix bug with last index count in tasks.
+- Optimize executor buffer performance.
+- Remove redundant retry logic in task fetching.
+
 ## [1.1.2] - 2024-11-27
 
 ### Changed

@@ -99,7 +99,7 @@ pub trait Invoke {
         finish_timestamp: u64,
         output_url: &str,
         output_err_info: &str,
-        _dropped: u64,
+        _dropped: u64, // only for test
     ) -> impl Future<Output = Result<ReportTaskFinishResponse>> + Send {
         async move {
             let req = ReportTaskFinishRequest {
