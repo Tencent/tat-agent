@@ -75,7 +75,7 @@ install() {
     chmod +x ${TAT_AGENT}
     chmod +x ${UTMPX}
     if ! ./${TAT_AGENT} -V; then
-        echo "tat_agent not runnable, exit."
+        echo "tat_agent not runnable, exit." >&2
         exit 1
     fi
 
@@ -90,7 +90,7 @@ install() {
             sed -i 's/\/usr\/local\/qcloud/\/var\/lib\/qcloud/g' tat_agent.service tat_agent_service.conf tat_agent_service uninstall.sh
             sed -i 's/\/usr\/sbin/\/opt\/bin/g' uninstall.sh
         else
-            echo 'Install failed, has no permission, may not root.'
+            echo 'Install failed, has no permission, may not root.' >&2
             exit 1
         fi
     fi
@@ -100,17 +100,23 @@ install() {
 
     if has_systemd; then
         echo "use systemd to manage service"
+        SERVICE_FILE="tat_agent.service"
 
         # Set OOMPolicy for systemd >= v243
         systemd_version=$(systemctl --version | head -n 1 | awk '{print $2}')
         if [ "$systemd_version" -ge 243 ]; then
-            sed -i 's/^# OOMPolicy=/OOMPolicy=/' tat_agent.service
+            sed -i 's/^# OOMPolicy=/OOMPolicy=/' ${SERVICE_FILE}
         fi
 
         SYSTEMD_DIR="/etc/systemd/system/"
-        cp -f tat_agent.service ${SYSTEMD_DIR}
-        systemctl daemon-reload
-        systemctl enable tat_agent.service
+        TARGET_FILE="${SYSTEMD_DIR}${SERVICE_FILE}"
+
+        # Only copy the file and reload systemd configuration if the file doesn't exist or contents differ
+        if [ ! -f "${TARGET_FILE}" ] || ! diff "${SERVICE_FILE}" "${TARGET_FILE}" > /dev/null; then
+            cp -f "${SERVICE_FILE}" "${SYSTEMD_DIR}"
+            systemctl daemon-reload
+        fi
+        systemctl enable "${SERVICE_FILE}"
     elif has_upstart; then
         echo "use upstart(initctl) to manage service"
         cp -f tat_agent_service.conf /etc/init/

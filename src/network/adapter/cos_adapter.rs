@@ -11,7 +11,7 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::header::{AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, DATE, HOST};
 use reqwest::{Body, Client};
 use sha1::{Digest, Sha1};
-use tokio::fs::File;
+use tokio::{fs::File, io::AsyncSeekExt};
 use url::Url;
 use urlencoding::encode;
 
@@ -40,10 +40,11 @@ impl<'a> COSAdapter<'a> {
 
     pub async fn put_object_from_file(
         &self,
-        file: File,
+        mut file: File,
         object_name: &str,
         headers: Option<HashMap<String, String>>,
     ) -> Result<()> {
+        file.rewind().await?;
         let mut headers: HeaderMap = headers
             .and_then(|ref h| h.try_into().ok())
             .unwrap_or_default();

@@ -50,7 +50,7 @@ pub async fn run(event_bus: &Arc<EventBus>) {
 
     let mut retry_count = 0u32;
     loop {
-        match work_as_client(&event_bus).await {
+        match work_as_client(event_bus.clone()).await {
             Ok(_) => retry_count = 0,
             Err(_) => retry_count += 1,
         };
@@ -58,7 +58,7 @@ pub async fn run(event_bus: &Arc<EventBus>) {
     }
 }
 
-async fn work_as_client(event_bus: &Arc<EventBus>) -> Result<(), Error> {
+async fn work_as_client(event_bus: Arc<EventBus>) -> Result<(), Error> {
     info!("ws: start connection...");
     let mut ctx = WsContext::new(event_bus.clone());
     let req = gen_handshake_request().expect("ws: gen_handshake_request failed");
@@ -68,7 +68,11 @@ async fn work_as_client(event_bus: &Arc<EventBus>) -> Result<(), Error> {
     info!("ws: connection established");
     let (sink, stream) = ws_stream.split();
 
-    ctx.event_bus.dispatch(EVENT_KICK, Vec::from(SOURCE_START));
+    tokio::spawn(async move {
+        sleep(Duration::from_secs(2)).await; // avoid record not found
+        event_bus.dispatch(EVENT_KICK, Vec::from(SOURCE_START));
+    });
+
     let select = stream_select!(
         ctx.receiver.take().unwrap().boxed(),
         ctx.ping_check().boxed(),

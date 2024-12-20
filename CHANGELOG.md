@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.4] - 2024-12-23
+
+### Changed
+
+- Execute systemctl daemon-reload only if config changes.
+- Remove unnecessary wmic operations.
+- Fix file seek not reset before uploading output file to COS.
+
 ## [1.1.3] - 2024-12-02
 
 ### Changed

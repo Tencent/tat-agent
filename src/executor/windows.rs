@@ -169,25 +169,14 @@ pub unsafe fn resume_as_user(pid: u32, user: &User) {
 }
 
 pub unsafe fn get_token(username: &str) -> Result<File> {
-    static IS_2008: LazyLock<bool> = LazyLock::new(|| {
-        let output = std::process::Command::new("wmic")
-            .args(&["os", "get", "Caption"])
-            .output()
-            .unwrap();
-        let version = String::from_utf8_lossy(&output.stdout);
-        info!("OS version: {}", version.escape_debug());
-        version.contains("2008")
-    });
-
-    if get_current_username().eq_ignore_ascii_case(username) || *IS_2008 {
-        info!("use current token, user:{}, is_2008:{}", username, *IS_2008);
+    if get_current_username().eq_ignore_ascii_case(username) {
+        info!("use current token, username: {}", username);
         let mut token = 0 as HANDLE;
         if OpenProcessToken(GetCurrentProcess(), TOKEN_ALL_ACCESS, &mut token) == 0 {
             bail!("OpenProcessToken failed: {}", GetLastError());
         }
         return Ok(File::from_raw_handle(token));
     }
-
     create_user_token(username)
 }
 

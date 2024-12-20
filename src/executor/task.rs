@@ -12,7 +12,7 @@ use std::{path::PathBuf, process::ExitStatus};
 
 use anyhow::{bail, Context, Result};
 use log::{error, info};
-use tokio::fs::{create_dir_all, File};
+use tokio::fs::{create_dir_all, File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Notify;
 use tokio::time::{sleep_until, timeout_at, Instant};
@@ -277,7 +277,13 @@ impl TaskInfo {
         let parent = output_file.parent().unwrap();
         create_dir_all(parent).await?;
 
-        let output_file = File::create(output_file).await?;
+        let output_file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(output_file)
+            .await?;
         Ok(output_file)
     }
 
@@ -404,7 +410,7 @@ impl TaskUploadConf {
         let object_name = self.object_name(&invocation_id, task_id);
         let file = self.output_file.take().unwrap();
         if let Err(e) = cli.put_object_from_file(file, &object_name, None).await {
-            error!("pub object to cos failed: {}", e);
+            error!("pub object to cos failed: {e:#}");
             bail!("Upload output to cos failed, please check if {instance_id} has permission to put file to COS");
         }
         Ok(self.output_url(&invocation_id, task_id))
