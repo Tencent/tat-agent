@@ -1,13 +1,12 @@
 use super::{decode_output, kill_process_group, User};
-use crate::common::{cbs_exist, get_now_secs, Stopper};
-use crate::executor::Executor;
+use crate::common::{cbs_exist, get_now_secs};
 use crate::network::urls::get_meta_url;
 use crate::network::{COSAdapter, InvocationNormalTask, Invoke, MetadataAdapter};
 use crate::EXE_DIR;
 
 use std::fmt::{self, Display};
 use std::mem::{swap, take};
-use std::{cmp::min, sync::Arc, time::Duration};
+use std::{cmp::min, future::Future, time::Duration};
 use std::{path::PathBuf, process::ExitStatus};
 
 use anyhow::{bail, Context, Result};
@@ -15,10 +14,8 @@ use log::{error, info};
 use tokio::fs::{create_dir_all, File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Notify;
-use tokio::time::{sleep_until, timeout_at, Instant};
+use tokio::time::{sleep, timeout};
 
-#[cfg(windows)]
-use super::windows::UTF8_BOM_HEADER;
 pub const EXIT_CODE_ERROR: i32 = -1;
 pub const MAX_REPORT_BYTES: u64 = 24 * 1024;
 pub const MAX_SINGLE_REPORT_BYTES: usize = 4 * 1024;
@@ -28,8 +25,9 @@ const TASK_RESULT_TERMINATED: &str = "TERMINATED";
 const TASK_RESULT_FAILED: &str = "FAILED";
 const TASK_RESULT_SUCCESS: &str = "SUCCESS";
 const EXTENSION_LOG: &str = "log";
-const REPORT_INTERVAL_SECS: u64 = 1;
 const BUF_SIZE: usize = 1024;
+const REPORT_INTERVAL: Duration = Duration::from_secs(1);
+const DELAY_AFTER_CHILD_FINISH: Duration = Duration::from_secs(1);
 
 pub struct Task {
     pub info: TaskInfo,
@@ -84,7 +82,7 @@ impl Task {
         Ok(task)
     }
 
-    pub async fn start<T: Invoke>(t: InvocationNormalTask, exc: &Arc<Executor>) -> Result<()> {
+    pub async fn start<T: Invoke>(t: InvocationNormalTask, canceller: impl Future) -> Result<()> {
         let mut task = Task::init(t).await?;
         let (mut child, mut reader) = task.spawn().await.context("TaskSpawnFailed")?;
 
@@ -93,50 +91,25 @@ impl Task {
         task.status.pid = Some(pid);
         info!("task `{tid}` start running, pid: {pid}");
 
-        #[cfg(windows)]
-        let mut utf8_bom_checked = false;
-        let mut buffer = [0u8; BUF_SIZE];
-        let stopper = Stopper::new();
-        let mut terminator = stopper.get_receiver().await.unwrap();
-        exc.running.lock().await.insert(tid.clone(), stopper);
+        let ttl = Duration::from_secs(task.info.timeout);
+        let timer = sleep(ttl);
+        tokio::pin!(timer);
+        tokio::pin!(canceller);
 
         let report_notify = Notify::new();
-        let mut report_deadline = Instant::now() + Duration::from_secs(REPORT_INTERVAL_SECS);
-        let timeout = task.info.timeout;
-        let task_deadline = Instant::now() + Duration::from_secs(timeout);
+        let mut report_notified = Box::pin(timeout(REPORT_INTERVAL, report_notify.notified()));
+        let mut wait_child_delay = Box::pin(async {
+            let _ = child.wait().await;
+            sleep(DELAY_AFTER_CHILD_FINISH).await;
+        });
 
+        let mut buffer = [0u8; BUF_SIZE];
         loop {
             tokio::select! {
-                biased; // report > cancel > timeout > output > finish
-
-                _ = timeout_at(report_deadline, report_notify.notified()) => {
-                    task.on_report::<T>();
-
-                    // if the task output is dropped, it won't report until finished
-                    let dropped = task.output.dropped() > 0;
-                    let interval = dropped.then_some(timeout).unwrap_or(REPORT_INTERVAL_SECS);
-                    report_deadline = Instant::now() + Duration::from_secs(interval);
-                },
-                _ = &mut terminator => {
-                    task.on_cancel();
-                    break;
-                },
-                _ = sleep_until(task_deadline) => {
-                    task.on_timeout();
-                    break;
-                },
                 len = reader.read(&mut buffer) => {
                     let buf = match len {
                         Err(e) => break error!("task `{tid}` read error: {e}, pid: {pid}"),
                         Ok(0) => break info!("task `{tid}` read finished normally, pid: {pid}"),
-                        #[cfg(windows)]
-                        Ok(len) if !utf8_bom_checked => {
-                            utf8_bom_checked = true;
-                            // win2008 check utf8 bom header, start with 0xEF, 0xBB, 0xBF
-                            let contains = buffer.starts_with(&UTF8_BOM_HEADER);
-                            let skip = contains.then_some(UTF8_BOM_HEADER.len()).unwrap_or_default();
-                            &buffer[skip..len]
-                        },
                         Ok(len) => &buffer[..len],
                     };
                     task.on_output(buf).await;
@@ -145,17 +118,32 @@ impl Task {
                         report_notify.notify_one();
                     }
                 },
-                _ = child.wait() => {
+                _ = &mut report_notified => {
+                    task.on_report::<T>();
+
+                    // if the task output is dropped, it won't report until finished
+                    let dropped = task.output.dropped() > 0;
+                    let interval = dropped.then_some(ttl).unwrap_or(REPORT_INTERVAL);
+                    report_notified = Box::pin(timeout(interval, report_notify.notified()));
+                },
+                _ = &mut timer => {
+                    task.on_timeout();
+                    break;
+                },
+                _ = &mut canceller => {
+                    task.on_cancel();
+                    break;
+                },
+                _ = &mut wait_child_delay => {
                     break;
                 },
             }
         }
 
+        drop(wait_child_delay);
         let status = child.wait().await.expect("wait child error");
         task.on_report::<T>(); // report remaining output or dropped bytes
         task.on_finish::<T>(status).await;
-
-        exc.running.lock().await.remove(&tid);
         Ok(())
     }
 

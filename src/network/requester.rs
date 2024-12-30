@@ -62,7 +62,7 @@ impl HttpRequester {
             let resp = rb
                 .send()
                 .await
-                .inspect_err(|e| error!("request error: {}", e))?;
+                .inspect_err(|e| error!("request error: {e:#}"))?;
             return Ok(resp);
         }
 
@@ -70,7 +70,7 @@ impl HttpRequester {
             let rst = rb.try_clone().unwrap().send().await;
             match rst {
                 Ok(resp) => return Ok(resp),
-                Err(e) => warn!("request error: {}, attempt {} of {}", e, i, self.retries),
+                Err(e) => warn!("request error: {:#}, attempt {} of {}", e, i, self.retries),
             }
             tokio::time::sleep(self.interval).await;
         }

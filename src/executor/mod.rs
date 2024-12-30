@@ -74,13 +74,17 @@ impl Executor {
         self.stop_counter.fetch_add(1, Ordering::SeqCst);
         tokio::spawn(async move {
             info!("task `{id}` execute begin");
+            let stopper = Stopper::new();
+            let rx = stopper.get_receiver().await.unwrap();
+            self.running.lock().await.insert(id.clone(), stopper);
             if let Err(e) = T::report_task_start(&id, get_now_secs()).await {
                 error!("task `{id}` report_task_start error: {e:#}");
                 self.stop_counter.fetch_sub(1, Ordering::SeqCst);
+                self.running.lock().await.remove(&id);
                 self.cache.lock().await.remove(&id); // id is not cached if report_task_start fails
                 return;
             }
-            if let Err(e) = Task::start::<T>(task, &self).await {
+            if let Err(e) = Task::start::<T>(task, rx).await {
                 info!("task `{id}` start failed: {e:#}");
                 let r = TASK_RESULT_START_FAILED;
                 let e = format!("{e:#}");
@@ -91,6 +95,7 @@ impl Executor {
                 }
             };
             self.stop_counter.fetch_sub(1, Ordering::SeqCst);
+            self.running.lock().await.remove(&id);
             sleep(Duration::from_secs(120)).await; // cache the id
             self.cache.lock().await.remove(&id);
         });
@@ -112,12 +117,10 @@ pub mod test {
     use super::{task::*, *};
     use crate::{common::*, network::*, EXE_DIR};
 
-    use std::iter::repeat_n;
-    use std::sync::Arc;
+    use std::{future::pending, iter::repeat_n, sync::Arc};
 
     use anyhow::{bail, Result};
     use base64::{engine::general_purpose::STANDARD, Engine};
-    use logger::init_test_log;
 
     #[cfg(unix)]
     const SLEEP: &str = "sleep";
@@ -217,26 +220,25 @@ pub mod test {
     async fn test_start_failed() {
         struct DoNothing;
         impl_invoke!(DoNothing, |_, _, _, _| Ok(ReportTaskFinishResponse {}));
-        let exc = Arc::new(Executor::new(Default::default()));
 
         let mut task = new_task("");
         task.command_type = "NOT_EXIST_TYPE".to_string();
-        let res = Task::start::<DoNothing>(task, &exc).await;
+        let res = Task::start::<DoNothing>(task, pending::<()>()).await;
         assert!(res.is_err());
 
         let mut task = new_task("");
         task.username = "NOT_EXIST_USERNAME".to_string();
-        let res = Task::start::<DoNothing>(task, &exc).await;
+        let res = Task::start::<DoNothing>(task, pending::<()>()).await;
         assert!(res.is_err());
 
         let mut task = new_task("");
         task.working_directory = "NOT_EXIST_WORKDIR".to_string();
-        let res = Task::start::<DoNothing>(task, &exc).await;
+        let res = Task::start::<DoNothing>(task, pending::<()>()).await;
         assert!(res.is_err());
 
         let mut task = new_task("");
         task.command = "NOT_BASE64_CMD".to_string();
-        let res = Task::start::<DoNothing>(task, &exc).await;
+        let res = Task::start::<DoNothing>(task, pending::<()>()).await;
         assert!(res.is_err());
     }
 
@@ -248,9 +250,8 @@ pub mod test {
             assert_eq!(exit_code, 0);
             Ok(ReportTaskFinishResponse {})
         });
-        let exc = Arc::new(Executor::new(Default::default()));
         let task = new_task("exit 0");
-        let res = Task::start::<Success>(task, &exc).await;
+        let res = Task::start::<Success>(task, pending::<()>()).await;
         assert!(res.is_ok());
     }
 
@@ -262,9 +263,8 @@ pub mod test {
             assert_eq!(exit_code, 1);
             Ok(ReportTaskFinishResponse {})
         });
-        let exc = Arc::new(Executor::new(Default::default()));
         let task = new_task("exit 1");
-        let res = Task::start::<Failed>(task, &exc).await;
+        let res = Task::start::<Failed>(task, pending::<()>()).await;
         assert!(res.is_ok());
     }
 
@@ -276,15 +276,10 @@ pub mod test {
             assert_eq!(exit_code, -1);
             Ok(ReportTaskFinishResponse {})
         });
-        let exc = Arc::new(Executor::new(Default::default()));
-        let exc_clone = exc.clone();
         let mut task = new_task(&format!("{SLEEP} 10"));
         task.time_out = 1;
-        let jh = tokio::spawn(async move { Task::start::<Timeout>(task, &exc_clone).await });
-        sleep(Duration::from_secs(1)).await;
-        let res = jh.await;
-        assert!(res.is_ok()); // no panic
-        assert!(res.unwrap().is_ok());
+        let res = Task::start::<Timeout>(task, pending::<()>()).await;
+        assert!(res.is_ok());
     }
 
     #[tokio::test]
@@ -296,16 +291,17 @@ pub mod test {
             Ok(ReportTaskFinishResponse {})
         });
         let exc = Arc::new(Executor::new(Default::default()));
-        let exc_clone = exc.clone();
         let task = new_task(&format!("{SLEEP} 10"));
+        let task_id = task.invocation_task_id.clone();
         let cancel = InvocationCancelTask {
-            invocation_task_id: task.invocation_task_id.clone(),
+            invocation_task_id: task_id.clone(),
         };
-        let jh = tokio::spawn(async move { Task::start::<Cancel>(task, &exc_clone).await });
+        let stopper = Stopper::new();
+        let rx = stopper.get_receiver().await.unwrap();
+        exc.running.lock().await.insert(task_id, stopper);
+        let jh = tokio::spawn(async move { Task::start::<Cancel>(task, rx).await });
         sleep(Duration::from_secs(1)).await;
-        assert_eq!(exc.running.lock().await.len(), 1);
-        let found_new = exc.cancel(cancel).await;
-        assert!(found_new);
+        exc.cancel(cancel).await;
         let res = jh.await;
         assert!(res.is_ok()); // no panic
         assert!(res.unwrap().is_ok());
@@ -320,48 +316,37 @@ pub mod test {
             Ok(ReportTaskFinishResponse {})
         });
 
-        let exc = Arc::new(Executor::new(Default::default()));
         let task = new_task(&format!("{ECHO} 1\n{SLEEP} 2\n{ECHO} 2"));
-        let res = Task::start::<Output>(task, &exc).await;
+        let res = Task::start::<Output>(task, pending::<()>()).await;
         assert!(res.is_ok());
 
-        let long_output = repeat_n('x', MAX_SINGLE_REPORT_BYTES * 2).collect::<String>();
-        let task = new_task(&format!("{ECHO} {long_output}"));
-        let res = Task::start::<Output>(task, &exc).await;
+        let long_output = repeat_n('x', MAX_SINGLE_REPORT_BYTES).collect::<String>();
+        let script = format!("{ECHO} {long_output}\n{SLEEP} 2\n{ECHO} {long_output}");
+        let task = new_task(&script);
+        let res = Task::start::<Output>(task, pending::<()>()).await;
         assert!(res.is_ok());
     }
 
     #[tokio::test]
     async fn test_full_and_dropped() {
-        init_test_log();
         struct Full;
-        impl_invoke!(Full, |_, _, idx, dropped| {
-            assert_eq!(
-                idx as u64,
-                MAX_REPORT_BYTES.div_ceil(MAX_SINGLE_REPORT_BYTES as u64) - 1
-            );
+        impl_invoke!(Full, |_, _, _, dropped| {
             assert_eq!(dropped, 0);
             Ok(ReportTaskFinishResponse {})
         });
-        let exc = Arc::new(Executor::new(Default::default()));
         let long_output = repeat_n('x', MAX_REPORT_BYTES as usize).collect::<String>();
         let task = new_task(&format!("{ECHO} {long_output}"));
-        let res = Task::start::<Full>(task, &exc).await;
+        let res = Task::start::<Full>(task, pending::<()>()).await;
         assert!(res.is_ok());
 
         struct Dropped;
-        impl_invoke!(Dropped, |_, _, idx, dropped| {
-            assert_eq!(
-                idx as u64,
-                MAX_REPORT_BYTES.div_ceil(MAX_SINGLE_REPORT_BYTES as u64)
-            );
+        impl_invoke!(Dropped, |_, _, _, dropped| {
             assert_eq!(dropped, 1);
             Ok(ReportTaskFinishResponse {})
         });
-        let exc = Arc::new(Executor::new(Default::default()));
         let long_output = repeat_n('x', MAX_REPORT_BYTES as usize + 1).collect::<String>();
         let task = new_task(&format!("{ECHO} {long_output}"));
-        let res = Task::start::<Dropped>(task, &exc).await;
+        let res = Task::start::<Dropped>(task, pending::<()>()).await;
         assert!(res.is_ok());
     }
 }

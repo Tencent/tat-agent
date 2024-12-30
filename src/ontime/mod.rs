@@ -35,13 +35,13 @@ pub fn run(dispatcher: &Arc<EventBus>, running_task_num: &Arc<AtomicU64>) {
 
         register_update_handlers(&dispatcher, &self_updating, &need_restart);
         loop {
+            thread::sleep(Duration::from_secs(ONTIME_THREAD_INTERVAL));
             //leakage check
             check_resource_leakage(&mut instant_leak);
             // do self update in a new thread, will not block current thread
             check_ontime_update(&mut instant_update, &self_updating, &need_restart);
             // check running tasks number and need_restart flag to do graceful restart when no running tasks
             check_running_task_num(&mut instant_check_tasks, &need_restart, &running_task_num);
-            thread::sleep(Duration::from_secs(ONTIME_THREAD_INTERVAL));
         }
     });
 }
