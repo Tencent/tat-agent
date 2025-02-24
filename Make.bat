@@ -23,7 +23,6 @@ goto end
     copy /Y winpty\winpty.dll release\win-64\winpty.dll
     copy /Y winpty\winpty-agent.exe release\win-64\winpty-agent.exe
     copy /Y install\*.bat release\win-64\
-    copy /Y install\*.ps1 release\win-64\
     goto end
 
 

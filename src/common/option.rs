@@ -18,6 +18,11 @@ pub struct Opts {
     #[clap(short, long)]
     pub no_daemon: bool,
 
+    /// Do not wait image state complete
+    #[cfg(windows)]
+    #[clap(short, long)]
+    pub ignore_image_state: bool,
+
     #[command(subcommand)]
     pub command: Option<EnumCommands>,
 }

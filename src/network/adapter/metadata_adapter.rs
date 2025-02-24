@@ -28,21 +28,21 @@ impl MetadataAdapter {
         let url = self.url.clone() + INSTANCE_ID_URI;
         Self::get(&url)
             .await
-            .inspect(|id| info!("Metadata instance_id response: {}", id))
+            .inspect(|id| info!("Metadata instance_id response: {}", id.escape_debug()))
             .unwrap_or_default()
     }
 
     pub async fn region(&self) -> Result<String> {
         let url = self.url.clone() + REGION_URI;
         let txt = Self::get(&url).await?;
-        info!("Metadata region response: {}", txt);
+        info!("Metadata region response: {}", txt.escape_debug());
         Ok(txt)
     }
 
     async fn get_role_name(&self) -> Result<String> {
         let url = self.url.clone() + CREDENTIAL_URI;
         let txt = Self::get(&url).await?;
-        info!("Metadata get_role_name response: {}", txt);
+        info!("Metadata get_role_name response: {}", txt.escape_debug());
         Ok(txt)
     }
 
@@ -50,7 +50,7 @@ impl MetadataAdapter {
         let url = self.url.clone() + CREDENTIAL_URI + "/" + role_name;
         let txt = Self::get(&url).await?;
         let obj = from_str::<GetTmpCredentialResponse>(&txt)
-            .inspect_err(|e| error!("failed to parse json response: {}", e))?;
+            .inspect_err(|e| error!("failed to parse json response: {:#}", e))?;
         Ok(obj)
     }
 
@@ -59,10 +59,10 @@ impl MetadataAdapter {
             .timeout(3)
             .send()
             .await
-            .inspect_err(|e| error!("send request error: {}", e))?
+            .inspect_err(|e| error!("send request error: {:#}", e))?
             .text()
             .await
-            .inspect_err(|e| error!("failed to read response: {}", e))?;
+            .inspect_err(|e| error!("failed to read response: {:#}", e))?;
         Ok(resp_text)
     }
 }

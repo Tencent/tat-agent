@@ -21,12 +21,10 @@ use std::time::Duration;
 use log::{error, info};
 use tokio::{runtime::Runtime, sync::Mutex, time::sleep};
 
-pub fn run(dispatcher: &Arc<EventBus>, stop_counter: &Arc<AtomicU64>) {
-    let runtime = Runtime::new().expect("executor-runtime build failed");
-    let exc = Arc::new(Executor::new(stop_counter.clone()));
-
+pub fn run(dispatcher: &Arc<EventBus>, stop_counter: Arc<AtomicU64>, rt: Arc<Runtime>) {
+    let exc = Arc::new(Executor::new(stop_counter));
     dispatcher.register(EVENT_KICK, move |source| {
-        runtime.spawn({
+        rt.spawn({
             let exc = exc.clone();
             let source = String::from_utf8_lossy(&source).to_string();
             async move { exc.process::<InvokeAdapter>(&source).await }
@@ -89,15 +87,17 @@ impl Executor {
                 let r = TASK_RESULT_START_FAILED;
                 let e = format!("{e:#}");
                 let code = EXIT_CODE_ERROR;
-                let time = get_now_secs();
-                if let Err(e) = T::report_task_finish(&id, r, &e, code, 0, time, "", "", 0).await {
+                let ts = get_now_secs();
+                if let Err(e) = T::report_task_finish(&id, r, &e, code, None, ts, "", "", 0).await {
                     error!("task `{id}` report_task_finish error: {e:#}")
                 }
             };
             self.stop_counter.fetch_sub(1, Ordering::SeqCst);
             self.running.lock().await.remove(&id);
-            sleep(Duration::from_secs(120)).await; // cache the id
-            self.cache.lock().await.remove(&id);
+            tokio::spawn(async move {
+                sleep(Duration::from_secs(120)).await; // cache the id
+                self.cache.lock().await.remove(&id);
+            });
         });
         true
     }
@@ -151,9 +151,6 @@ pub mod test {
     macro_rules! impl_invoke {
         ($type:ty, $closure:expr) => {
             impl Invoke for $type {
-                async fn call_invoke_api<T, R>(_: &str, _: &str, _: T, _: u64) -> Result<R> {
-                    unreachable!()
-                }
                 async fn report_task_start(_: &str, _: u64) -> Result<ReportTaskStartResponse> {
                     Ok(ReportTaskStartResponse {})
                 }
@@ -162,7 +159,7 @@ pub mod test {
                     result: &str,
                     _: &str,
                     exit_code: i32,
-                    final_log_index: u32,
+                    final_log_index: Option<u32>,
                     _: u64,
                     _: &str,
                     _: &str,
@@ -187,9 +184,6 @@ pub mod test {
     async fn test_report_task_start_error() {
         struct ReportTaskStartError;
         impl Invoke for ReportTaskStartError {
-            async fn call_invoke_api<T, R>(_: &str, _: &str, _: T, _: u64) -> Result<R> {
-                unreachable!()
-            }
             async fn report_task_start(_: &str, _: u64) -> Result<ReportTaskStartResponse> {
                 bail!("mock report_task_start error")
             }
@@ -311,7 +305,7 @@ pub mod test {
     async fn test_output() {
         struct Output;
         impl_invoke!(Output, |_, _, idx, dropped| {
-            assert_eq!(idx, 1);
+            assert_eq!(idx, Some(1));
             assert_eq!(dropped, 0);
             Ok(ReportTaskFinishResponse {})
         });

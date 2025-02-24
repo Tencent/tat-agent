@@ -7,15 +7,18 @@ pub mod sysinfo;
 
 pub use option::Opts;
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+use std::time::{Duration, UNIX_EPOCH};
 
+use anyhow::Result;
 use rand::{distributions::Alphanumeric, thread_rng, Rng};
 use rsa::pkcs1::{EncodeRsaPrivateKey, EncodeRsaPublicKey};
 use rsa::{pkcs8::LineEnding, RsaPrivateKey, RsaPublicKey};
-use std::time::{Duration, UNIX_EPOCH};
+use tokio::fs::{create_dir_all, File};
 use tokio::sync::oneshot::{self, Receiver, Sender};
-use tokio::sync::Mutex;
-use tokio::time::{sleep_until, Instant};
+use tokio::sync::{Mutex, Notify};
+use tokio::time::sleep;
 
 pub struct Stopper(Mutex<Option<Sender<()>>>, Mutex<Option<Receiver<()>>>);
 
@@ -35,69 +38,42 @@ impl Stopper {
 }
 
 pub struct Timer {
-    last_time: Mutex<Instant>,
-    interval: u64,
+    interval: Duration,
+    refresher: Notify,
     freeze_count: AtomicUsize,
 }
 
 impl Timer {
-    pub fn new(interval: u64) -> Self {
+    pub fn new(interval: Duration) -> Self {
         Self {
-            last_time: Mutex::new(Instant::now()),
             interval,
+            refresher: Notify::new(),
             freeze_count: AtomicUsize::new(0),
         }
     }
 
     pub fn freeze(&self) {
-        self.freeze_count.fetch_add(1, Ordering::SeqCst);
+        self.freeze_count.fetch_add(1, SeqCst);
     }
 
-    pub async fn unfreeze(&self) {
-        self.refresh().await;
-        self.freeze_count.fetch_sub(1, Ordering::SeqCst);
+    pub fn unfreeze(&self) {
+        self.refresh();
+        self.freeze_count.fetch_sub(1, SeqCst);
     }
 
-    pub async fn refresh(&self) {
-        self.refresh_with(Instant::now()).await;
+    pub fn refresh(&self) {
+        self.refresher.notify_one();
     }
 
     pub async fn timeout(&self) {
-        while !self.is_timeout().await {
-            sleep_until(self.may_timeout_at().await).await
+        loop {
+            tokio::select! {
+                _ = self.refresher.notified() => {}, // Continue loop, recreate sleep future
+                _ = sleep(self.interval) => if self.freeze_count.load(SeqCst) == 0 {
+                    break;
+                },
+            }
         }
-    }
-
-    pub async fn is_timeout_refresh(&self, inst: Instant) -> bool {
-        if self.is_timeout_with(inst).await {
-            return true;
-        }
-        self.refresh_with(inst).await;
-        false
-    }
-
-    async fn refresh_with(&self, inst: Instant) {
-        *self.last_time.lock().await = inst;
-    }
-
-    async fn is_timeout_with(&self, inst: Instant) -> bool {
-        if self.freeze_count.load(Ordering::SeqCst) != 0 {
-            self.refresh().await;
-            return false;
-        }
-        inst.elapsed().as_secs() >= self.interval
-    }
-
-    async fn is_timeout(&self) -> bool {
-        self.is_timeout_with(self.last_time().await).await
-    }
-
-    async fn may_timeout_at(&self) -> Instant {
-        self.last_time().await + Duration::from_secs(self.interval)
-    }
-
-    async fn last_time(&self) -> Instant {
-        *self.last_time.lock().await
     }
 }
 
@@ -205,4 +181,26 @@ pub fn update_file_permission(file_path: &str) {
         .arg("Administrators:(F)")
         .arg("/inheritance:r")
         .output();
+}
+
+pub async fn create_file_with_parents(path: impl AsRef<Path>) -> Result<File> {
+    let parent = path.as_ref().parent().unwrap();
+    create_dir_all(parent).await?;
+    Ok(File::create(path).await?)
+}
+
+#[cfg(unix)]
+// recursively set permissions from start to end ancestor
+pub async fn set_permissions_recursively(
+    start: impl AsRef<Path>,
+    end: Option<impl AsRef<Path>>,
+    perm: std::fs::Permissions,
+) -> Result<()> {
+    for p in start.as_ref().ancestors() {
+        if end.is_some() && p == end.as_ref().unwrap().as_ref() {
+            break;
+        }
+        tokio::fs::set_permissions(p, perm.clone()).await?;
+    }
+    Ok(())
 }

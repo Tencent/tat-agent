@@ -18,7 +18,9 @@ pub use self::requester::HttpRequester;
 pub use self::types::http_msg::*;
 pub use self::types::ws_msg::*;
 use crate::common::config::{get_register_info, save_register_info};
-use crate::common::sysinfo::{get_hostname, get_local_ip, Uname};
+use crate::common::sysinfo::{
+    cpu_arch, hostname, kernel_name, kernel_version, local_ip, os_version, uptime_secs,
+};
 use crate::common::{gen_rand_str_with, get_now_secs};
 
 use std::{env, process};
@@ -35,6 +37,10 @@ const VIP_HEADER: &str = "Tat-Vip";
 const PID_HEADER: &str = "Tat-Pid";
 const WS_VERSION_HEADER: &str = "Tat-Version";
 const WS_KERNEL_NAME_HEADER: &str = "Tat-KernelName";
+const WS_KERNEL_VERSION_HEADER: &str = "Tat-KernelVersion";
+const WS_OS_VERSION_HEADER: &str = "Tat-OSVersion";
+const WS_CPU_ARCH_HEADER: &str = "Tat-CPUArch";
+const WS_UPTIME_HEADER: &str = "Tat-UptimeSecs";
 pub const AGENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn mock_enabled() -> bool {
@@ -49,7 +55,7 @@ fn mock_vip() -> String {
     env::var("MOCK_VIP").unwrap_or("192.168.0.1".to_string())
 }
 
-fn build_extra_headers() -> HeaderMap {
+async fn build_extra_headers() -> HeaderMap {
     fn value(s: &str) -> HeaderValue {
         HeaderValue::from_str(s).expect("build head failed")
     }
@@ -57,17 +63,18 @@ fn build_extra_headers() -> HeaderMap {
     let mut headers = HeaderMap::new();
     headers.insert(WS_VERSION_HEADER, HeaderValue::from_static(AGENT_VERSION));
     headers.insert(PID_HEADER, HeaderValue::from(process::id()));
-
-    if let Ok(uname) = Uname::new() {
-        headers.insert(WS_KERNEL_NAME_HEADER, value(&uname.sys_name));
-    }
+    headers.insert(WS_KERNEL_NAME_HEADER, value(&kernel_name()));
+    headers.insert(WS_KERNEL_VERSION_HEADER, value(&kernel_version()));
+    headers.insert(WS_OS_VERSION_HEADER, value(&os_version()));
+    headers.insert(WS_CPU_ARCH_HEADER, value(&cpu_arch()));
+    headers.insert(WS_UPTIME_HEADER, HeaderValue::from(uptime_secs()));
 
     if mock_enabled() {
         headers.insert(VPCID_HEADER, value(&mock_vpcid()));
         headers.insert(VIP_HEADER, value(&mock_vip()));
     }
 
-    let Some(record) = get_register_info() else {
+    let Some(record) = get_register_info().await else {
         return headers;
     };
     let Ok(private_key) = RsaPrivateKey::from_pkcs1_pem(&record.private_key) else {
@@ -98,15 +105,16 @@ fn build_extra_headers() -> HeaderMap {
 #[tokio::main(flavor = "current_thread")]
 pub async fn register(region: &str, register_id: &str, register_value: &str) -> Result<()> {
     let record = InvokeAdapter::register_instance(region, register_id, register_value).await?;
-    save_register_info(record).context("save_register_info failed")
+    save_register_info(record)
+        .await
+        .context("save_register_info failed")
 }
 
-#[tokio::main(flavor = "current_thread")]
 pub async fn check() {
-    if let Some(record) = get_register_info() {
+    if let Some(record) = get_register_info().await {
         info!("find register info, try validate");
-        let local_ip = get_local_ip().expect("get_local_ip failed");
-        let hostname = get_hostname().expect("get_hostname failed");
+        let local_ip = local_ip().expect("get local_ip failed");
+        let hostname = hostname().expect("get hostname failed");
         match InvokeAdapter::validate_instance(&hostname, &local_ip).await {
             Ok(_) => info!("validate_instance success, work as register instance"),
             Err(e) => error!("validate_instance failed: {e:#}, work as normal instance"),

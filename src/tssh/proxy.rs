@@ -1,27 +1,23 @@
-use super::handler::{BsonHandler, Handler};
-use super::session::{PluginCtrl, PluginData};
+use super::handler::{BsonHandler, Handler, HandlerExt};
+use super::session::{Channel, Plugin, PluginComp, PluginCtrl, PluginData, Session};
 use super::TSSH;
 use crate::common::evbus::EventBus;
 use crate::network::{ProxyClose, ProxyData, ProxyNew, ProxyReady, PtyBinBase, PtyBinErrMsg};
-use crate::tssh::handler::HandlerExt;
-use crate::tssh::session::{Channel, Plugin, PluginComp, Session};
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use log::{error, info};
 use serde::Serialize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
-use tokio::sync::Mutex;
-use tokio::time::Instant;
+use tokio::{net::TcpStream, sync::Mutex};
 
 use super::SLOT_PTY_BIN;
 const WS_MSG_TYPE_PTY_PROXY_NEW: &str = "PtyProxyNew";
 const WS_MSG_TYPE_PTY_PROXY_READY: &str = "PtyProxyReady";
 const WS_MSG_TYPE_PTY_PROXY_DATA: &str = "PtyProxyData";
 const WS_MSG_TYPE_PTY_PROXY_CLOSE: &str = "PtyProxyClose";
-const PROXY_REMOVE_INTERVAL: u64 = 60 * 5;
+const PROXY_TTL: Duration = Duration::from_secs(60 * 5); // 5 min
 const PROXY_BUF_SIZE: usize = 2048;
 
 pub fn register_proxy_handlers(event_bus: &Arc<EventBus>) {
@@ -80,7 +76,7 @@ impl Handler for BsonHandler<ProxyNew> {
         let plugin = Plugin {
             component: PluginComp::Proxy(proxy),
             data: req.into(),
-            controller: PluginCtrl::new(PROXY_REMOVE_INTERVAL),
+            controller: PluginCtrl::new(PROXY_TTL),
         };
         let channel = Arc::new(Channel::new(&session_id, &channel_id, plugin));
         let session = match TSSH::get_session(&session_id).await {
@@ -167,7 +163,6 @@ impl Proxy {
         let mut stream = self.stream.lock().await;
         let (mut reader, mut writer) = stream.split();
         let mut proxy_rx = self.rx.lock().await;
-        let mut last_reply = Instant::now();
 
         info!("Proxy `{}` start loop for proxy responses", id);
         loop {
@@ -180,7 +175,6 @@ impl Proxy {
                             data: buffer[..i].to_vec(),
                         };
                         self.post(WS_MSG_TYPE_PTY_PROXY_DATA, data, msg_data).await;
-                        last_reply = Instant::now();
                         size += i;
                         count += 1;
                     }
@@ -193,9 +187,7 @@ impl Proxy {
                         .inspect_err(|err| error!("Proxy `{}` write failed: {}", id, err));
                 },
                 _ = &mut stopper_rx => break info!("Proxy `{}` stopped", id),
-                _ = ctrl.timer.timeout() => if ctrl.timer.is_timeout_refresh(last_reply).await {
-                    break info!("Proxy `{}` timeout", id);
-                },
+                _ = ctrl.timer.timeout() => break info!("Proxy `{}` timeout", id),
             };
         }
 

@@ -1,2 +1,3 @@
-cd /d %~dp0
-powershell -ExecutionPolicy Bypass .\winutil.ps1
+@ECHO OFF
+CD /D %~dp0
+install.bat only_update

@@ -3,12 +3,11 @@ use super::MetadataAdapter;
 use crate::common::config;
 use crate::network::mock_enabled;
 
+use std::net::ToSocketAddrs;
 use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
-use std::sync::{Condvar, LazyLock, Mutex};
-use std::{net::ToSocketAddrs, sync::Arc};
 
 use log::info;
-use tokio::runtime::Builder;
+use tokio::sync::OnceCell;
 use url::Url;
 
 const WS_URL_MOCK: &str = "ws://notify:8086/ws";
@@ -34,17 +33,19 @@ enum UrlType {
 }
 
 impl UrlType {
-    fn get_available_url(&self, region: Option<String>) -> String {
-        self.config_url()
-            .or_else(|| self.mock_url())
-            .unwrap_or_else(|| {
-                let rg = region.or_else(get_register_region).unwrap_or_default();
-                if rg.is_empty() || rg == get_current_region() {
-                    // Prioritize internal network for the same region
-                    return find_available(self.intranet_urls(), dns_resolve);
-                }
-                self.public_url(&rg)
-            })
+    async fn get_available_url(&self, region: Option<String>) -> String {
+        if let Some(url) = self.config_url().await.or_else(|| self.mock_url()) {
+            return url;
+        }
+        let rg = match region {
+            Some(rg) => rg,
+            None => get_register_region().await.unwrap_or_default(),
+        };
+        if rg.is_empty() || rg == get_current_region().await {
+            // Prioritize internal network for the same region
+            return find_available(self.intranet_urls(), dns_resolve);
+        }
+        self.public_url(&rg)
     }
 
     fn intranet_urls(&self) -> &[&str] {
@@ -69,28 +70,28 @@ impl UrlType {
         }
     }
 
-    fn config_url(&self) -> Option<String> {
+    async fn config_url(&self) -> Option<String> {
         match self {
-            Ws => config::get_ws_url(),
-            Invoke => config::get_invoke_url(),
+            Ws => config::get_ws_url().await,
+            Invoke => config::get_invoke_url().await,
         }
     }
 }
 
-pub fn get_ws_url() -> String {
-    let url = Ws.get_available_url(None);
+pub async fn get_ws_url() -> String {
+    let url = Ws.get_available_url(None).await;
     info!("get_ws_url: {}", url);
     url
 }
 
-pub fn get_invoke_url() -> String {
-    let url = Invoke.get_available_url(None);
+pub async fn get_invoke_url() -> String {
+    let url = Invoke.get_available_url(None).await;
     info!("get_invoke_url: {}", url);
     url
 }
 
-pub fn get_register_url(region: &str) -> String {
-    let url = Invoke.get_available_url(Some(region.to_owned()));
+pub async fn get_register_url(region: &str) -> String {
+    let url = Invoke.get_available_url(Some(region.to_owned())).await;
     info!("get_register_url: {}", url);
     return url;
 }
@@ -122,43 +123,20 @@ fn find_available(urls: &[&str], resolver: impl Fn(&str) -> bool) -> String {
     }
 }
 
-fn get_register_region() -> Option<String> {
-    config::get_register_info().map(|info| info.region)
+async fn get_register_region() -> Option<String> {
+    config::get_register_info().await.map(|info| info.region)
 }
 
-fn get_current_region() -> String {
-    static REGION: LazyLock<String> = LazyLock::new(|| {
-        let region: Arc<Mutex<String>> = Arc::new(Mutex::new("".to_string()));
-        let convar: Arc<Condvar> = Arc::new(Condvar::new());
-
-        // Run the following code in a new thread, as it may be called inside or outside the tokio runtime.
-        // Creating a tokio runtime multiple times will result in an error due to multiple runtime creation.
-        std::thread::spawn({
-            let region = region.clone();
-            let convar = convar.clone();
-            move || {
-                *region.lock().expect("lock failed") = Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("register runtime failed")
-                    .block_on(async {
-                        MetadataAdapter::build(&get_meta_url())
-                            .region()
-                            .await
-                            .unwrap_or_default()
-                    });
-
-                convar.notify_one()
-            }
-        });
-
-        let mut guard = region.lock().expect("lock failed");
-        guard = convar.wait(guard).expect("wait failed");
-        guard.clone()
-    });
-
-    info!("=>get_current_region: {}", *REGION);
-    REGION.clone()
+async fn get_current_region() -> &'static str {
+    static REGION: OnceCell<String> = OnceCell::const_new();
+    let rg = REGION
+        .get_or_init(|| async {
+            let ma = MetadataAdapter::build(&get_meta_url());
+            ma.region().await.unwrap_or_default()
+        })
+        .await;
+    info!("=>get_current_region: {}", rg);
+    rg
 }
 
 #[cfg(test)]

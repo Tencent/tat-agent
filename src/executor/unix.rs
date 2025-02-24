@@ -1,17 +1,13 @@
 use super::task::{Task, TaskInfo};
+use crate::common::set_permissions_recursively;
 use crate::EXE_DIR;
 
-use std::collections::HashMap;
-use std::env;
-use std::fs::Permissions;
-use std::io;
-use std::ops::Deref;
-use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::{collections::HashMap, ops::Deref, process::Stdio};
+use std::{env, io};
+use std::{fs::Permissions, os::unix::fs::PermissionsExt, path::Path};
 
 use anyhow::{anyhow, bail, Result};
-use tokio::fs::{read_to_string, set_permissions, try_exists};
+use tokio::fs::{read_to_string, try_exists};
 use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
 use users::get_user_by_name;
@@ -46,13 +42,7 @@ impl TaskInfo {
     // set permissions for path recursively, to make task-xxx.sh available for non-root user.
     pub async fn set_permissions_recursively(&self) -> Result<()> {
         let perm = Permissions::from_mode(EXEC_MODE);
-        for path in PathBuf::from(self.script_path()?).ancestors() {
-            if path == *EXE_DIR {
-                break;
-            }
-            set_permissions(path, perm.clone()).await?;
-        }
-        Ok(())
+        set_permissions_recursively(self.script_path()?, Some(&*EXE_DIR), perm).await
     }
 
     pub async fn check_working_directory(&self) -> Result<()> {

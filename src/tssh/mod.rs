@@ -5,10 +5,9 @@ mod pty;
 mod session;
 
 use self::file::register_file_handlers;
-use self::handler::HandlerExt;
 use self::proxy::register_proxy_handlers;
 use self::pty::register_pty_handlers;
-use self::session::Session;
+use self::{handler::HandlerExt, session::Session};
 use crate::common::evbus::EventBus;
 use crate::network::{PtyBinBase, PtyJsonBase, WsMsg};
 
@@ -20,8 +19,7 @@ use anyhow::{anyhow, Result};
 use leaky_bucket::RateLimiter;
 use log::{error, info};
 use serde::Serialize;
-use tokio::runtime::{Builder, Runtime};
-use tokio::sync::RwLock;
+use tokio::{runtime::Runtime, sync::RwLock};
 
 const WS_MSG_TYPE_PTY_ERROR: &str = "PtyError";
 const WS_MSG_TYPE_PTY_EXEC_CMD: &str = "PtyExecCmd";
@@ -53,23 +51,20 @@ pub struct TSSH {
     sessions: RwLock<HashMap<String, Arc<Session>>>,
     ws_seq_num: AtomicU64,
     limiter: RwLock<RateLimiter>,
-    runtime: Runtime,
+    runtime: Arc<Runtime>,
 }
 
 static TSSH: OnceLock<TSSH> = OnceLock::new();
 
-pub fn run(event_bus: &Arc<EventBus>, running_task_num: &Arc<AtomicU64>) {
+pub fn run(event_bus: &Arc<EventBus>, stop_counter: Arc<AtomicU64>, rt: Arc<Runtime>) {
     TSSH.get_or_init(|| {
         let g = TSSH {
             event_bus: event_bus.clone(),
-            stop_counter: running_task_num.clone(),
-            sessions: RwLock::new(HashMap::default()),
+            stop_counter,
+            sessions: RwLock::new(HashMap::new()),
             ws_seq_num: AtomicU64::new(0),
             limiter: RwLock::new(build_limiter(SIZE_1MB)),
-            runtime: Builder::new_multi_thread()
-                .enable_all()
-                .build()
-                .expect("build pty runtime failed"),
+            runtime: rt,
         };
 
         register_pty_handlers(event_bus);
@@ -112,9 +107,9 @@ impl TSSH {
     pub async fn remove_session(session_id: &str) {
         let op = TSSH::instance().sessions.write().await.remove(session_id);
         if let Some(s) = op {
+            TSSH::instance().stop_counter.fetch_sub(1, SeqCst);
             s.stop().await;
             info!("remove_session: {}", session_id);
-            TSSH::instance().stop_counter.fetch_sub(1, SeqCst);
         }
     }
 

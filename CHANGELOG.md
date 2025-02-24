@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.5] - 2025-02-24
+
+### Changed
+
+- Optimized ontime module check logic & unified async runtime across modules.
+- Implemented automatic error reporting for update failures.
+- Migrated Windows self-update to .bat script (no longer requires PowerShell).
+- Added automatic system drive letter detection for Windows.
+
 ## [1.1.4] - 2024-12-23
 
 ### Changed

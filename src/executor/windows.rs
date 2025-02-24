@@ -1,9 +1,8 @@
 use super::task::{Task, TaskInfo};
-use crate::common::daemonizer::wow64_disable_exc;
 use crate::common::{gen_rand_str_with, get_current_username, str2wsz, wsz2string};
 
 use std::collections::HashMap;
-use std::fs::{exists, File as StdFile, OpenOptions};
+use std::fs::{File as StdFile, OpenOptions};
 use std::os::windows::prelude::{AsRawHandle, FromRawHandle};
 use std::{mem, ptr::null_mut, slice};
 use std::{path::Path, process::Stdio, sync::LazyLock};
@@ -11,7 +10,7 @@ use std::{path::Path, process::Stdio, sync::LazyLock};
 use anyhow::{bail, Context, Result};
 use libc::{c_void, free, malloc, memcpy};
 use log::{error, info};
-use tokio::fs::File;
+use tokio::fs::{try_exists, File};
 use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
 
@@ -91,8 +90,7 @@ impl TaskInfo {
 
     pub async fn check_working_directory(&self) -> Result<()> {
         let dir = &self.working_directory;
-        // Compatible with Windows 32bit
-        match wow64_disable_exc(|| exists(dir)) {
+        match try_exists(dir).await {
             Ok(exist) if exist => Ok(()),
             Ok(_) => bail!("working_directory `{dir}` not exists"),
             Err(e) => bail!("working_directory `{dir}` check failed: `{e}`"),
@@ -409,13 +407,16 @@ pub unsafe fn kill_process_group(pid: u32) {
 }
 
 pub fn decode_output(v: &[u8]) -> Vec<u8> {
-    static CODEPAGE: LazyLock<u16> = LazyLock::new(|| unsafe { GetOEMCP() } as u16);
+    static CODEPAGE: LazyLock<u16> = LazyLock::new(|| {
+        let codepage = unsafe { GetOEMCP() } as u16;
+        info!("CODEPAGE: {codepage}");
+        codepage
+    });
     match std::str::from_utf8(&v) {
         Ok(output) => output.into(),
         Err(_) => codepage_strings::Coding::new(*CODEPAGE)
             .expect("create decoder failed")
-            .decode(&v)
-            .expect("output_string decode failed"),
+            .decode_lossy(&v),
     }
     .into_owned()
     .into_bytes()

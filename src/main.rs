@@ -13,6 +13,7 @@ use std::{path::PathBuf, process::exit};
 
 use log::{error, info};
 use network::register;
+use tokio::runtime::Runtime;
 
 static EXE_DIR: LazyLock<PathBuf> =
     LazyLock::new(|| current_exe().unwrap().parent().unwrap().to_owned());
@@ -25,16 +26,18 @@ fn main() {
 
     daemonize(move || {
         set_panic_handler();
-        //check register info
-        network::check();
 
         let eventbus = Arc::new(EventBus::new());
         let stop_counter = Arc::new(AtomicU64::new(0));
+        let rt = Arc::new(Runtime::new().expect("tokio runtime build failed"));
 
-        executor::run(&eventbus, &stop_counter);
-        ontime::run(&eventbus, &stop_counter);
-        tssh::run(&eventbus, &stop_counter);
-        network::ws::run(&eventbus);
+        //check register info
+        rt.block_on(network::check());
+
+        executor::run(&eventbus, stop_counter.clone(), rt.clone());
+        tssh::run(&eventbus, stop_counter.clone(), rt.clone());
+        ontime::run(&eventbus, stop_counter, &rt);
+        rt.block_on(network::ws::run(&eventbus));
     });
 }
 

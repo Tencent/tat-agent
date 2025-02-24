@@ -1,35 +1,32 @@
 #[cfg(windows)]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     use std::env::{args_os, temp_dir};
-    use std::io::Cursor;
-    use std::process::Command;
+    use std::{fs::remove_dir_all, io::Cursor, process::Command};
 
     let args = args_os().skip(1);
-    let target_dir = temp_dir();
+    let target_dir = temp_dir().join("tat_agent_install");
 
-    let buf = include_bytes!("..\\..\\install\\win-bin.zip");
+    let buf = include_bytes!(r"..\..\install\win-bin.zip");
     zip_extract::extract(Cursor::new(buf), &target_dir, true)?;
 
     // Run install command
     Command::new("sc.exe").args(&["stop", "tatsvc"]).output()?;
 
-    let winutil_path: String = temp_dir()
-        .join("winutil.ps1")
-        .into_os_string()
-        .into_string()
-        .expect("Error: Path parse failed");
-    Command::new("powershell.exe")
-        .args(&["-ExecutionPolicy", "Bypass", &winutil_path])
+    let script = target_dir.join("install.bat");
+    Command::new("cmd.exe")
+        .arg("/C")
+        .arg(script)
+        .arg("only_update")
         .output()?;
 
     if !matches!(args.size_hint(), (_, Some(0))) {
-        Command::new("C:\\Program Files\\QCloud\\tat_agent\\tat_agent.exe")
-            .args(args)
-            .spawn()?;
+        let system_drive = std::env::var("SystemDrive").unwrap_or("C:".to_string());
+        let agent = format!("{system_drive}\\Program Files\\QCloud\\tat_agent\\tat_agent.exe");
+        Command::new(agent).args(args).spawn()?;
     }
 
     Command::new("sc.exe").args(&["start", "tatsvc"]).output()?;
-
+    remove_dir_all(target_dir)?;
     Ok(())
 }
 

@@ -9,6 +9,7 @@ use super::{execute_stream, PtyExecCallback};
 use crate::common::{str2wsz, wsz2string};
 use crate::executor::windows::{anon_pipe, configure_command, kill_process_group, load_envs, User};
 use crate::tssh::{session::PluginComp, PTY_FLAG_ENABLE_BLOCK, PTY_INSPECT_WRITE};
+use crate::EXE_DIR;
 
 use std::ffi::OsStr;
 use std::fs::File as StdFile;
@@ -42,8 +43,6 @@ use winapi::um::winnt::{
     FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_DELETE,
     FILE_SHARE_READ, FILE_SHARE_WRITE, LPWSTR, PVOID,
 };
-
-const DEFAULT_WORK_DIR: &str = "C:\\Program Files\\QCloud\\tat_agent\\";
 
 pub struct Pty {
     pty_ptr: Mutex<Box<winpty_t>>,
@@ -187,7 +186,7 @@ impl PluginComp {
         let user = self.get_user()?;
         let mut work_dir = unsafe { wsz2string(get_cwd(user.token.as_raw_handle()).as_ptr()) };
         if work_dir.trim().is_empty() {
-            work_dir = DEFAULT_WORK_DIR.to_owned();
+            work_dir = EXE_DIR.to_string_lossy().into_owned();
         }
         let (receiver, sender) = unsafe { anon_pipe(true)? };
         configure_command(&mut cmd, &user, &work_dir, sender).await?;

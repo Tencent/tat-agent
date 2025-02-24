@@ -1,5 +1,5 @@
 use super::{decode_output, kill_process_group, User};
-use crate::common::{cbs_exist, get_now_secs};
+use crate::common::{cbs_exist, create_file_with_parents, get_now_secs};
 use crate::network::urls::get_meta_url;
 use crate::network::{COSAdapter, InvocationNormalTask, Invoke, MetadataAdapter};
 use crate::EXE_DIR;
@@ -11,10 +11,10 @@ use std::{path::PathBuf, process::ExitStatus};
 
 use anyhow::{bail, Context, Result};
 use log::{error, info};
-use tokio::fs::{create_dir_all, File, OpenOptions};
+use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::Notify;
 use tokio::time::{sleep, timeout};
+use tokio::{sync::Notify, task::JoinSet};
 
 pub const EXIT_CODE_ERROR: i32 = -1;
 pub const MAX_REPORT_BYTES: u64 = 24 * 1024;
@@ -96,8 +96,11 @@ impl Task {
         tokio::pin!(timer);
         tokio::pin!(canceller);
 
+        let mut report_js = JoinSet::new();
         let report_notify = Notify::new();
         let mut report_notified = Box::pin(timeout(REPORT_INTERVAL, report_notify.notified()));
+
+        // Delay after child wait to avoid losing output
         let mut wait_child_delay = Box::pin(async {
             let _ = child.wait().await;
             sleep(DELAY_AFTER_CHILD_FINISH).await;
@@ -119,7 +122,7 @@ impl Task {
                     }
                 },
                 _ = &mut report_notified => {
-                    task.on_report::<T>();
+                    task.on_report::<T>(&mut report_js) ;
 
                     // if the task output is dropped, it won't report until finished
                     let dropped = task.output.dropped() > 0;
@@ -142,8 +145,8 @@ impl Task {
 
         drop(wait_child_delay);
         let status = child.wait().await.expect("wait child error");
-        task.on_report::<T>(); // report remaining output or dropped bytes
-        task.on_finish::<T>(status).await;
+        task.on_report::<T>(&mut report_js); // report remaining output or dropped bytes
+        task.on_finish::<T>(status, report_js).await;
         Ok(())
     }
 
@@ -155,7 +158,7 @@ impl Task {
         }
     }
 
-    fn on_report<T: Invoke>(&mut self) {
+    fn on_report<T: Invoke>(&mut self, report_js: &mut JoinSet<()>) {
         let dropped = self.output.dropped();
         if self.output.buffer.len() == 0 && dropped == 0 {
             return;
@@ -164,14 +167,14 @@ impl Task {
         for bytes in self.output.bytes_to_report() {
             let tid = self.info.task_id.clone();
             let idx = self.output.idx();
-            tokio::spawn(async move {
+            report_js.spawn(async move {
                 info!(
                     "=>on_report: task:`{tid}`, idx:{idx}, output:{}",
                     String::from_utf8_lossy(&bytes).escape_debug()
                 );
                 if let Err(e) = T::upload_task_log(&tid, idx, bytes, dropped).await {
                     error!("task `{tid}` upload_task_log {idx} failed: {e:#}");
-                };
+                }
             });
         }
     }
@@ -198,12 +201,12 @@ impl Task {
         info!("task `{tid}` killed because of cancel, pid: {pid}");
     }
 
-    async fn on_finish<T: Invoke>(&mut self, status: ExitStatus) {
+    async fn on_finish<T: Invoke>(&mut self, status: ExitStatus, report_js: JoinSet<()>) {
         let tid = &self.info.task_id;
         let pid = self.status.pid.unwrap();
-        let idx = self.output.idx.unwrap_or_default();
+        let idx = self.output.idx;
         let drp = self.output.dropped();
-        info!("=>on_finish: task:{tid}, pid:{pid}, idx:{idx}, dropped:{drp}");
+        info!("=>on_finish: task:{tid}, pid:{pid}, idx:{idx:?}, dropped:{drp}");
         self.status.finish(status);
 
         let rst = self.status.result.as_ref().unwrap().to_string();
@@ -218,6 +221,7 @@ impl Task {
             }
         }
 
+        report_js.join_all().await; // Wait for all upload_task_log to complete before report_task_finish
         match T::report_task_finish(tid, &rst, "", code, idx, time, &url, &err, drp).await {
             Ok(_) => info!("task `{tid}` report_task_finish success"),
             Err(e) => error!("task `{tid}` report_task_finish error: {e:#}"),
@@ -247,11 +251,8 @@ impl TaskInfo {
     }
 
     async fn create_script(&self, content: &[u8]) -> Result<()> {
-        let script = self.script_path()?;
-        let parent = script.parent().unwrap();
-        create_dir_all(parent).await?;
-
-        let mut script = File::create(script).await?;
+        let path = self.script_path()?;
+        let mut script = create_file_with_parents(path).await?;
         script.write_all(content).await?;
 
         #[cfg(unix)]
@@ -261,16 +262,13 @@ impl TaskInfo {
     }
 
     async fn create_output_file(&self) -> Result<File> {
-        let output_file = self.output_file_path()?;
-        let parent = output_file.parent().unwrap();
-        create_dir_all(parent).await?;
-
+        let path = self.output_file_path()?;
         let output_file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(true)
-            .open(output_file)
+            .open(path)
             .await?;
         Ok(output_file)
     }
@@ -382,9 +380,9 @@ struct TaskUploadConf {
 impl TaskUploadConf {
     async fn upload_cos<T: Invoke>(&mut self, task_id: &str) -> Result<String> {
         let metadata_adapter = MetadataAdapter::build(&get_meta_url());
-        let resp = match metadata_adapter.tmp_credential().await {
+        let resp = match T::get_cos_credential(task_id).await {
             Ok(resp) => Ok(resp),
-            Err(_) => T::get_cos_credential(task_id).await,
+            Err(_) => metadata_adapter.tmp_credential().await,
         };
         let credential = resp.context("Get CAM role of instance failed")?;
         let cli = COSAdapter::new(
@@ -585,13 +583,13 @@ mod test {
     #[test]
     fn test_idx() {
         let mut op = TaskOutput::default();
-        assert_eq!(op.idx.unwrap_or_default(), 0); // set last index to 0 if no report
+        assert_eq!(op.idx, None); // set last index to `null` if no report
         assert_eq!(op.idx(), 0);
-        assert_eq!(op.idx.unwrap_or_default(), 0);
+        assert_eq!(op.idx, Some(0));
         assert_eq!(op.idx(), 1);
-        assert_eq!(op.idx.unwrap_or_default(), 1);
+        assert_eq!(op.idx, Some(1));
         assert_eq!(op.idx(), 2);
-        assert_eq!(op.idx.unwrap_or_default(), 2);
+        assert_eq!(op.idx, Some(2));
     }
 
     #[test]

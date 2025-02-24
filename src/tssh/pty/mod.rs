@@ -1,5 +1,5 @@
 use super::handler::{BsonHandler, Handler, HandlerExt, JsonHandler};
-use super::session::{Channel, Plugin, PluginCtrl, PluginData, Session};
+use super::session::{Channel, Plugin, PluginComp, PluginCtrl, PluginData, Session};
 use super::TSSH;
 use crate::common::{evbus::EventBus, get_current_username};
 use crate::executor::{decode_output, init_command, kill_process_group};
@@ -7,28 +7,22 @@ use crate::network::{
     ExecCmdReq, ExecCmdStreamReq, ExecCmdStreamResp, PtyBinBase, PtyBinErrMsg, PtyError, PtyInput,
     PtyJsonBase, PtyMaxRate, PtyOutput, PtyReady, PtyResize, PtyStart, PtyStop,
 };
-use crate::tssh::session::PluginComp;
-use crate::tssh::{WS_MSG_TYPE_PTY_ERROR, WS_MSG_TYPE_PTY_OUTPUT};
 
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 
 use anyhow::{anyhow, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use log::{error, info};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::process::Command;
-use tokio::time::Instant;
+use tokio::{process::Command, time::sleep};
 
 use super::{
-    PTY_EXEC_DATA_SIZE, SLOT_PTY_BIN, WS_MSG_TYPE_PTY_EXEC_CMD, WS_MSG_TYPE_PTY_EXEC_CMD_STREAM,
-    WS_MSG_TYPE_PTY_INPUT, WS_MSG_TYPE_PTY_MAX_RATE, WS_MSG_TYPE_PTY_RESIZE, WS_MSG_TYPE_PTY_START,
-    WS_MSG_TYPE_PTY_STOP,
+    PTY_EXEC_DATA_SIZE, SLOT_PTY_BIN, WS_MSG_TYPE_PTY_ERROR, WS_MSG_TYPE_PTY_EXEC_CMD,
+    WS_MSG_TYPE_PTY_EXEC_CMD_STREAM, WS_MSG_TYPE_PTY_INPUT, WS_MSG_TYPE_PTY_MAX_RATE,
+    WS_MSG_TYPE_PTY_OUTPUT, WS_MSG_TYPE_PTY_RESIZE, WS_MSG_TYPE_PTY_START, WS_MSG_TYPE_PTY_STOP,
 };
 const SLOT_PTY_CMD: &str = "event_slot_pty_cmd";
-const PTY_REMOVE_INTERVAL: u64 = 60 * 3;
+const PTY_TTL: Duration = Duration::from_secs(60 * 3); // 3 min
 const PTY_BUF_SIZE: usize = 1024;
 const PTY_SHELL_EXIT_ERR: &str = "I/O error (os error 5)";
 
@@ -126,7 +120,7 @@ impl Handler for JsonHandler<PtyStart> {
         let plugin = Plugin {
             component: comp,
             data: (&self.request).into(),
-            controller: PluginCtrl::new(PTY_REMOVE_INTERVAL),
+            controller: PluginCtrl::new(PTY_TTL),
         };
 
         let channel = Arc::new(Channel::new(session_id, channel_id, plugin));
@@ -287,7 +281,7 @@ impl Handler for BsonHandler<ExecCmdStreamReq> {
             .component
             .execute_stream(cmd, Some(cb), data.timeout)
             .await;
-        plugin.controller.timer.unfreeze().await;
+        plugin.controller.timer.unfreeze();
         if let Err(e) = result {
             error!("exec_cmd_stream `{}` failed: {:#}", self.id(), e);
             self.reply(PtyBinErrMsg::new(e)).await
@@ -316,7 +310,6 @@ impl Pty {
             .expect("get_receiver failed");
         let mut buf = [0u8; PTY_BUF_SIZE];
         let mut reader = self.get_reader().await.expect("get_reader Failed");
-        let mut last_reply = Instant::now();
 
         loop {
             tokio::select! {
@@ -330,7 +323,6 @@ impl Pty {
                             data: PtyOutput { output: data },
                         };
                         TSSH::reply_json_msg(WS_MSG_TYPE_PTY_OUTPUT, pty_output).await;
-                        last_reply = Instant::now();
                     }
                     Err(e) => {
                         match e.to_string().as_str() {
@@ -346,9 +338,7 @@ impl Pty {
                     }
                 },
                 _ = &mut stopper_rx => break info!("Pty `{id}` stopped"),
-                _ = ctrl.timer.timeout() => if ctrl.timer.is_timeout_refresh(last_reply).await {
-                    break info!("Pty `{id}` timeout");
-                },
+                _ = ctrl.timer.timeout() => break info!("Pty `{id}` timeout"),
             };
         }
     }
@@ -363,7 +353,6 @@ pub async fn execute_stream(
 ) -> Result<()> {
     let mut idx = 0u32;
     let mut is_last;
-    let timeout_at = Instant::now() + Duration::from_secs(timeout);
     let mut buf = [0u8; PTY_EXEC_DATA_SIZE];
 
     #[allow(unused_mut)] // Unix needs MUT, Windows does not.
@@ -378,6 +367,8 @@ pub async fn execute_stream(
     };
     #[cfg(unix)]
     let mut reader = child.stdout.take().unwrap();
+    let timeout = sleep(Duration::from_secs(timeout));
+    tokio::pin!(timeout);
 
     loop {
         tokio::select! {
@@ -391,7 +382,7 @@ pub async fn execute_stream(
                 callback(idx, is_last, None, output.into()).await;
                 idx += 1;
             }
-            _ = tokio::time::sleep_until(timeout_at) => {
+            _ = &mut timeout => {
                 info!("execute_stream func timeout");
                 unsafe { kill_process_group(pid) };
                 Err(anyhow!("command timeout, process killed"))?;

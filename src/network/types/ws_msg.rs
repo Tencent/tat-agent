@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 pub const EVENT_KICK: &str = "kick";
 pub const EVENT_CHECK_UPDATE: &str = "CheckUpdate";
+pub const EVENT_FORCE_RESTART: &str = "ForceRestart";
 
 #[derive(Default, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]

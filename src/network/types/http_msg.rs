@@ -1,4 +1,4 @@
-use crate::common::sysinfo::Uname;
+use crate::common::sysinfo::{cpu_arch, kernel_name, kernel_version, os_version};
 #[cfg(windows)]
 use crate::executor::windows::{CMD_TYPE_POWERSHELL, UTF8_BOM_HEADER};
 use crate::network::AGENT_VERSION;
@@ -210,7 +210,7 @@ pub struct ReportTaskFinishRequest {
     #[serde(default)]
     pub exit_code: i32,
     #[serde(default)]
-    pub final_log_index: u32,
+    pub final_log_index: Option<u32>,
     #[serde(default)]
     pub output_url: String,
     #[serde(rename = "OutputUploadCOSErrorInfo")]
@@ -273,12 +273,11 @@ pub struct CheckUpdateRequest {
 
 impl CheckUpdateRequest {
     pub fn new() -> Self {
-        let uname = Uname::new().unwrap();
         CheckUpdateRequest {
-            kernel_name: uname.sys_name,
-            kernel_release: uname.release,
-            kernel_version: uname.version,
-            machine: uname.machine,
+            kernel_name: kernel_name(),
+            kernel_release: kernel_version(),
+            kernel_version: os_version(),
+            machine: cpu_arch(),
             version: AGENT_VERSION.to_string(),
         }
     }
@@ -287,25 +286,11 @@ impl CheckUpdateRequest {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "PascalCase")]
 pub struct CheckUpdateResponse {
-    need_update: bool,
+    pub need_update: bool,
     #[serde(default)]
-    download_url: Option<String>,
+    pub download_url: Option<String>,
     #[serde(default)]
-    md5: Option<String>,
-}
-
-impl CheckUpdateResponse {
-    pub fn need_update(&self) -> bool {
-        self.need_update
-    }
-
-    pub fn download_url(&self) -> &Option<String> {
-        &self.download_url
-    }
-
-    pub fn md5(&self) -> &Option<String> {
-        &self.md5
-    }
+    pub md5: Option<String>,
 }
 
 //==============================================================================
@@ -391,9 +376,9 @@ pub struct ValidateInstanceRequest {
     #[serde(default)]
     sys_name: String,
     #[serde(default)]
-    pub hostname: String,
+    hostname: String,
     #[serde(default)]
-    pub local_ip: String,
+    local_ip: String,
 }
 
 impl ValidateInstanceRequest {
@@ -437,11 +422,10 @@ pub struct GetTmpCredentialResponse {
 
 //==============================================================================
 // get cos credential
-
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "PascalCase")]
 pub struct GetCosCredentialRequest {
-    pub invocation_task_id: String,
+    invocation_task_id: String,
 }
 
 impl GetCosCredentialRequest {
@@ -452,7 +436,28 @@ impl GetCosCredentialRequest {
     }
 }
 
-// Unit Tests
+//==============================================================================
+// report agent log
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "PascalCase")]
+pub struct ReportAgentLogRequest {
+    agent_version: String,
+    log_level: String,
+    log_info: String,
+}
+
+impl ReportAgentLogRequest {
+    pub fn new(level: &str, log: &str) -> Self {
+        Self {
+            agent_version: AGENT_VERSION.to_owned(),
+            log_level: level.to_owned(),
+            log_info: log.to_owned(),
+        }
+    }
+}
+
+pub type ReportAgentLogResponse = Empty;
+
 #[cfg(test)]
 mod tests {
     #[cfg(windows)]

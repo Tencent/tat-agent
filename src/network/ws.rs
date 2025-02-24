@@ -22,7 +22,7 @@ use tokio_tungstenite::tungstenite::Error;
 use tokio_tungstenite::tungstenite::Message::{self, *};
 use tokio_tungstenite::{accept_async, connect_async};
 
-use super::{EVENT_CHECK_UPDATE, EVENT_KICK};
+use super::{EVENT_CHECK_UPDATE, EVENT_FORCE_RESTART, EVENT_KICK};
 use crate::tssh::{WS_BIN_MSG, WS_TXT_MSG};
 const WS_PASSIVE_CLOSE: &str = "cli_passive_close";
 const WS_ACTIVE_CLOSE: &str = "cli_active_close";
@@ -42,7 +42,6 @@ struct WsContext {
     close_sent: AtomicBool,
 }
 
-#[tokio::main]
 pub async fn run(event_bus: &Arc<EventBus>) {
     if Opts::get_opts().server_mode {
         return work_as_server(&event_bus).await;
@@ -61,10 +60,10 @@ pub async fn run(event_bus: &Arc<EventBus>) {
 async fn work_as_client(event_bus: Arc<EventBus>) -> Result<(), Error> {
     info!("ws: start connection...");
     let mut ctx = WsContext::new(event_bus.clone());
-    let req = gen_handshake_request().expect("ws: gen_handshake_request failed");
+    let req = handshake_request().await.expect("ws: gen request failed");
     let (ws_stream, _) = connect_async(req)
         .await
-        .inspect_err(|e| error!("ws: connect failed, {e}"))?;
+        .inspect_err(|e| error!("ws: connect failed, {e:#}"))?;
     info!("ws: connection established");
     let (sink, stream) = ws_stream.split();
 
@@ -81,7 +80,7 @@ async fn work_as_client(event_bus: Arc<EventBus>) -> Result<(), Error> {
     let _ = select
         .forward(sink)
         .await
-        .inspect_err(|e| error!("ws: connection ended with error: {e}"));
+        .inspect_err(|e| error!("ws: connection ended with error: {e:#}"));
     Ok(())
 }
 
@@ -95,7 +94,7 @@ async fn work_as_server(event_bus: &Arc<EventBus>) {
         let mut ctx = WsContext::new(event_bus.clone());
         let (sink, stream) = match accept_async(tcp_stream).await {
             Ok(ws) => ws.split(),
-            Err(e) => return error!("ws server: connect failed, {e}"),
+            Err(e) => return error!("ws server: connect failed, {e:#}"),
         };
         let select = stream_select!(
             ctx.receiver.take().unwrap().boxed(),
@@ -104,7 +103,7 @@ async fn work_as_server(event_bus: &Arc<EventBus>) {
         let _ = select
             .forward(sink)
             .await
-            .inspect_err(|e| error!("ws server: connection ended with error: {e}"));
+            .inspect_err(|e| error!("ws server: connection ended with error: {e:#}"));
     }
 }
 
@@ -116,9 +115,9 @@ async fn exponential_backoff_with_jitter(retry_count: u32) {
     sleep(Duration::from_secs(jitter)).await;
 }
 
-fn gen_handshake_request() -> Result<Request, Error> {
-    let mut rq = get_ws_url().into_client_request()?;
-    rq.headers_mut().extend(build_extra_headers());
+async fn handshake_request() -> Result<Request, Error> {
+    let mut rq = get_ws_url().await.into_client_request()?;
+    rq.headers_mut().extend(build_extra_headers().await);
     Ok(rq)
 }
 
@@ -149,7 +148,9 @@ impl WsContext {
     }
 
     fn handle_msg(&self, msg: WsRes) -> Option<WsRes> {
-        let msg = msg.inspect_err(|e| error!("ws: receive error, {e}")).ok()?;
+        let msg = msg
+            .inspect_err(|e| error!("ws: receive error, {e:#}"))
+            .ok()?;
 
         // handle
         match &msg {
@@ -172,18 +173,30 @@ impl WsContext {
         .map(|r| Ok(r))
     }
 
-    fn on_text(&self, mut msg: &str) {
+    fn on_text(&self, msg: &str) {
         let Ok(json) = serde_json::from_str::<Value>(msg) else {
             return;
         };
         let Some(Some(msg_type)) = json.get("Type").map(Value::as_str) else {
             return;
         };
-        if matches!(msg_type, EVENT_KICK | EVENT_CHECK_UPDATE) {
-            info!("ws: receive `{msg_type}`");
-            msg = SOURCE_WS;
-        }
-        self.event_bus.dispatch(msg_type, Vec::from(msg));
+        let vec = match msg_type {
+            EVENT_KICK => {
+                let id = json
+                    .get("Data")
+                    .and_then(|v| v.get("InvocationTaskID"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                info!("ws: receive `{msg_type}`, task_id: `{id}`");
+                Vec::from(format!("{SOURCE_WS} ({id})"))
+            }
+            EVENT_CHECK_UPDATE | EVENT_FORCE_RESTART => {
+                info!("ws: receive `{msg_type}`");
+                Vec::from(SOURCE_WS)
+            }
+            _ => Vec::from(msg),
+        };
+        self.event_bus.dispatch(msg_type, vec);
     }
 
     fn on_binary(&self, msg: &[u8]) {

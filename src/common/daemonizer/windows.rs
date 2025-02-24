@@ -1,4 +1,5 @@
-use crate::common::{get_now_secs, str2wsz, wsz2string};
+use crate::common::{get_now_secs, str2wsz, wsz2string, Opts};
+use crate::EXE_DIR;
 
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -17,7 +18,6 @@ use winapi::um::winnt::{BOOLEAN, KEY_QUERY_VALUE, KEY_READ, LPWSTR, SERVICE_WIN3
 use winapi::um::winreg::{RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY_LOCAL_MACHINE};
 use winapi::um::winsock2::{WSAStartup, WSADATA};
 use winapi::um::winsvc::*;
-use winapi::um::wow64apiset::*;
 
 const IMAGE_STATE_COMPLETE: &str = "IMAGE_STATE_COMPLETE";
 const WAIT_STATE_COMPLETE_MAX_TIME: u64 = 60 * 3;
@@ -85,36 +85,26 @@ fn try_start_service(entry: fn()) {
         ];
 
         if 0 == StartServiceCtrlDispatcherW(*service_table.as_ptr()) {
-            wait_image_state_complete(WAIT_STATE_COMPLETE_MAX_TIME);
+            if !Opts::get_opts().ignore_image_state {
+                wait_image_state_complete(WAIT_STATE_COMPLETE_MAX_TIME);
+            }
             TAT_ENTRY()
         };
     }
 }
 
 fn clean_update_files() {
-    wow64_disable_exc(|| {
-        let _ = Command::new("cmd.exe")
-            .args(&[
-                "/C",
-                "del",
-                "/f",
-                "C:\\Program Files\\qcloud\\tat_agent\\temp_*.*",
-            ])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .inspect_err(|_| error!("clean_update_files failed"));
-    })
-}
-
-pub fn wow64_disable_exc<T>(func: impl Fn() -> T) -> T {
-    let mut old = NULL;
-    if unsafe { Wow64DisableWow64FsRedirection(&mut old) } != 0 {
-        let result = func();
-        unsafe { Wow64RevertWow64FsRedirection(old) };
-        return result;
-    }
-    func()
+    let _ = Command::new("cmd.exe")
+        .args(&[
+            "/C",
+            "del",
+            "/f",
+            &format!("{}\\temp_*.*", EXE_DIR.to_string_lossy()),
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .inspect_err(|_| error!("clean_update_files failed"));
 }
 
 unsafe fn already_start() -> bool {

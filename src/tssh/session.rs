@@ -1,18 +1,15 @@
-use super::proxy::Proxy;
-use super::pty::Pty;
-use super::TSSH;
+use super::{proxy::Proxy, pty::Pty, TSSH};
 use crate::common::{Stopper, Timer};
 use crate::executor::User;
 use crate::network::{PtyBinBase, PtyJsonBase};
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use anyhow::{anyhow, Result};
 use log::{error, info};
 use tokio::sync::RwLock;
 
-const SESSION_REMOVE_INTERVAL: u64 = 60 * 5;
+const SESSION_TTL: Duration = Duration::from_secs(60 * 5); // 5 min
 
 type ChannelMap = RwLock<HashMap<String, Arc<Channel>>>;
 
@@ -28,7 +25,7 @@ impl Session {
         Self {
             session_id: session_id.to_owned(),
             channels: Default::default(),
-            timer: Timer::new(SESSION_REMOVE_INTERVAL),
+            timer: Timer::new(SESSION_TTL),
             stopper: Stopper::new(),
         }
     }
@@ -54,22 +51,16 @@ impl Session {
     pub async fn remove_channel(&self, channel_id: &str) {
         if let Some(ch) = self.channels.write().await.remove(channel_id) {
             ch.stop().await;
-            self.timer.unfreeze().await;
+            self.timer.unfreeze();
             info!("remove_channel `{}:{}`", self.session_id, channel_id)
         }
     }
 
     pub async fn get_channel(&self, channel_id: &str) -> Option<Arc<Channel>> {
-        let op = self
-            .channels
-            .read()
-            .await
-            .get(channel_id)
-            .map(|ch| ch.clone());
-        if let Some(ref ch) = op {
-            ch.update_last_time().await;
-        };
-        op
+        self.channels.read().await.get(channel_id).map(|ch| {
+            ch.plugin.controller.timer.refresh();
+            ch.clone()
+        })
     }
 
     pub async fn process_output(&self) {
@@ -116,10 +107,6 @@ impl Channel {
 
     pub async fn stop(&self) {
         self.plugin.controller.stopper.stop().await;
-    }
-
-    pub async fn update_last_time(&self) {
-        self.plugin.controller.timer.refresh().await;
     }
 
     pub async fn process_output(&self) {
@@ -222,7 +209,7 @@ pub struct PluginCtrl {
 }
 
 impl PluginCtrl {
-    pub fn new(interval: u64) -> Self {
+    pub fn new(interval: Duration) -> Self {
         Self {
             timer: Timer::new(interval),
             stopper: Stopper::new(),

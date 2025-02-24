@@ -5,7 +5,6 @@ cfg_if::cfg_if! {
     } else if #[cfg(windows)] {
         mod windows;
         pub use self::windows::daemonize;
-        pub use self::windows::wow64_disable_exc;
     } else {
         // not supported platform.
         use log::warn;

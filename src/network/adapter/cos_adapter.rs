@@ -1,7 +1,5 @@
-use std::collections::HashMap;
-use std::convert::TryInto;
-use std::iter::IntoIterator;
-use std::str;
+use std::{collections::HashMap, convert::TryInto};
+use std::{iter::IntoIterator, str};
 
 use anyhow::{bail, Result};
 use chrono::{Local, Utc};

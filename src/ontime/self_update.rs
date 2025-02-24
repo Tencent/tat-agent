@@ -1,280 +1,217 @@
-use crate::network::{CheckUpdateResponse, HttpRequester, Invoke, InvokeAdapter};
+use super::RESTART_CHECK_INVL;
+use crate::network::{HttpRequester, Invoke, InvokeAdapter};
+use crate::{common::create_file_with_parents, EXE_DIR};
 
-use std::fs::{create_dir_all, File};
-use std::io::{self, Write};
-use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use anyhow::{anyhow, Context, Result};
-use bytes::Bytes;
-use log::{debug, error, info, warn};
-use tokio::runtime::{Builder, Runtime};
+use anyhow::{bail, Context, Result};
+use futures::StreamExt;
+use log::{debug, info};
+use tokio::{fs::remove_dir_all, io::AsyncWriteExt, process::Command, time::sleep};
 use zip::ZipArchive;
 
+const SELF_UPDATE_DIR: &str = "self_update";
 const SELF_UPDATE_FILENAME: &str = "agent_update.zip";
 const UPDATE_FILE_UNZIP_DIR: &str = "agent_update_unzip";
 const AGENT_FILENAME: &str = "tat_agent";
 const UPDATE_DOWNLOAD_TIMEOUT: u64 = 20 * 60;
+#[cfg(unix)]
+const SELF_UPDATE_SCRIPT: &str = "self_update.sh";
+#[cfg(windows)]
+const SELF_UPDATE_SCRIPT: &str = "self_update.bat";
 
-cfg_if::cfg_if! {
-    if #[cfg(unix)] {
-        use crate::executor::unix::EXEC_MODE;
-        use std::os::unix::fs::PermissionsExt;
-        use std::fs::{set_permissions, Permissions};
-        const INSTALL_SCRIPT: &str = "install.sh";
-        const SELF_UPDATE_PATH: &str = "/tmp/tat_agent/self_update/";
-        const SELF_UPDATE_SCRIPT: &str = "self_update.sh";
-    } else if #[cfg(windows)] {
-        use crate::common::daemonizer::wow64_disable_exc;
-        const SELF_UPDATE_PATH: &str = "C:\\Program Files\\qcloud\\tat_agent\\tmp\\self_update\\";
-        const SELF_UPDATE_SCRIPT: &str = "self_update.bat";
-    }
+fn self_update_dir() -> PathBuf {
+    EXE_DIR.join(SELF_UPDATE_DIR)
 }
 
-pub fn try_update(self_updating: Arc<AtomicBool>, need_restart: Arc<AtomicBool>) {
-    let rt = match Builder::new_current_thread().enable_all().build() {
-        Ok(rt) => rt,
-        Err(e) => {
-            warn!("runtime for try update build failed: {e}, will retry later");
-            self_updating.store(false, Ordering::SeqCst);
-            return;
-        }
-    };
-    let check_update_rsp = check_update(&rt);
-    if let Err(e) = check_update_rsp {
-        warn!("check update http request failed: {:#}", e);
-        self_updating.store(false, Ordering::SeqCst);
-        return;
-    }
-    let check_update_rsp = check_update_rsp.unwrap();
+fn self_update_unzip_dir() -> PathBuf {
+    self_update_dir().join(UPDATE_FILE_UNZIP_DIR)
+}
 
-    if check_update_rsp.need_update() == false {
-        info!("check update ret need_update:false, no newer version to update now");
-        self_updating.store(false, Ordering::SeqCst);
-        return;
+pub async fn check_update(stop_counter: &Arc<AtomicU64>) {
+    match update().await {
+        Err(e) => return InvokeAdapter::log(&format!("try_update error: {e:#}")).await,
+        Ok(false) => return, // no newer version
+        _ => (),
+    }
+    wait_and_restart(stop_counter).await
+}
+
+async fn wait_and_restart(stop_counter: &Arc<AtomicU64>) -> ! {
+    while stop_counter.load(Ordering::SeqCst) != 0 {
+        sleep(RESTART_CHECK_INVL).await;
     }
 
-    if check_update_rsp.download_url().is_none() || check_update_rsp.md5().is_none() {
-        warn!("check update rsp invalid no url or md5: {check_update_rsp:?}");
-        self_updating.store(false, Ordering::SeqCst);
-        return;
+    info!("restart needed, no tasks running, restart program");
+    if let Err(e) = restart().await {
+        InvokeAdapter::log(&format!("restart agent failed: {e:#}")).await;
+    }
+    // should not comes here, because agent should has been killed when called `restart()`.
+    std::process::exit(2);
+}
+
+async fn update() -> Result<bool> {
+    let rsp = InvokeAdapter::check_update()
+        .await
+        .context("check_update requset failed")?;
+    if !rsp.need_update {
+        info!("no newer version to update now");
+        return Ok(false);
+    }
+    let (url, md5) = rsp
+        .download_url
+        .zip(rsp.md5)
+        .context("invalid check_update response: no download_url or md5")?;
+
+    info!("newer agent version found, going to download");
+
+    let dir = self_update_dir();
+    let zip = dir.join(SELF_UPDATE_FILENAME);
+    let actual_md5 = download_file(&url, &zip).await.context("download failed")?;
+    if !md5.eq_ignore_ascii_case(&actual_md5) {
+        bail!("download_file md5 `{actual_md5}` mismatch with expected `{md5}`");
     }
 
-    info!("new agent version found:{check_update_rsp:?}, going to download");
-    let download_ret = download_file(
-        &rt,
-        check_update_rsp.download_url().as_ref().unwrap(),
-        SELF_UPDATE_PATH,
-        SELF_UPDATE_FILENAME,
-    );
-    if let Err(e) = download_ret {
-        error!("download new agent failed: {:#}", e);
-        self_updating.store(false, Ordering::SeqCst);
-        return;
-    }
-    let download_content = download_ret.unwrap();
-
-    let md5_check_pass = md5_check(&download_content, check_update_rsp.md5().as_ref().unwrap());
-    if md5_check_pass {
-        info!("download file md5 matched with remote");
-    } else {
-        warn!("download file md5 mismatch with remote, ignore this update");
-        self_updating.store(false, Ordering::SeqCst);
-        return;
-    }
-
-    let unzip_ret = unzip_file(
-        SELF_UPDATE_PATH,
-        SELF_UPDATE_FILENAME,
-        UPDATE_FILE_UNZIP_DIR,
-    );
-    if let Err(e) = unzip_ret {
-        warn!("self update file unzip failed: {}, ignore this update", e);
-        self_updating.store(false, Ordering::SeqCst);
-        return;
-    }
+    let unzip_dir = self_update_unzip_dir();
+    unzip_file(zip, unzip_dir).context("unzip_file failed")?;
     info!("self update file unzip success");
 
-    let add_execute_ret = batch_set_execute_permission(
-        SELF_UPDATE_PATH,
-        UPDATE_FILE_UNZIP_DIR,
-        SELF_UPDATE_SCRIPT,
-        AGENT_FILENAME,
-    );
-    if let Err(e) = add_execute_ret {
-        warn!("set execute permission for self update file failed: {e}, ignore this update");
-        self_updating.store(false, Ordering::SeqCst);
-        return;
+    #[cfg(unix)]
+    {
+        batch_chmod().await.context("batch_chmod failed")?;
+        info!("self update script batch_set_execute_permission success");
     }
-    info!("self update script set execute permission success");
 
-    let try_run_ret = try_run_agent(SELF_UPDATE_PATH, UPDATE_FILE_UNZIP_DIR, AGENT_FILENAME);
-    if let Err(e) = try_run_ret {
-        warn!("try run agent failed: {:#}, ignore this update", e);
-        self_updating.store(false, Ordering::SeqCst);
-        return;
-    }
-    info!(
-        "try run agent --version succ ret: '{}'",
-        try_run_ret.unwrap().escape_debug()
-    );
+    let op = verify_agent().await.context("try_run_agent failed")?;
+    info!("try run new agent --version success: {}", op.escape_debug());
 
-    let update_script_ret =
-        run_self_update_script(SELF_UPDATE_PATH, UPDATE_FILE_UNZIP_DIR, SELF_UPDATE_SCRIPT);
-    if let Err(e) = update_script_ret {
-        warn!("run self update script failed: {:#}", e);
-        self_updating.store(false, Ordering::SeqCst);
-        return;
-    }
+    run_self_update_script().await.context("script failed")?;
     info!("agent self update script run success, will restart later gracefully");
-    need_restart.store(true, Ordering::SeqCst);
+    Ok(true)
 }
 
-fn check_update(rt: &Runtime) -> Result<CheckUpdateResponse> {
-    rt.block_on(InvokeAdapter::check_update())
-}
+async fn download_file(from: &str, to: impl AsRef<Path>) -> Result<String> {
+    let path = to.as_ref();
+    let mut file = create_file_with_parents(path)
+        .await
+        .context(format!("file `{path:?}` create failed"))?;
 
-fn download_file(rt: &Runtime, url: &str, path: &str, filename: &str) -> Result<Bytes> {
-    create_dir_all(&path).context(format!("path `{}` create failed", path))?;
-
-    let filepath = format!("{}/{}", path, filename);
-    let mut file = File::create(filepath).context("download file create failed")?;
-
-    let req_fut = HttpRequester::get(&url)
+    info!("start to download file from: {from}");
+    let mut bytes_stream = HttpRequester::get(&from)
         .timeout(UPDATE_DOWNLOAD_TIMEOUT)
-        .send();
+        .send()
+        .await
+        .context("request failed")?
+        .bytes_stream();
 
-    let rsp = rt
-        .block_on(req_fut)
-        .context("self update download failed")?;
+    let mut md5 = md5::Context::new();
+    while let Some(item) = bytes_stream.next().await {
+        let bytes = item.context("bytes_stream get item failed")?;
+        file.write_all(&*bytes).await.context("write_all failed")?;
+        md5.consume(bytes);
+    }
+    file.sync_all().await.context("sync_all failed")?;
 
-    let bytes = rt
-        .block_on(rsp.bytes())
-        .context("self update download bytes return failed")?;
-
-    file.write_all(bytes.as_ref())
-        .context("self update file write failed")?;
-
-    file.sync_all()
-        .context("self update file sync disk failed")?;
-
-    info!("self update download success");
-    Ok(bytes)
+    let md5 = format!("{:x}", md5.compute());
+    info!("download_file success, save to: {path:?}, md5: {md5}");
+    Ok(md5)
 }
 
-fn md5_check(download_content: &Bytes, md5: &str) -> bool {
-    let digest = md5::compute(download_content);
-    let digest = format!("{:x}", digest);
-    debug!("download file md5: {}, remote md5: {}", digest, md5);
-    digest.eq_ignore_ascii_case(md5)
-}
-
-fn unzip_file(path: &str, zip_filename: &str, unzip_dir: &str) -> Result<()> {
-    let zip_file = format!("{}/{}", path, zip_filename);
-    let file = File::open(zip_file)?;
-    let abs_unzip_dir = format!("{}/{}", path, unzip_dir);
-    ZipArchive::new(file)?.extract(abs_unzip_dir)?;
+fn unzip_file(from: impl AsRef<Path>, to: impl AsRef<Path>) -> Result<()> {
+    let zip = std::fs::File::open(from)?;
+    ZipArchive::new(zip)?.extract(to)?;
     Ok(())
 }
 
 #[cfg(unix)]
-fn batch_set_execute_permission(
-    path: &str,
-    unzip_dir: &str,
-    script_filename: &str,
-    agent_filename: &str,
-) -> io::Result<()> {
-    let script = format!("{}/{}/{}", path, unzip_dir, script_filename);
-    set_execute_permission(&script)?;
+async fn batch_chmod() -> Result<()> {
+    use crate::common::set_permissions_recursively;
+    use crate::executor::unix::EXEC_MODE;
+    use std::{fs::Permissions, os::unix::fs::PermissionsExt};
+    use tokio::fs::set_permissions;
 
-    let agent = format!("{}/{}/{}", path, unzip_dir, agent_filename);
-    set_execute_permission(&agent)
+    let perm = Permissions::from_mode(EXEC_MODE);
+    let unzip_dir = self_update_unzip_dir();
+    let agent = unzip_dir.join(AGENT_FILENAME);
+    set_permissions(agent, perm.clone()).await?;
+
+    let update_script = unzip_dir.join(SELF_UPDATE_SCRIPT);
+    set_permissions_recursively(update_script, Some(&*EXE_DIR), perm).await
 }
 
-#[cfg(windows)]
-// set permission is no needed for windows.
-fn batch_set_execute_permission(_: &str, _: &str, _: &str, _: &str) -> io::Result<()> {
-    Ok(())
-}
-
-#[cfg(unix)]
-fn set_execute_permission(abs_filename: &str) -> io::Result<()> {
-    set_permissions(abs_filename, Permissions::from_mode(EXEC_MODE))
-}
-
-fn try_run_agent(path: &str, unzip_dir: &str, agent_filename: &str) -> Result<String> {
-    let agent = format!("{}{}/{}", path, unzip_dir, agent_filename);
-    let out = Command::new(agent).arg("--version").output()?;
+async fn verify_agent() -> Result<String> {
+    let agent = self_update_unzip_dir().join(AGENT_FILENAME);
+    let out = Command::new(agent).arg("--version").output().await?;
 
     let version = String::from_utf8(out.stdout).context("agent version contains invalid char")?;
     let v = version.split(' ').collect::<Vec<_>>();
     if v.len() != 2 || v[0] != AGENT_FILENAME {
-        return Err(anyhow!("version output invalid: {}", version));
+        bail!("version output invalid: {}", version.escape_debug());
     }
     Ok(version)
 }
 
-fn run_self_update_script(path: &str, unzip_dir: &str, script_filename: &str) -> Result<()> {
-    let script = format!("{}{}/{}", path, unzip_dir, script_filename);
+async fn run_self_update_script() -> Result<()> {
+    let script = self_update_unzip_dir().join(SELF_UPDATE_SCRIPT);
     #[cfg(unix)]
-    let cmd = Command::new("sh").arg("-c").arg(script).output();
+    let out = Command::new("sh").arg("-c").arg(script).output().await?;
     #[cfg(windows)]
-    let cmd = wow64_disable_exc(move || Command::new(script.clone()).output());
+    let out = Command::new(script).output().await?;
 
-    let out = cmd.context("self update failed")?;
     let stdout = String::from_utf8_lossy(out.stdout.as_slice());
     let stderr = String::from_utf8_lossy(out.stderr.as_slice());
     debug!("stdout of self update script:[{}]", stdout);
     debug!("stderr of self update script:[{}]", stderr);
 
-    out.status
-        .success()
-        .then_some(())
-        .context(format!("exit code: {:?}", out.status.code()))
+    out.status.success().then_some(()).context(format!(
+        "exit code: {:?}, stderr: {stderr}",
+        out.status.code(),
+    ))
 }
 
-pub fn try_restart_agent() -> Result<()> {
+pub async fn restart() -> Result<()> {
     #[cfg(unix)]
-    let cmd = {
-        let path = format!("{SELF_UPDATE_PATH}{UPDATE_FILE_UNZIP_DIR}/{INSTALL_SCRIPT}");
-        set_execute_permission(&path).context("set execute permission failed")?;
-        let script = format!("{path} restart");
-        Command::new("sh").args(&["-c", &script]).output()
+    let out = {
+        let script = include_str!(r"../../install/install.sh");
+        Command::new("sh")
+            .args(&["-c", script, "install.sh", "restart"])
+            .output()
+            .await?
     };
     #[cfg(windows)]
-    let cmd = wow64_disable_exc(move || {
-        let script = "sc stop tatsvc & sc start tatsvc";
-        Command::new("cmd.exe").args(&["/C", script]).output()
-    });
+    // TODO: Update to call 'install.bat restart' in future version
+    let out = Command::new("cmd.exe")
+        .args(["/C", "sc stop tatsvc & sc start tatsvc"])
+        .output()
+        .await?;
 
-    let out = cmd.context("try restart agent failed")?;
     let stdout = String::from_utf8_lossy(out.stdout.as_slice());
     let stderr = String::from_utf8_lossy(out.stderr.as_slice());
-    debug!("stdout of try restart agent:[{}]", stdout);
-    debug!("stderr of try restart agent:[{}]", stderr);
+    debug!("stdout of restart agent:[{}]", stdout);
+    debug!("stderr of restart agent:[{}]", stderr);
 
-    out.status
-        .success()
-        .then_some(())
-        .context(format!("exit code: {:?}", out.status.code()))
+    out.status.success().then_some(()).context(format!(
+        "exit code: {:?}, stderr: {stderr}",
+        out.status.code(),
+    ))
+}
+
+pub async fn remove_update_file() {
+    let _ = remove_dir_all(self_update_dir()).await;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
     use crate::common::logger::init_test_log;
 
-    #[test]
-    fn test_self_update() {
+    #[tokio::test]
+    async fn test_self_update() {
         init_test_log();
-        let updating = Arc::new(AtomicBool::new(true));
-        let need_restart = Arc::new(AtomicBool::new(false));
-        try_update(updating.clone(), need_restart.clone());
-        let updating = updating.load(Ordering::SeqCst);
-        assert!(updating);
-        let need_restart = need_restart.load(Ordering::SeqCst);
-        assert!(need_restart);
+        let res = update().await;
+        assert!(res.is_ok());
+        assert!(res.unwrap());
     }
 }

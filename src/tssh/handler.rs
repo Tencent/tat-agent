@@ -1,8 +1,7 @@
 use super::{session::Channel, TSSH};
 use crate::network::{PtyBinBase, PtyBinErrMsg, PtyError, PtyJsonBase, WsMsg};
 
-use std::sync::Arc;
-use std::{future::Future, io::Cursor};
+use std::{future::Future, io::Cursor, sync::Arc};
 
 use bson::Document;
 use log::error;
@@ -40,12 +39,12 @@ where
     {
         let doc = match Document::from_reader(&mut Cursor::new(&msg[..])) {
             Ok(doc) => doc,
-            Err(e) => return error!("BsonHandler::dispatch from_reader failed: {}", e),
+            Err(e) => return error!("BsonHandler::dispatch from_reader failed: {:#}", e),
         };
 
         let msg = match bson::from_document::<WsMsg<PtyBinBase<T>>>(doc) {
             Ok(msg) => msg,
-            Err(e) => return error!("BsonHandler::dispatch from_document failed: {}", e),
+            Err(e) => return error!("BsonHandler::dispatch from_document failed: {:#}", e),
         };
 
         let op = msg.r#type.clone();

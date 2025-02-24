@@ -1,3 +1,5 @@
 sc stop tatsvc
 sc delete tatsvc
-rd /s/q "C:\Program Files\qcloud\tat_agent"
+set sysDrive=%SystemDrive%
+if "%systemDrive%"=="" set sysDrive=C:
+rd /s/q "%sysDrive%\Program Files\QCloud\tat_agent"

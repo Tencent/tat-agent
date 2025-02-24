@@ -1,12 +1,13 @@
 use crate::common::update_file_permission;
 
-use std::fs::{self, File};
-use std::io::{ErrorKind, Read, Write};
+use std::io::ErrorKind;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Result;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
+use tokio::fs::{self, read_to_string, File};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const CONFIG_DAT: &str = "config.dat";
 const REGISTER_FILE: &str = "register.dat";
@@ -37,69 +38,76 @@ struct Url {
 
 #[derive(Serialize, Deserialize, Debug, Default)]
 struct Config {
+    // Run as register instance
     #[serde(default)]
     register: Option<RegisterInfo>,
+
+    // Set server URLs
     #[serde(default)]
     url: Option<Url>,
 }
 
-pub fn get_invoke_url() -> Option<String> {
+pub async fn get_invoke_url() -> Option<String> {
     load_config()
+        .await
         .ok()
         .and_then(|config| config.url.and_then(|url| url.invoke_url))
 }
 
-pub fn get_ws_url() -> Option<String> {
+pub async fn get_ws_url() -> Option<String> {
     load_config()
+        .await
         .ok()
         .and_then(|config| config.url.and_then(|url| url.ws_url))
 }
 
-pub fn get_register_info() -> Option<RegisterInfo> {
+pub async fn get_register_info() -> Option<RegisterInfo> {
     static NEED_CHECK: AtomicBool = AtomicBool::new(true);
-    let ret = load_config().ok().and_then(|cfg| cfg.register).or_else(|| {
-        get_register_info_old().inspect(|info| {
-            if save_register_info(info.clone()).is_ok() {
-                let _ = fs::remove_file(REGISTER_FILE);
-            }
-        })
-    });
+    let mut ret = load_config().await.ok().and_then(|cfg| cfg.register);
+    if ret.is_none() {
+        ret = get_register_info_old().await;
+    }
+    if let Some(info) = ret.as_ref() {
+        if save_register_info(info.clone()).await.is_ok() {
+            let _ = fs::remove_file(REGISTER_FILE);
+        }
+    }
     if ret.is_some() && NEED_CHECK.fetch_and(false, Ordering::SeqCst) {
         update_file_permission(CONFIG_DAT)
     }
     ret
 }
 
-pub fn save_register_info(info: RegisterInfo) -> Result<()> {
-    let mut config = load_config()?;
+pub async fn save_register_info(info: RegisterInfo) -> Result<()> {
+    let mut config = load_config().await?;
     config.register = Some(info);
-    save_config(&config)
+    save_config(&config).await
 }
 
-fn get_register_info_old() -> Option<RegisterInfo> {
-    let b64_data = std::fs::read_to_string(REGISTER_FILE).ok()?;
+async fn get_register_info_old() -> Option<RegisterInfo> {
+    let b64_data = read_to_string(REGISTER_FILE).await.ok()?;
     let json_data = STANDARD.decode(b64_data).ok()?;
     let record = serde_json::from_slice::<RegisterInfo>(&json_data[..]).ok()?;
     return Some(record);
 }
 
-fn load_config() -> Result<Config> {
-    let mut file = match File::open(CONFIG_DAT) {
+async fn load_config() -> Result<Config> {
+    let mut file = match File::open(CONFIG_DAT).await {
         Ok(file) => file,
         Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Config::default()),
         e => e?,
     };
 
     let mut contents = String::new();
-    file.read_to_string(&mut contents)?;
+    file.read_to_string(&mut contents).await?;
     let config: Config = serde_json::from_str(&contents)?;
     Ok(config)
 }
 
-fn save_config(config: &Config) -> Result<()> {
+async fn save_config(config: &Config) -> Result<()> {
     let json_str = serde_json::to_string(config)?;
-    let mut file = File::create(CONFIG_DAT)?;
-    file.write_all(json_str.as_bytes())?;
+    let mut file = File::create(CONFIG_DAT).await?;
+    file.write_all(json_str.as_bytes()).await?;
     update_file_permission(CONFIG_DAT);
     Ok(())
 }

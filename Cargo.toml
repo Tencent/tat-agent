@@ -1,6 +1,6 @@
 [package]
 name = "tat_agent"
-version = "1.1.4"
+version = "1.1.5"
 edition = "2018"
 
 [dependencies]
@@ -44,6 +44,9 @@ hmac = "0.12.1"
 sha1 = { version = "0.10.5", default-features = false, features = ["oid"] }
 anyhow = "1.0.89"
 leaky-bucket = "1.1.2"
+sysinfo = { version = "0.33.1", default-features = false, features = [
+  "system",
+] }
 
 [target.'cfg(unix)'.dependencies]
 daemonize = "0.5.0"
@@ -55,13 +58,11 @@ unix_mode = "0.1.3"
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3.9", features = [
   "std",
-  "sysinfoapi",
   "winsvc",
   "winbase",
   "winnt",
   "stringapiset",
   "winnls",
-  "wow64apiset",
   "synchapi",
   "namedpipeapi",
   "lmaccess",
@@ -75,7 +76,6 @@ winapi = { version = "0.3.9", features = [
   "securitybaseapi",
   "userenv",
   "tlhelp32",
-  "psapi",
   "memoryapi",
   "subauth",
   "winsock2",

@@ -40,6 +40,7 @@
     <input type="text" id="id_channel" value="chnl-0001" />
     <button type="submit" id="start">start</button>
     <button type="submit" id="stop">stop</button>
+    <button type="submit" id="force_restart">Force Restart Agent</button>
   </div>
 
   <div>
@@ -320,6 +321,17 @@
             SessionId: session_id,
             ChannelId: channel_id,
           },
+        });
+        ws.send(json);
+        term.clear();
+      });
+
+    document
+      .getElementById("force_restart")
+      .addEventListener("click", function handle_create() {
+        const json = JSON.stringify({
+          Type: "ForceRestart",
+          Data: {}
         });
         ws.send(json);
         term.clear();
