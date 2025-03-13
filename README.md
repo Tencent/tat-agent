@@ -8,36 +8,46 @@ For more information, please visit <https://cloud.tencent.com/product/tat> .
 
 ## Environment & Tools
 
-- Rust environment
+- **Rust toolchain ≥ 1.82** ([Installation Guide](https://www.rust-lang.org/tools/install))
+- **Platform-specific requirements**:
+
+  | Platform | Requirements |
+  |----------|--------------|
+  | Linux    | • Docker Engine ([Installation Guide](https://docs.docker.com/engine/install/))<br>• `cross` tool (`cargo install cross`) |
+  | Windows  | • rust MSVC toolchain |
 
 ## Compile
 
-The version of rust must be **higher than 1.82**, If the version is too low, you can update the version with the following command:
+Run the following command to compile:
 
-```powershell
-rustup update
+- Linux
+
+```shell
+make linux_install_pkg
 ```
 
-Then run the following command to compile::
+- Windows (use cmd.exe)
 
-```powershell
-cargo build --release --bin tat_agent
+```batch
+.\Make.bat win64-bin
 ```
 
-## Run
+## Install
 
 After successful compilation, run the following command:
 
 - Linux
 
 ```shell
-./target/release/tat_agent
+tar -zxvf release/tat_agent_linux_install_*.tar.gz
+cd tat_agent_linux_install_*/
+./install.sh
 ```
 
 - Windows
 
-```powershell
-./target/release/tat_agent.exe
+```batch
+.\release\win_64\install.bat
 ```
 
 ## Supported OS

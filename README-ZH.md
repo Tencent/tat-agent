@@ -8,36 +8,46 @@
 
 ## 环境与工具
 
-- Rust 语言环境
+- **Rust 工具链版本 ≥ 1.82** ([安装指引](https://www.rust-lang.org/tools/install))
+- **平台特定的依赖工具**:
+
+  | 平台 | 依赖工具 |
+  |----------|--------------|
+  | Linux    | • Docker（[安装指引](https://docs.docker.com/engine/install/)）<br>• `cross` 工具（通过 `cargo install cross` 命令安装） |
+  | Windows  | • rust MSVC 工具链 |
 
 ## 编译
 
-注意：rust 的版本**必须高于 1.82**，如果版本过低，可以通过以下命令更新版本：
+执行以下命令编译：
 
-```powershell
-rustup update
+- Linux
+
+```shell
+make linux_install_pkg
 ```
 
-然后执行以下命令编译：
+- Windows (使用 cmd.exe 命令行)
 
-```powershell
-cargo build --release --bin tat_agent
+```batch
+.\Make.bat win64-bin
 ```
 
-## 运行
+## 安装
 
 编译成功后，执行以下命令运行：
 
-- Linux 系统：
+- Linux
 
 ```shell
-./target/release/tat_agent
+tar -zxvf release/tat_agent_linux_install_*.tar.gz
+cd tat_agent_linux_install_*/
+./install.sh
 ```
 
-- Windows 系统：
+- Windows
 
-```powershell
-./target/release/tat_agent.exe
+```batch
+.\release\win_64\install.bat
 ```
 
 ## 支持的操作系统
