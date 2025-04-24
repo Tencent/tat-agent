@@ -1,11 +1,6 @@
 use super::handler::{BsonHandler, Handler, HandlerExt};
-use super::TSSH;
 use crate::common::evbus::EventBus;
-use crate::network::{
-    CreateFileReq, CreateFileResp, DeleteFileReq, DeleteFileResp, FileExistResp, FileExistsReq,
-    FileInfoReq, FileInfoResp, ListPathReq, ListPathResp, PtyBinErrMsg, ReadFileReq, ReadFileResp,
-    WriteFileReq, WriteFileResp,
-};
+use crate::network::*;
 
 use std::fs::{create_dir, create_dir_all, read_dir, File, Metadata};
 use std::iter::{once, repeat};
@@ -41,60 +36,44 @@ use super::{PTY_INSPECT_READ, PTY_INSPECT_WRITE, SLOT_PTY_BIN};
 const FS_TYPE_FILE: &str = "-";
 const FS_TYPE_DIR: &str = "d";
 const FS_TYPE_LINK: &str = "l";
-const WS_MSG_TYPE_PTY_LIST_PATH: &str = "PtyListPath";
-const WS_MSG_TYPE_PTY_FILE_EXIST: &str = "PtyFileExist";
-const WS_MSG_TYPE_PTY_CREATE_FILE: &str = "PtyCreateFile";
-const WS_MSG_TYPE_PTY_DELETE_FILE: &str = "PtyDeleteFile";
-const WS_MSG_TYPE_PTY_READ_FILE: &str = "PtyReadFile";
-const WS_MSG_TYPE_PTY_WRITE_FILE: &str = "PtyWriteFile";
-const WS_MSG_TYPE_PTY_FILE_INFO: &str = "PtyFileInfo";
 
 pub fn register_file_handlers(event_bus: &Arc<EventBus>) {
-    event_bus
-        .slot_register(SLOT_PTY_BIN, WS_MSG_TYPE_PTY_CREATE_FILE, move |msg| {
-            TSSH::dispatch::<BsonHandler<CreateFileReq>>(msg, true);
-        })
-        .slot_register(SLOT_PTY_BIN, WS_MSG_TYPE_PTY_DELETE_FILE, move |msg| {
-            TSSH::dispatch::<BsonHandler<DeleteFileReq>>(msg, true);
-        })
-        .slot_register(SLOT_PTY_BIN, WS_MSG_TYPE_PTY_LIST_PATH, move |msg| {
-            TSSH::dispatch::<BsonHandler<ListPathReq>>(msg, true);
-        })
-        .slot_register(SLOT_PTY_BIN, WS_MSG_TYPE_PTY_FILE_EXIST, move |msg| {
-            TSSH::dispatch::<BsonHandler<FileExistsReq>>(msg, true);
-        })
-        .slot_register(SLOT_PTY_BIN, WS_MSG_TYPE_PTY_FILE_INFO, move |msg| {
-            TSSH::dispatch::<BsonHandler<FileInfoReq>>(msg, true);
-        })
-        .slot_register(SLOT_PTY_BIN, WS_MSG_TYPE_PTY_WRITE_FILE, move |msg| {
-            TSSH::dispatch::<BsonHandler<WriteFileReq>>(msg, true);
-        })
-        .slot_register(SLOT_PTY_BIN, WS_MSG_TYPE_PTY_READ_FILE, move |msg| {
-            TSSH::dispatch::<BsonHandler<ReadFileReq>>(msg, true);
-        });
+    BsonHandler::<CreateFileReq>::register_to(event_bus, SLOT_PTY_BIN);
+    BsonHandler::<DeleteFileReq>::register_to(event_bus, SLOT_PTY_BIN);
+    BsonHandler::<ListPathReq>::register_to(event_bus, SLOT_PTY_BIN);
+    BsonHandler::<FileExistsReq>::register_to(event_bus, SLOT_PTY_BIN);
+    BsonHandler::<FileInfoReq>::register_to(event_bus, SLOT_PTY_BIN);
+    BsonHandler::<WriteFileReq>::register_to(event_bus, SLOT_PTY_BIN);
+    BsonHandler::<ReadFileReq>::register_to(event_bus, SLOT_PTY_BIN);
 }
 
 impl Handler for BsonHandler<CreateFileReq> {
+    const MSG_TYPE: &str = "PtyCreateFile";
+
     async fn process(self) {
-        let d = &self.request.data;
+        let id = self.id();
+        let CreateFileReq {
+            ref path,
+            mode,
+            overwrite,
+            is_dir,
+        } = self.request.data;
         info!(
-            "=>create_file `{}`, path: {}, is_dir: {}",
-            self.id(),
-            d.path,
-            d.is_dir
+            "=>create_file `{id}`, path: {path}, \
+            is_dir: {mode}, overwrite: {overwrite}, is_dir: {is_dir}"
         );
 
-        let path = Path::new(&d.path);
+        let path = Path::new(path);
         if path.exists() {
             // Overwriting symbolic link files is not supported.
             let is_symlink = path.is_symlink();
             // Overwriting files of different types is not supported.
-            let is_different_type = (d.is_dir && path.is_file()) || (!d.is_dir && path.is_dir());
+            let is_different_type = (is_dir && path.is_file()) || (!is_dir && path.is_dir());
 
-            if !d.overwrite || is_different_type || is_symlink {
+            if !overwrite || is_different_type || is_symlink {
                 return self.reply(PtyBinErrMsg::new("file exists")).await;
             }
-            if d.is_dir && path.is_dir() {
+            if is_dir && path.is_dir() {
                 // If the directory already exists, do nothing and return created.
                 return self.reply(CreateFileResp { created: true }).await;
             }
@@ -108,13 +87,13 @@ impl Handler for BsonHandler<CreateFileReq> {
         let plugin = &self.channel.as_ref().unwrap().plugin.component;
         let create_result = plugin.execute(&|| {
             create_dir_all(parent_path)?;
-            if d.is_dir {
-                create_dir(&d.path)?;
+            if is_dir {
+                create_dir(path)?;
             } else {
-                File::create(&d.path)?;
+                File::create(path)?;
             }
             #[cfg(unix)]
-            set_permissions(&d.path, Permissions::from_mode(d.mode))?;
+            set_permissions(path, Permissions::from_mode(mode))?;
             Ok(Vec::new())
         });
 
@@ -126,22 +105,19 @@ impl Handler for BsonHandler<CreateFileReq> {
 }
 
 impl Handler for BsonHandler<DeleteFileReq> {
+    const MSG_TYPE: &str = "PtyDeleteFile";
+
     async fn process(self) {
-        let path = &self.request.data.path;
-        let is_dir = self.request.data.is_dir;
-        info!(
-            "=>delete_file `{}`, path: {}, is_dir: {}",
-            self.id(),
-            path,
-            is_dir
-        );
+        let id = self.id();
+        let DeleteFileReq { path, is_dir } = &self.request.data;
+        info!("=>delete_file `{id}`, path: {path}, is_dir: {is_dir}");
 
         let plugin = &self.channel.as_ref().unwrap().plugin.component;
         if let Err(e) = plugin.inspect_access(path, PTY_INSPECT_WRITE).await {
             return self.reply(PtyBinErrMsg::new(e)).await;
         }
 
-        let res = if is_dir {
+        let res = if *is_dir {
             remove_dir_all(path).await
         } else {
             remove_file(path).await
@@ -155,19 +131,23 @@ impl Handler for BsonHandler<DeleteFileReq> {
 }
 
 impl Handler for BsonHandler<ListPathReq> {
+    const MSG_TYPE: &str = "PtyListPath";
+
     async fn process(self) {
-        let path = &self.request.data.path;
-        let filter = &self.request.data.filter;
-        let show_hidden = self.request.data.show_hidden;
         let id = self.id();
-        info!("=>list_path `{id}`, path: {path}, filter: {filter}",);
+        let ListPathReq {
+            path,
+            filter,
+            show_hidden,
+        } = &self.request.data;
+        info!("=>list_path `{id}`, path: {path}, filter: {filter}");
 
         let pattern = match Pattern::new(filter) {
             Ok(pattern) => pattern,
             Err(e) => return self.reply(PtyBinErrMsg::new(e)).await,
         };
 
-        let files = match list_path(path, &pattern, show_hidden) {
+        let files = match list_path(path, &pattern, *show_hidden) {
             Ok(files) => files,
             Err(e) => return self.reply(PtyBinErrMsg::new(e)).await,
         };
@@ -190,6 +170,8 @@ impl Handler for BsonHandler<ListPathReq> {
 }
 
 impl Handler for BsonHandler<FileExistsReq> {
+    const MSG_TYPE: &str = "PtyFileExist";
+
     async fn process(self) {
         let path = &self.request.data.path;
         info!("=>file_exists `{}`, path: {}", self.id(), path);
@@ -199,6 +181,8 @@ impl Handler for BsonHandler<FileExistsReq> {
 }
 
 impl Handler for BsonHandler<FileInfoReq> {
+    const MSG_TYPE: &str = "PtyFileInfo";
+
     async fn process(self) {
         let path = &self.request.data.path;
         info!("=>file_info `{}`, path: {}", self.id(), path);
@@ -210,23 +194,26 @@ impl Handler for BsonHandler<FileInfoReq> {
 }
 
 impl Handler for BsonHandler<WriteFileReq> {
+    const MSG_TYPE: &str = "PtyWriteFile";
+
     async fn process(self) {
-        let data = &self.request.data;
-        info!("=>write_file `{}`, path: {}", self.id(), data.path);
+        let id = self.id();
+        let WriteFileReq { data, path, offset } = &self.request.data;
+        info!("=>write_file `{id}`, path: {path}, offset: {offset:?}");
         //check permission
         let plugin = &self.channel.as_ref().unwrap().plugin.component;
-        if let Err(e) = plugin.inspect_access(&data.path, PTY_INSPECT_WRITE).await {
+        if let Err(e) = plugin.inspect_access(path, PTY_INSPECT_WRITE).await {
             return self.reply(PtyBinErrMsg::new(e)).await;
         };
 
-        let mut file = match OpenOptions::new().write(true).open(&data.path).await {
+        let mut file = match OpenOptions::new().write(true).open(path).await {
             Ok(file) => file,
             Err(e) => return self.reply(PtyBinErrMsg::new(e)).await,
         };
 
         // Write at the file's end by default if 'offset' is not provided.
-        let pos = match data.offset {
-            Some(offset) => SeekFrom::Start(offset as u64),
+        let pos = match offset {
+            Some(offset) => SeekFrom::Start(*offset as u64),
             None => SeekFrom::End(0),
         };
 
@@ -234,7 +221,7 @@ impl Handler for BsonHandler<WriteFileReq> {
             return self.reply(PtyBinErrMsg::new(e)).await;
         }
 
-        match file.write(&data.data).await {
+        match file.write(data).await {
             Ok(length) => self.reply(WriteFileResp { length }).await,
             Err(e) => self.reply(PtyBinErrMsg::new(e)).await,
         };
@@ -242,29 +229,33 @@ impl Handler for BsonHandler<WriteFileReq> {
 }
 
 impl Handler for BsonHandler<ReadFileReq> {
+    const MSG_TYPE: &str = "PtyReadFile";
+
     async fn process(self) {
-        let data = &self.request.data;
-        info!("=>read_file `{}`, path: {}", self.id(), data.path);
+        let id = self.id();
+        let ReadFileReq { path, offset, size } = &self.request.data;
+        info!("=>read_file `{id}`, path: {path}, offset: {offset}, size: {size}");
+
         //check permission
         let plugin = &self.channel.as_ref().unwrap().plugin.component;
-        if let Err(e) = plugin.inspect_access(&data.path, PTY_INSPECT_READ).await {
+        if let Err(e) = plugin.inspect_access(path, PTY_INSPECT_READ).await {
             info!("read_file `{}` inspect_access failed", self.id());
             return self.reply(PtyBinErrMsg::new(e)).await;
         };
 
         //open file read only
-        let mut file = match tokio::fs::File::open(&data.path).await {
+        let mut file = match tokio::fs::File::open(path).await {
             Ok(file) => file,
             Err(e) => return self.reply(PtyBinErrMsg::new(e)).await,
         };
 
-        if let Err(e) = file.seek(SeekFrom::Start(data.offset as u64)).await {
+        if let Err(e) = file.seek(SeekFrom::Start(*offset as u64)).await {
             return self.reply(PtyBinErrMsg::new(e)).await;
         };
 
         //use async file
-        let mut remainder = data.size;
-        let mut offset = data.offset;
+        let mut remainder = *size;
+        let mut offset = *offset;
         let mut buffer: [u8; 3072] = [0; 3072];
         loop {
             let upper_limit = std::cmp::min(remainder, 3072);

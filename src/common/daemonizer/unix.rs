@@ -11,7 +11,15 @@ pub fn daemonize(entry: fn()) {
         return;
     };
 
-    let daemonize = Daemonize::new().pid_file(PID_FILE).working_directory(".");
+    let umask = unsafe {
+        let current_umask = libc::umask(0);
+        libc::umask(current_umask); // Restore the original umask
+        current_umask
+    };
+    let daemonize = Daemonize::new()
+        .pid_file(PID_FILE)
+        .working_directory(".")
+        .umask(umask);
     match daemonize.start() {
         Ok(_) => info!("daemonize success"),
         Err(e) => {

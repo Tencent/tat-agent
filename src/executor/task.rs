@@ -446,9 +446,17 @@ impl Display for TaskResult {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{common::get_current_username, executor::init_command};
+    use crate::common::get_current_username;
     use std::{env::set_current_dir, fs::exists};
+    use tokio::process::Command;
     const FAKE_COS_URL: &str = "https://fake-cos-url.com";
+
+    async fn init_command(script: &str) -> Command {
+        #[cfg(unix)]
+        return crate::executor::unix::init_command(script, None).await;
+        #[cfg(windows)]
+        return crate::executor::windows::init_powershell_command(script);
+    }
 
     fn task_output_with_buffer(buffer: Vec<u8>) -> TaskOutput {
         TaskOutput {

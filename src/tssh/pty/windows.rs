@@ -7,7 +7,9 @@ use super::bind::{
 use super::parser::{do_parse, AnsiItem, EscapeItem};
 use super::{execute_stream, PtyExecCallback};
 use crate::common::{str2wsz, wsz2string};
-use crate::executor::windows::{anon_pipe, configure_command, kill_process_group, load_envs, User};
+use crate::executor::windows::{
+    anon_pipe, configure_command, init_powershell_command, kill_process_group, load_envs, User,
+};
 use crate::tssh::{session::PluginComp, PTY_FLAG_ENABLE_BLOCK, PTY_INSPECT_WRITE};
 use crate::EXE_DIR;
 
@@ -29,7 +31,6 @@ use ntapi::ntpsapi::{
 };
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::process::Command;
 use tokio::sync::Mutex;
 use winapi::shared::minwindef::{DWORD, LPDWORD};
 use winapi::shared::ntdef::{LPCWSTR, NULL};
@@ -179,7 +180,7 @@ impl PluginComp {
 
     pub async fn execute_stream(
         &self,
-        mut cmd: Command,
+        cmd: &str,
         callback: Option<PtyExecCallback>,
         timeout: Option<u64>,
     ) -> Result<()> {
@@ -189,6 +190,7 @@ impl PluginComp {
             work_dir = EXE_DIR.to_string_lossy().into_owned();
         }
         let (receiver, sender) = unsafe { anon_pipe(true)? };
+        let mut cmd = init_powershell_command(&cmd);
         configure_command(&mut cmd, &user, &work_dir, sender).await?;
 
         let callback = callback.unwrap_or_else(|| Box::new(|_, _, _, _| Box::pin(async {})));

@@ -2,11 +2,8 @@ use super::handler::{BsonHandler, Handler, HandlerExt, JsonHandler};
 use super::session::{Channel, Plugin, PluginComp, PluginCtrl, PluginData, Session};
 use super::TSSH;
 use crate::common::{evbus::EventBus, get_current_username};
-use crate::executor::{decode_output, init_command, kill_process_group};
-use crate::network::{
-    ExecCmdReq, ExecCmdStreamReq, ExecCmdStreamResp, PtyBinBase, PtyBinErrMsg, PtyError, PtyInput,
-    PtyJsonBase, PtyMaxRate, PtyOutput, PtyReady, PtyResize, PtyStart, PtyStop,
-};
+use crate::executor::{decode_output, kill_process_group};
+use crate::network::*;
 
 use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 
@@ -16,11 +13,7 @@ use log::{error, info};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::{process::Command, time::sleep};
 
-use super::{
-    PTY_EXEC_DATA_SIZE, SLOT_PTY_BIN, WS_MSG_TYPE_PTY_ERROR, WS_MSG_TYPE_PTY_EXEC_CMD,
-    WS_MSG_TYPE_PTY_EXEC_CMD_STREAM, WS_MSG_TYPE_PTY_INPUT, WS_MSG_TYPE_PTY_MAX_RATE,
-    WS_MSG_TYPE_PTY_OUTPUT, WS_MSG_TYPE_PTY_RESIZE, WS_MSG_TYPE_PTY_START, WS_MSG_TYPE_PTY_STOP,
-};
+use super::{PTY_EXEC_DATA_SIZE, SLOT_PTY_BIN, WS_MSG_TYPE_PTY_ERROR, WS_MSG_TYPE_PTY_OUTPUT};
 const SLOT_PTY_CMD: &str = "event_slot_pty_cmd";
 const PTY_TTL: Duration = Duration::from_secs(60 * 3); // 3 min
 const PTY_BUF_SIZE: usize = 1024;
@@ -53,35 +46,21 @@ type PtyExecCallback = Box<
 >;
 
 pub fn register_pty_handlers(event_bus: &Arc<EventBus>) {
-    event_bus
-        .slot_register(SLOT_PTY_CMD, WS_MSG_TYPE_PTY_START, move |value| {
-            TSSH::dispatch::<JsonHandler<PtyStart>>(value, false);
-        })
-        .slot_register(SLOT_PTY_CMD, WS_MSG_TYPE_PTY_STOP, move |value| {
-            TSSH::dispatch::<JsonHandler<PtyStop>>(value, false);
-        })
-        .slot_register(SLOT_PTY_CMD, WS_MSG_TYPE_PTY_RESIZE, move |value| {
-            TSSH::dispatch::<JsonHandler<PtyResize>>(value, true);
-        })
-        .slot_register(SLOT_PTY_CMD, WS_MSG_TYPE_PTY_INPUT, move |value| {
-            TSSH::dispatch::<JsonHandler<PtyInput>>(value, true);
-        })
-        .slot_register(SLOT_PTY_CMD, WS_MSG_TYPE_PTY_MAX_RATE, move |value| {
-            TSSH::dispatch::<JsonHandler<PtyMaxRate>>(value, false);
-        })
-        .slot_register(SLOT_PTY_BIN, WS_MSG_TYPE_PTY_EXEC_CMD, move |value| {
-            TSSH::dispatch::<BsonHandler<ExecCmdReq>>(value, true);
-        })
-        .slot_register(
-            SLOT_PTY_BIN,
-            WS_MSG_TYPE_PTY_EXEC_CMD_STREAM,
-            move |value| {
-                TSSH::dispatch::<BsonHandler<ExecCmdStreamReq>>(value, true);
-            },
-        );
+    JsonHandler::<PtyStart>::register_to(event_bus, SLOT_PTY_CMD);
+    JsonHandler::<PtyStop>::register_to(event_bus, SLOT_PTY_CMD);
+    JsonHandler::<PtyResize>::register_to(event_bus, SLOT_PTY_CMD);
+    JsonHandler::<PtyInput>::register_to(event_bus, SLOT_PTY_CMD);
+    JsonHandler::<PtyMaxRate>::register_to(event_bus, SLOT_PTY_CMD);
+    JsonHandler::<PtyPing>::register_to(event_bus, SLOT_PTY_CMD);
+
+    BsonHandler::<ExecCmdReq>::register_to(event_bus, SLOT_PTY_BIN);
+    BsonHandler::<ExecCmdStreamReq>::register_to(event_bus, SLOT_PTY_BIN);
 }
 
 impl Handler for JsonHandler<PtyStart> {
+    const MSG_TYPE: &str = "PtyStart";
+    const NEED_CHANNEL: bool = false;
+
     async fn process(self) {
         let req = &self.request.data;
         let session_id = &self.request.session_id;
@@ -143,6 +122,9 @@ impl Handler for JsonHandler<PtyStart> {
 }
 
 impl Handler for JsonHandler<PtyStop> {
+    const MSG_TYPE: &str = "PtyStop";
+    const NEED_CHANNEL: bool = false;
+
     async fn process(self) {
         let session_id = &self.request.session_id;
         let channel_id = &self.request.channel_id;
@@ -160,6 +142,8 @@ impl Handler for JsonHandler<PtyStop> {
 }
 
 impl Handler for JsonHandler<PtyResize> {
+    const MSG_TYPE: &str = "PtyResize";
+
     async fn process(self) {
         info!("=>pty_resize `{}`", self.id());
         let channel = &self.channel;
@@ -175,6 +159,8 @@ impl Handler for JsonHandler<PtyResize> {
 }
 
 impl Handler for JsonHandler<PtyInput> {
+    const MSG_TYPE: &str = "PtyInput";
+
     async fn process(self) {
         // info!("=>pty_input `{}`", self.id());
         let data = match STANDARD.decode(&self.request.data.input) {
@@ -198,6 +184,8 @@ impl Handler for JsonHandler<PtyInput> {
 
 #[cfg(windows)]
 impl Handler for BsonHandler<ExecCmdReq> {
+    const MSG_TYPE: &str = "PtyExecCmd";
+
     async fn process(self) {
         self.reply(PtyBinErrMsg::new("not support on windows"))
             .await
@@ -206,6 +194,8 @@ impl Handler for BsonHandler<ExecCmdReq> {
 
 #[cfg(unix)]
 impl Handler for BsonHandler<ExecCmdReq> {
+    const MSG_TYPE: &str = "PtyExecCmd";
+
     async fn process(self) {
         let data = &self.request.data;
         info!(
@@ -246,6 +236,8 @@ impl Handler for BsonHandler<ExecCmdReq> {
 }
 
 impl Handler for BsonHandler<ExecCmdStreamReq> {
+    const MSG_TYPE: &str = "PtyExecCmdStream";
+
     async fn process(self) {
         let data = &self.request.data;
         info!(
@@ -274,12 +266,11 @@ impl Handler for BsonHandler<ExecCmdStreamReq> {
             Box::pin(async move { TSSH::reply_bson_msg(&op, msg).await })
         });
 
-        let cmd = init_command(&data.cmd).await;
         let plugin = &self.channel.as_ref().unwrap().plugin;
         plugin.controller.timer.freeze();
         let result = plugin
             .component
-            .execute_stream(cmd, Some(cb), data.timeout)
+            .execute_stream(&data.cmd, Some(cb), data.timeout)
             .await;
         plugin.controller.timer.unfreeze();
         if let Err(e) = result {
@@ -290,10 +281,21 @@ impl Handler for BsonHandler<ExecCmdStreamReq> {
 }
 
 impl Handler for JsonHandler<PtyMaxRate> {
+    const MSG_TYPE: &str = "PtyMaxRate";
+    const NEED_CHANNEL: bool = false;
+
     async fn process(self) {
         let rate = self.request.data.rate;
-        info!("=>pty_max_rate: {} MB/s", rate);
+        info!("=>pty_max_rate: {} B/s", rate);
         TSSH::set_limiter(rate).await
+    }
+}
+
+impl Handler for JsonHandler<PtyPing> {
+    const MSG_TYPE: &str = "PtyPing";
+
+    async fn process(self) {
+        return self.reply(PtyPong {}).await;
     }
 }
 
@@ -404,7 +406,6 @@ mod test {
     use super::Pty;
     use crate::common::get_current_username;
     use crate::common::logger::init_test_log;
-    use crate::executor::init_command;
     use crate::tssh::pty::PtyExecCallback;
     use crate::tssh::session::PluginComp;
 
@@ -484,8 +485,7 @@ mod test {
             assert_eq!(*expect_data, data);
             Box::pin(async {})
         });
-        let cmd = init_command(script).await;
-        let result = plugin.execute_stream(cmd, Some(cb), timeout).await;
+        let result = plugin.execute_stream(script, Some(cb), timeout).await;
         assert_eq!(expect_result, result.map_err(|e| e.to_string()));
     }
 

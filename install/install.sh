@@ -5,7 +5,7 @@ PID_FILE="/var/run/tat_agent.pid"
 
 # install the agent binary
 SERVICE_DIR="/usr/local/qcloud/tat_agent/"
-PATH_DIR="/usr/sbin/"
+PATH_DIR="/usr/local/bin/"
 TAT_AGENT="tat_agent"
 UTMPX="utmpx"
 TAT_AGENT32="tat_agent32"

@@ -1,10 +1,10 @@
 [package]
 name = "tat_agent"
-version = "1.1.5"
+version = "1.1.6"
 edition = "2018"
 
 [dependencies]
-tokio = { version = "1.40.0", features = [
+tokio = { version = "1.44.2", features = [
   "test-util",
   "rt-multi-thread",
   "process",
@@ -51,7 +51,7 @@ sysinfo = { version = "0.33.1", default-features = false, features = [
 [target.'cfg(unix)'.dependencies]
 daemonize = "0.5.0"
 users = { version = "0.11.0" }
-openssl = { version = '0.10.66', features = ["vendored"] }
+openssl = { version = '0.10.72', features = ["vendored"] }
 procfs = "0.15.1"
 unix_mode = "0.1.3"
 

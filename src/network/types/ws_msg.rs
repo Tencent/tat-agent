@@ -83,6 +83,14 @@ pub struct PtyMaxRate {
 
 #[derive(Default, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]
+pub struct PtyPing {}
+
+#[derive(Default, Serialize, Deserialize, Debug)]
+#[serde(rename_all = "PascalCase")]
+pub struct PtyPong {}
+
+#[derive(Default, Serialize, Deserialize, Debug)]
+#[serde(rename_all = "PascalCase")]
 pub struct PtyError {
     pub reason: String,
 }

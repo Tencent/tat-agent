@@ -6,9 +6,9 @@ pub mod windows;
 
 use self::task::{Task, EXIT_CODE_ERROR, TASK_RESULT_START_FAILED};
 #[cfg(unix)]
-pub use self::unix::{decode_output, init_command, kill_process_group, User};
+pub use self::unix::{decode_output, kill_process_group, User};
 #[cfg(windows)]
-pub use self::windows::{decode_output, init_command, kill_process_group, User};
+pub use self::windows::{decode_output, kill_process_group, User};
 use crate::common::{evbus::EventBus, get_now_secs, Stopper};
 use crate::network::{InvocationCancelTask, InvocationNormalTask};
 use crate::network::{Invoke, InvokeAdapter, EVENT_KICK};

@@ -106,11 +106,7 @@ impl User {
     }
 }
 
-pub async fn init_command(script: &str) -> Command {
-    init_powershell_command(script)
-}
-
-fn init_powershell_command(script: &str) -> Command {
+pub fn init_powershell_command(script: &str) -> Command {
     let mut cmd = Command::new("powershell");
     cmd.args(&[
         "-ExecutionPolicy",
@@ -121,7 +117,7 @@ fn init_powershell_command(script: &str) -> Command {
     cmd
 }
 
-fn init_bat_command(script: &str) -> Command {
+pub fn init_bat_command(script: &str) -> Command {
     let mut cmd = Command::new("cmd.exe");
     cmd.args(&["/C", script]);
     cmd

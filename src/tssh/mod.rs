@@ -22,14 +22,7 @@ use serde::Serialize;
 use tokio::{runtime::Runtime, sync::RwLock};
 
 const WS_MSG_TYPE_PTY_ERROR: &str = "PtyError";
-const WS_MSG_TYPE_PTY_EXEC_CMD: &str = "PtyExecCmd";
-const WS_MSG_TYPE_PTY_EXEC_CMD_STREAM: &str = "PtyExecCmdStream";
-const WS_MSG_TYPE_PTY_START: &str = "PtyStart";
-const WS_MSG_TYPE_PTY_STOP: &str = "PtyStop";
-const WS_MSG_TYPE_PTY_RESIZE: &str = "PtyResize";
-const WS_MSG_TYPE_PTY_INPUT: &str = "PtyInput";
 const WS_MSG_TYPE_PTY_OUTPUT: &str = "PtyOutput";
-const WS_MSG_TYPE_PTY_MAX_RATE: &str = "PtyMaxRate";
 #[allow(unused)]
 const WS_MSG_TYPE_PTY_READY: &str = "PtyReady";
 pub const WS_TXT_MSG: &str = "pty_cmd_msg";
@@ -79,12 +72,12 @@ impl TSSH {
         TSSH.get().expect("runtime")
     }
 
-    pub fn sync_dispatch<T: HandlerExt>(msg: Vec<u8>, need_channel: bool) {
+    pub fn sync_dispatch<T: HandlerExt + ?Sized>(msg: Vec<u8>, need_channel: bool) {
         let rt = &TSSH::instance().runtime;
         rt.block_on(T::dispatch(msg, need_channel));
     }
 
-    pub fn dispatch<T: HandlerExt>(msg: Vec<u8>, need_channel: bool) {
+    pub fn dispatch<T: HandlerExt + ?Sized>(msg: Vec<u8>, need_channel: bool) {
         let rt = &TSSH::instance().runtime;
         rt.spawn(async move { T::dispatch(msg, need_channel).await });
     }

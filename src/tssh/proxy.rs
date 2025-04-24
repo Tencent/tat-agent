@@ -13,27 +13,20 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::{net::TcpStream, sync::Mutex};
 
 use super::SLOT_PTY_BIN;
-const WS_MSG_TYPE_PTY_PROXY_NEW: &str = "PtyProxyNew";
 const WS_MSG_TYPE_PTY_PROXY_READY: &str = "PtyProxyReady";
-const WS_MSG_TYPE_PTY_PROXY_DATA: &str = "PtyProxyData";
-const WS_MSG_TYPE_PTY_PROXY_CLOSE: &str = "PtyProxyClose";
 const PROXY_TTL: Duration = Duration::from_secs(60 * 5); // 5 min
 const PROXY_BUF_SIZE: usize = 2048;
 
 pub fn register_proxy_handlers(event_bus: &Arc<EventBus>) {
-    event_bus
-        .slot_register(SLOT_PTY_BIN, WS_MSG_TYPE_PTY_PROXY_NEW, move |msg| {
-            TSSH::dispatch::<BsonHandler<ProxyNew>>(msg, false);
-        })
-        .slot_register(SLOT_PTY_BIN, WS_MSG_TYPE_PTY_PROXY_DATA, move |msg| {
-            TSSH::sync_dispatch::<BsonHandler<ProxyData>>(msg, true);
-        })
-        .slot_register(SLOT_PTY_BIN, WS_MSG_TYPE_PTY_PROXY_CLOSE, move |msg| {
-            TSSH::dispatch::<BsonHandler<ProxyClose>>(msg, false);
-        });
+    BsonHandler::<ProxyNew>::register_to(event_bus, SLOT_PTY_BIN);
+    BsonHandler::<ProxyData>::register_to(event_bus, SLOT_PTY_BIN);
+    BsonHandler::<ProxyClose>::register_to(event_bus, SLOT_PTY_BIN);
 }
 
 impl Handler for BsonHandler<ProxyNew> {
+    const MSG_TYPE: &str = "PtyProxyNew";
+    const NEED_CHANNEL: bool = false;
+
     async fn process(self) {
         let req = &self.request;
         let proxy_id = req.data.proxy_id.clone();
@@ -103,6 +96,9 @@ impl Handler for BsonHandler<ProxyNew> {
 }
 
 impl Handler for BsonHandler<ProxyData> {
+    const MSG_TYPE: &str = "PtyProxyData";
+    const NEED_SYNC_DISPATCH: bool = true;
+
     async fn process(self) {
         let req = self.request;
         let proxy_id = req.data.proxy_id.clone();
@@ -130,6 +126,9 @@ impl Handler for BsonHandler<ProxyData> {
 }
 
 impl Handler for BsonHandler<ProxyClose> {
+    const MSG_TYPE: &str = "PtyProxyClose";
+    const NEED_CHANNEL: bool = false;
+
     async fn process(self) {
         let req = &self.request;
         let proxy_id = &req.data.proxy_id;
@@ -174,7 +173,7 @@ impl Proxy {
                             proxy_id: self.proxy_id.clone(),
                             data: buffer[..i].to_vec(),
                         };
-                        self.post(WS_MSG_TYPE_PTY_PROXY_DATA, data, msg_data).await;
+                        self.post(data, msg_data).await;
                         size += i;
                         count += 1;
                     }
@@ -194,17 +193,21 @@ impl Proxy {
         let msg_data = ProxyClose {
             proxy_id: self.proxy_id.clone(),
         };
-        self.post(WS_MSG_TYPE_PTY_PROXY_CLOSE, data, msg_data).await;
+        self.post(data, msg_data).await;
         info!("Proxy `{}` send total size: {}, count: {}", id, size, count);
     }
 
-    async fn post<T: Serialize>(&self, msg_type: &str, ids: &PluginData, data: T) {
+    async fn post<T>(&self, ids: &PluginData, data: T)
+    where
+        T: Serialize,
+        BsonHandler<T>: Handler,
+    {
         let data = PtyBinBase {
             session_id: ids.session_id.clone(),
             channel_id: ids.channel_id.clone(),
             custom_data: "".to_owned(),
             data,
         };
-        TSSH::reply_bson_msg(msg_type, data).await
+        TSSH::reply_bson_msg(BsonHandler::<T>::MSG_TYPE, data).await
     }
 }

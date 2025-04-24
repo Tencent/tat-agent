@@ -1,5 +1,5 @@
 use super::{execute_stream, PtyExecCallback};
-use crate::executor::unix::{configure_command, load_envs, User};
+use crate::executor::unix::{configure_command, init_command, load_envs, User};
 use crate::tssh::{session::PluginComp, PTY_INSPECT_READ};
 use crate::EXE_DIR;
 
@@ -44,7 +44,7 @@ impl Pty {
             .file_name()
             .unwrap_or_else(|| std::ffi::OsStr::new("bash"))
             .to_string_lossy()
-            .to_string();
+            .into_owned();
 
         let home_path = user.home_dir().to_str().unwrap_or_else(|| "/tmp");
         let local_envs = load_envs(username, home_path, &shell_path.to_string_lossy()).await;
@@ -218,12 +218,13 @@ impl PluginComp {
 
     pub async fn execute_stream(
         &self,
-        mut cmd: Command,
+        cmd: &str,
         callback: Option<PtyExecCallback>,
         timeout: Option<u64>,
     ) -> Result<()> {
         let user = self.get_user()?;
         let cwd_path = self.get_cwd(&user);
+        let mut cmd = init_command(&cmd, Some(user.as_ref())).await;
         configure_command(&mut cmd, &user, cwd_path).await;
 
         let callback = callback.unwrap_or_else(|| Box::new(|_, _, _, _| Box::pin(async {})));
@@ -296,9 +297,12 @@ async fn call_utmpx(ttyname: &str, username: &str, pid: pid_t, sid: pid_t, ut_ty
 fn audit_setloginuid(uid: uid_t) -> io::Result<()> {
     info!("=>audit_setloginuid {}", uid);
     let loginuid = format!("{}", uid);
-    let loginuid_path = format!("/proc/self/loginuid");
+    let path = "/proc/self/loginuid";
 
-    let mut file = StdFile::create(loginuid_path)?;
+    let Ok(mut file) = StdFile::create(path) else {
+        info!("audit_setloginuid {} not found, ignore audit", path);
+        return Ok(());
+    };
     file.write_all(loginuid.as_bytes())?;
     Ok(())
 }

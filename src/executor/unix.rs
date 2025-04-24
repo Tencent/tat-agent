@@ -21,7 +21,8 @@ pub struct User(users::User);
 
 impl Task {
     pub async fn spawn(&mut self) -> Result<(Child, impl AsyncReadExt + Unpin)> {
-        let mut cmd = init_command(&self.info.script_path()?.as_os_str().to_str().unwrap()).await;
+        let script = self.info.script_path()?;
+        let mut cmd = init_command(script.as_os_str().to_str().unwrap(), None).await;
         configure_command(&mut cmd, &self.info.user, &self.info.working_directory).await;
 
         let mut child = cmd.spawn()?;
@@ -62,8 +63,8 @@ impl User {
     }
 }
 
-pub async fn init_command(script: &str) -> Command {
-    let (shell, init_script) = get_available_shell().await;
+pub async fn init_command(script: &str, user: Option<&User>) -> Command {
+    let (shell, init_script) = get_available_shell(user).await;
     let script = format!("{} {}", init_script, script);
     let mut cmd = Command::new(shell);
     cmd.args(&["-c", &script]);
@@ -71,9 +72,9 @@ pub async fn init_command(script: &str) -> Command {
 }
 
 pub async fn configure_command(cmd: &mut Command, user: &User, work_dir: impl AsRef<Path>) {
-    let (shell, _) = get_available_shell().await;
+    let shell = cmd.as_std().get_program().to_str().unwrap();
     let home = user.home_dir().to_str().unwrap_or("/tmp").to_owned();
-    let envs = load_envs(user.name().to_str().unwrap(), &home, &shell).await;
+    let envs = load_envs(user.name().to_str().unwrap(), &home, shell).await;
 
     cmd.uid(user.uid())
         .gid(user.primary_group_id())
@@ -95,12 +96,48 @@ pub fn get_user(username: &str) -> Result<users::User> {
     get_user_by_name(username).ok_or(anyhow!("user `{}` not exists", username))
 }
 
-async fn get_available_shell() -> (String, &'static str) {
-    let bash_init_script =
-        ". /etc/profile 2>/dev/null; . ~/.bash_profile 2>/dev/null || . ~/.bashrc 2>/dev/null;";
-    match find_program_in_path("bash").await {
-        Some(bash) => (bash, bash_init_script),
-        None => (find_program_in_path("sh").await.unwrap(), ""),
+async fn get_available_shell(user: Option<&User>) -> (String, &'static str) {
+    let sh_init_script = "";
+    let bash_init_script = "\
+        . /etc/profile    2>/dev/null; \
+        . ~/.bash_profile 2>/dev/null || . ~/.bashrc 2>/dev/null; \
+    ";
+    let zsh_init_script = "\
+        . /etc/zshenv   2>/dev/null; . ~/.zshenv   2>/dev/null; \
+        . /etc/zprofile 2>/dev/null; . ~/.zprofile 2>/dev/null; \
+        . /etc/zshrc    2>/dev/null; . ~/.zshrc    2>/dev/null; \
+    ";
+    let fish_init_script = "\
+        . /etc/fish/config.fish      2>/dev/null; \
+        . ~/.config/fish/config.fish 2>/dev/null; \
+    ";
+    let tcsh_init_script = "\
+        . /etc/csh.cshrc 2>/dev/null; \
+        . ~/.tcshrc      2>/dev/null; \
+        . ~/.cshrc       2>/dev/null; \
+    ";
+
+    // use for tssh-PtyExecCmdStream
+    if let Some(user) = user {
+        let path = user.shell();
+        let init_script = match path.file_name().and_then(|s| s.to_str()).unwrap_or("bash") {
+            "sh" => sh_init_script,
+            "bash" => bash_init_script,
+            "zsh" => zsh_init_script,
+            "fish" => fish_init_script,
+            "tcsh" => tcsh_init_script,
+            _ => "",
+        };
+        return (path.to_string_lossy().into_owned(), init_script);
+    }
+
+    // use for executor
+    if let Some(bash) = find_program_in_path("bash").await {
+        (bash, bash_init_script)
+    } else if let Some(sh) = find_program_in_path("sh").await {
+        (sh, sh_init_script)
+    } else {
+        panic!("get_available_shell failed")
     }
 }
 

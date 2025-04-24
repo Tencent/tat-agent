@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.6] - 2025-04-23
+
+### Changed
+
+- Daemon process inherits the service's own umask value.
+- Added Ping/Pong keep-alive interface for tssh.
+- PtyExecCmdStream now supports execution via user's default shell.
+- Removed LimitNOFILE service configuration to prevent installation failures.
+
 ## [1.1.5] - 2025-02-24
 
 ### Changed

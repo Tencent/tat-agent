@@ -1,4 +1,5 @@
 use super::{session::Channel, TSSH};
+use crate::common::evbus::EventBus;
 use crate::network::{PtyBinBase, PtyBinErrMsg, PtyError, PtyJsonBase, WsMsg};
 
 use std::{future::Future, io::Cursor, sync::Arc};
@@ -8,14 +9,41 @@ use log::error;
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
 
+/// use for handling specific request messages
 pub trait Handler {
+    /// type of the request message, extracted from WsMsg.r#type
+    const MSG_TYPE: &str;
+
+    /// if the request depends on an existing channel, default value is true
+    const NEED_CHANNEL: bool = true;
+
+    /// if the request must be strictly dispatched synchronously, default value is false
+    const NEED_SYNC_DISPATCH: bool = false;
+
+    /// handle request
     fn process(self) -> impl Future<Output = ()> + Send;
 }
 
+/// use for handling a type of request message, such as JSON or BSON requests
 pub trait HandlerExt: Handler {
+    /// get the unique ID of a channel for logging purposes
     fn id(&self) -> String;
+
+    /// preprocess upon receiving a request and call the handling function
     fn dispatch(msg: Vec<u8>, need_channel: bool) -> impl Future<Output = ()> + Send;
+
+    /// reply the response message
     async fn reply<M: Serialize>(&self, data: M);
+
+    /// register the request handler to the event bus
+    fn register_to(event_bus: &Arc<EventBus>, slot: &str) {
+        event_bus.slot_register(slot, Self::MSG_TYPE, move |msg| {
+            if Self::NEED_SYNC_DISPATCH {
+                return TSSH::sync_dispatch::<Self>(msg, Self::NEED_CHANNEL);
+            }
+            TSSH::dispatch::<Self>(msg, Self::NEED_CHANNEL);
+        });
+    }
 }
 
 pub struct BsonHandler<T> {
