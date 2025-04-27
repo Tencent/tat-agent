@@ -23,5 +23,4 @@ install/*.exe
 winpty
 *.log
 *.dat
-*.ps1
 

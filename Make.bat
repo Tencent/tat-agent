@@ -3,10 +3,10 @@ cd /d %~dp0
 
 if "%1" == "win64-bin" goto win64-bin
 if "%1" == "win64-update-pkg" goto win64-update-pkg
-if "%1" == "win64-install-pkg" goto win64-install-pkg
+if "%1" == "win64-init-install-pkg" goto win64-init-install-pkg
 if "%1" == "win64-installer" goto win64-installer
 if "%1" == "test" goto test
-echo "Please provide an argument: win64-bin|win64-update-pkg|win64-install-pkg|win64-installer|test"
+echo "Please provide an argument: win64-bin|win64-update-pkg|win64-init-install-pkg|win64-installer|test"
 goto end
 
 :test
@@ -35,23 +35,27 @@ goto end
     cd ..\..\
     goto end
 
-:win64-install-pkg 
+:win64-init-install-pkg 
     if not exist "C:\Program Files\7-Zip\7z.exe" (
         echo "7z.exe not found, which is used for tar release files, exit now"
         exit
     )
     SET COMPRESS_PROC="C:\Program Files\7-Zip\7z.exe"
-    FOR /f "delims=@ tokens=2" %%a in ('cargo pkgid') do set VERSION=%%a
-   
-    SET PKG_DIR=tat_agent_windows_install_%VERSION%
+    SET PKG_DIR=tat_agent_windows_install
     rd /s/q .\release\%PKG_DIR%
     mkdir .\release\%PKG_DIR%
     cd .\release\%PKG_DIR%
 
-    SET FILE="tat_agent_windows_install_%VERSION%.tar.gz"
+    SET FILE="tat_agent_windows_install.tar.gz"
     del ..\%FILE%
 
-    copy ..\win-64\*  .\
+    copy ..\..\install\init_install.ps1 .\install.ps1
+    (
+    echo @echo off
+    echo cd /d %%~dp0
+    echo powershell -ExecutionPolicy Bypass .\install.ps1
+    ) > install.bat
+
     %COMPRESS_PROC% a -ttar -so -r *  |  %COMPRESS_PROC% a -si ..\%FILE%
 
     cd ..\..\

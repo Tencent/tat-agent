@@ -45,22 +45,16 @@ linux_arm64_update_pkg: linux_arm64_bin
 	zip ../tat_agent_linux_install_aarch64_${VERSION}.zip * 
 
 
-linux_install_pkg: linux_32_bin linux_64_bin linux_arm64_bin
-	rm -rf ./release/linux-all
-	mkdir  ./release/linux-all
-	cd  ./release/linux-all && \
-	cp ../../install/{tat_agent_service,tat_agent_service.conf,tat_agent.service,*.sh} ./ && \
-	cp ../linux-32/tat_agent  ./tat_agent32 && \
-	cp ../linux-32/utmpx  ./utmpx32 && \
-	cp ../linux-64/tat_agent  ./tat_agent && \
-	cp ../linux-64/utmpx  ./utmpx && \
-	cp ../linux-arm64/tat_agent  ./tat_agent_aarch64 && \
-	cp ../linux-arm64/utmpx  ./utmpx_aarch64 && \
-	rm -f ./release/tat_agent_linux_install_${VERSION}.tar.gz && \
-	tar -czf ../tat_agent_linux_install_${VERSION}.tar.gz * --transform "s,^,tat_agent_linux_install_${VERSION}/,"
+linux_init_install_pkg:
+	rm -rf ./release/init_install_pkg
+	mkdir -p ./release/init_install_pkg
+	cd ./release/init_install_pkg && \
+	cp ../../install/init_install.sh  ./install.sh && \
+	chmod +x ./install.sh && \
+	rm -f ./release/tat_agent_linux_install.tar.gz && \
+	tar -czf ../tat_agent_linux_install.tar.gz * --transform "s,^,tat_agent_linux_install/,"
 
-
-release: linux_install_pkg linux_32_update_pkg linux_64_update_pkg linux_arm64_update_pkg
+release: linux_init_install_pkg linux_32_update_pkg linux_64_update_pkg linux_arm64_update_pkg
 
 
 build:
