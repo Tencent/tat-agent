@@ -42,13 +42,17 @@ get_zip_url() {
 }
 
 detect_init_system() {
-    if command -v systemctl; then
+    if command -v systemctl  &>/dev/null ; then
+        log "INIT_SYSTEM is systemd"
         echo "systemd"
     elif [[ -d /etc/init ]] && /sbin/init --version 2>&1 | grep -q upstart; then
+        log "INIT_SYSTEM is upstart"
         echo "upstart"
     elif [[ -x /etc/init.d/procps ]]; then
+        log "INIT_SYSTEM is sysvinit"
         echo "sysvinit"
     else
+        log "INIT_SYSTEM is unknown"
         echo "unknown"
     fi
 }
@@ -70,14 +74,13 @@ install_unzip() {
 
 register_service() {
     mkdir -p ${INSTALL_DIR}
-    
     SCRIPT_NAME=$(basename $0)
     SCRIPT_PATH="${INSTALL_DIR}/${SCRIPT_NAME}"
     cp -f "$0" "${SCRIPT_PATH}"
-    chmod +x "${SCRIPT_PATH}"
-    
+    chmod +x "${SCRIPT_PATH}" 
     case $(detect_init_system) in
         systemd)
+            log "install service as systemd"
             if [ -f /etc/systemd/system/${SERVICE_NAME}.service ]; then
                 systemctl stop ${SERVICE_NAME}.service 2>/dev/null || true
                 systemctl disable ${SERVICE_NAME}.service 2>/dev/null || true
@@ -89,8 +92,8 @@ Description=TAT Installation Service
 After=network.target
 
 [Service]
-Type=simple
-ExecStart=${SCRIPT_PATH} -service
+Type=forking
+ExecStart=/bin/bash -c "${SCRIPT_PATH} -service &"
 WorkingDirectory=${INSTALL_DIR}
 TimeoutStartSec=0
 RemainAfterExit=no
@@ -103,6 +106,7 @@ EOF
             log "Registered service with systemd."
             ;;
         upstart)
+            log "install service as upstart"
             if [ -f /etc/init/${SERVICE_NAME}.conf ]; then
                 stop ${SERVICE_NAME} 2>/dev/null || true
                 rm -f /etc/init/${SERVICE_NAME}.conf
@@ -117,6 +121,7 @@ EOF
             log "Registered service with upstart."
             ;;
         sysvinit)
+            log "install service as sysvinit"
             if [ -f /etc/init.d/${SERVICE_NAME} ]; then
                 /etc/init.d/${SERVICE_NAME} stop 2>/dev/null || true
                 update-rc.d -f ${SERVICE_NAME} remove 2>/dev/null || true
@@ -173,6 +178,29 @@ uninstall_service() {
     esac
 }
 
+download_file() {
+    local url=$1
+    local output_file=$2
+    local success=false
+
+    if command -v wget &>/dev/null; then
+        log "Using wget for download"
+        if wget -q --no-check-certificate "${url}" -O "${output_file}"; then
+            success=true
+        fi
+    elif command -v curl &>/dev/null; then
+        log "Using curl for download"
+        if curl -s -L --insecure "${url}" -o "${output_file}"; then
+            success=true
+        fi
+    else
+        log "Neither wget nor curl is available. Cannot download file."
+        success=false
+    fi
+
+    echo $success
+}
+
 run_service() {
     log "Starting installation."
 
@@ -182,18 +210,18 @@ run_service() {
     local primary_url=$(get_zip_url ${PRIMARY_DOMAIN})
     local backup_url=$(get_zip_url ${BACKUP_DOMAIN})
     
-    for i in {1..5}; do
+    for i in {1..30}; do
         log "Trying primary domain (attempt $i): ${PRIMARY_DOMAIN}"
-        if wget -q --no-check-certificate "${primary_url}" -O ${INSTALL_DIR}/installer.zip; then
+        download_success=$(download_file "${primary_url}" "${INSTALL_DIR}/installer.zip")
+        if [ "$download_success" = true ]; then
             log "Downloaded installer successfully from primary domain."
-            download_success=true
             break
         fi
         
         log "Primary domain failed, immediately trying backup domain (attempt $i): ${BACKUP_DOMAIN}"
-        if wget -q --no-check-certificate "${backup_url}" -O ${INSTALL_DIR}/installer.zip; then
+        download_success=$(download_file "${backup_url}" "${INSTALL_DIR}/installer.zip")
+        if [ "$download_success" = true ]; then
             log "Downloaded installer successfully from backup domain."
-            download_success=true
             break
         fi
         
@@ -227,26 +255,30 @@ run_service() {
 
 case $1 in
     "-service")
+        log "service started"
         run_service
         log "Uninstalling service..."
         uninstall_service
         ;;
     *)
-        echo "Registering service..."
+        log "Registering service..."
         register_service
-        echo "Starting service..."
+        log "Starting service..."
         case $(detect_init_system) in
             systemd) 
+                log "start service use systemd"
                 systemctl start ${SERVICE_NAME}.service 
                 ;;
             upstart) 
+                log "start service use upstart"
                 start ${SERVICE_NAME} 
                 ;;
             sysvinit) 
+                log "start service use sysvinit"
                 service ${SERVICE_NAME} start 
                 ;;
             *) 
-                log "Running installation directly..."
+                log "start service directly..."
                 run_service 
                 ;;
         esac
