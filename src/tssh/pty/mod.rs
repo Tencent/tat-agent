@@ -1,8 +1,8 @@
 use super::handler::{BsonHandler, Handler, HandlerExt, JsonHandler};
 use super::session::{Channel, Plugin, PluginComp, PluginCtrl, PluginData, Session};
-use super::TSSH;
-use crate::common::{evbus::EventBus, get_current_username};
-use crate::executor::{decode_output, kill_process_group};
+use super::Tssh;
+use crate::common::{get_current_username, utf8_truncation_check};
+use crate::executor::kill_process_group;
 use crate::network::*;
 
 use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
@@ -13,10 +13,10 @@ use log::{error, info};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::{process::Command, time::sleep};
 
-use super::{PTY_EXEC_DATA_SIZE, SLOT_PTY_BIN, WS_MSG_TYPE_PTY_ERROR, WS_MSG_TYPE_PTY_OUTPUT};
-const SLOT_PTY_CMD: &str = "event_slot_pty_cmd";
+use super::{PTY_EXEC_DATA_SIZE, WS_MSG_TYPE_PTY_ERROR, WS_MSG_TYPE_PTY_OUTPUT};
 const PTY_TTL: Duration = Duration::from_secs(60 * 3); // 3 min
 const PTY_BUF_SIZE: usize = 1024;
+const PTY_LOGOUT_MSG: &str = "logout"; // Required by OrcaTerm. DO NOT modify.
 const PTY_SHELL_EXIT_ERR: &str = "I/O error (os error 5)";
 
 cfg_if::cfg_if! {
@@ -45,16 +45,16 @@ type PtyExecCallback = Box<
         + Sync,
 >;
 
-pub fn register_pty_handlers(event_bus: &Arc<EventBus>) {
-    JsonHandler::<PtyStart>::register_to(event_bus, SLOT_PTY_CMD);
-    JsonHandler::<PtyStop>::register_to(event_bus, SLOT_PTY_CMD);
-    JsonHandler::<PtyResize>::register_to(event_bus, SLOT_PTY_CMD);
-    JsonHandler::<PtyInput>::register_to(event_bus, SLOT_PTY_CMD);
-    JsonHandler::<PtyMaxRate>::register_to(event_bus, SLOT_PTY_CMD);
-    JsonHandler::<PtyPing>::register_to(event_bus, SLOT_PTY_CMD);
+pub async fn register_pty_handlers() {
+    JsonHandler::<PtyStart>::register().await;
+    JsonHandler::<PtyStop>::register().await;
+    JsonHandler::<PtyResize>::register().await;
+    JsonHandler::<PtyInput>::register().await;
+    JsonHandler::<PtyMaxRate>::register().await;
+    JsonHandler::<PtyPing>::register().await;
 
-    BsonHandler::<ExecCmdReq>::register_to(event_bus, SLOT_PTY_BIN);
-    BsonHandler::<ExecCmdStreamReq>::register_to(event_bus, SLOT_PTY_BIN);
+    BsonHandler::<ExecCmdReq>::register().await;
+    BsonHandler::<ExecCmdStreamReq>::register().await;
 }
 
 impl Handler for JsonHandler<PtyStart> {
@@ -79,7 +79,7 @@ impl Handler for JsonHandler<PtyStart> {
             let pty_res = {
                 let mut flag: u32 = 0;
                 if req.init_block {
-                    flag = flag | PTY_FLAG_ENABLE_BLOCK
+                    flag |= PTY_FLAG_ENABLE_BLOCK
                 }
                 Pty::new(&username, req.cols, req.rows, flag)
             };
@@ -103,11 +103,11 @@ impl Handler for JsonHandler<PtyStart> {
         };
 
         let channel = Arc::new(Channel::new(session_id, channel_id, plugin));
-        let session = match TSSH::get_session(session_id).await {
+        let session = match Tssh::get_session(session_id).await {
             Some(s) => s,
             None => {
                 let s = Arc::new(Session::new(session_id));
-                let _ = TSSH::add_session(session_id, s.clone()).await;
+                let _ = Tssh::add_session(session_id, s.clone()).await;
                 s
             }
         };
@@ -130,11 +130,11 @@ impl Handler for JsonHandler<PtyStop> {
         let channel_id = &self.request.channel_id;
         info!("=>pty_stop `{}`", self.id());
 
-        let Some(session) = TSSH::get_session(session_id).await else {
+        let Some(session) = Tssh::get_session(session_id).await else {
             return;
         };
         if channel_id.is_empty() {
-            TSSH::remove_session(session_id).await;
+            Tssh::remove_session(session_id).await;
         } else if self.channel.is_some() {
             session.remove_channel(channel_id).await;
         }
@@ -160,6 +160,7 @@ impl Handler for JsonHandler<PtyResize> {
 
 impl Handler for JsonHandler<PtyInput> {
     const MSG_TYPE: &str = "PtyInput";
+    const NEED_SYNC_DISPATCH: bool = true;
 
     async fn process(self) {
         // info!("=>pty_input `{}`", self.id());
@@ -207,7 +208,7 @@ impl Handler for BsonHandler<ExecCmdReq> {
         let plugin = &self.channel.as_ref().unwrap().plugin.component;
         let result = plugin.execute(&|| unsafe {
             let output = StdCommand::new("bash")
-                .args(&["-c", data.cmd.as_str()])
+                .args(["-c", data.cmd.as_str()])
                 .stdin(Stdio::null())
                 .pre_exec(|| {
                     libc::dup2(1, 2);
@@ -263,7 +264,7 @@ impl Handler for BsonHandler<ExecCmdStreamReq> {
                 },
             };
             let op = op.clone();
-            Box::pin(async move { TSSH::reply_bson_msg(&op, msg).await })
+            Box::pin(async move { Tssh::reply_bson_msg(&op, msg).await })
         });
 
         let plugin = &self.channel.as_ref().unwrap().plugin;
@@ -287,7 +288,7 @@ impl Handler for JsonHandler<PtyMaxRate> {
     async fn process(self) {
         let rate = self.request.data.rate;
         info!("=>pty_max_rate: {} B/s", rate);
-        TSSH::set_limiter(rate).await
+        Tssh::set_limiter(rate).await
     }
 }
 
@@ -295,7 +296,7 @@ impl Handler for JsonHandler<PtyPing> {
     const MSG_TYPE: &str = "PtyPing";
 
     async fn process(self) {
-        return self.reply(PtyPong {}).await;
+        self.reply(PtyPong {}).await
     }
 }
 
@@ -310,21 +311,27 @@ impl Pty {
             .get_receiver()
             .await
             .expect("get_receiver failed");
-        let mut buf = [0u8; PTY_BUF_SIZE];
+        let mut buffer = [0u8; PTY_BUF_SIZE];
+        let mut remnant = 0;
         let mut reader = self.get_reader().await.expect("get_reader Failed");
 
         loop {
             tokio::select! {
-                res = reader.read(&mut buf) => match res {
+                res = reader.read(&mut buffer[remnant..]) => match res.map(|l| l + remnant) {
                     Ok(0) => break info!("Pty `{id}` close: read size is 0"),
-                    Ok(size) => {
-                        let data = STANDARD.encode(&mut buf[..size]);
+                    Ok(len) => {
+                        let (output, remnant_slice) = utf8_truncation_check(&buffer[..len], len == PTY_BUF_SIZE);
+
+                        let data = STANDARD.encode(output);
                         let pty_output = PtyJsonBase {
                             session_id: session_id.clone(),
                             channel_id: channel_id.clone(),
                             data: PtyOutput { output: data },
                         };
-                        TSSH::reply_json_msg(WS_MSG_TYPE_PTY_OUTPUT, pty_output).await;
+                        Tssh::reply_json_msg(WS_MSG_TYPE_PTY_OUTPUT, pty_output).await;
+
+                        remnant = remnant_slice.len();
+                        buffer.copy_within(len-remnant..len, 0);
                     }
                     Err(e) => {
                         match e.to_string().as_str() {
@@ -334,9 +341,9 @@ impl Pty {
                         let pty_logout = PtyJsonBase {
                             session_id: session_id.clone(),
                             channel_id: channel_id.clone(),
-                            data: PtyError::new("logout"),
+                            data: PtyError::new(PTY_LOGOUT_MSG),
                         };
-                        break TSSH::reply_json_msg(WS_MSG_TYPE_PTY_ERROR, pty_logout).await;
+                        break Tssh::reply_json_msg(WS_MSG_TYPE_PTY_ERROR, pty_logout).await;
                     }
                 },
                 _ = &mut stopper_rx => break info!("Pty `{id}` stopped"),
@@ -354,8 +361,8 @@ pub async fn execute_stream(
     #[cfg(windows)] user: &User,
 ) -> Result<()> {
     let mut idx = 0u32;
-    let mut is_last;
-    let mut buf = [0u8; PTY_EXEC_DATA_SIZE];
+    let mut buffer = [0u8; PTY_EXEC_DATA_SIZE];
+    let mut remnant = 0;
 
     #[allow(unused_mut)] // Unix needs MUT, Windows does not.
     let mut child = cmd.spawn().context("command start failed")?;
@@ -372,33 +379,43 @@ pub async fn execute_stream(
     let timeout = sleep(Duration::from_secs(timeout));
     tokio::pin!(timeout);
 
-    loop {
+    let res = loop {
         tokio::select! {
-            len = reader.read(&mut buf) => {
-                let len = len.context("buffer read failed")?;
-                is_last = len == 0;
-                if is_last {
-                    break;
-                }
-                let output = decode_output(&buf[..len]);
-                callback(idx, is_last, None, output.into()).await;
+            len = reader.read(&mut buffer[remnant..]) => {
+                let (buf, len) = match len.map(|l| l + remnant) {
+                    Err(e) => break Err(anyhow!("buffer read failed: {e:#}")),
+                    Ok(0) => break Ok(()),
+                    Ok(len) => (&buffer[..len], len),
+                };
+                let (output, remnant_slice) = utf8_truncation_check(buf, len == PTY_EXEC_DATA_SIZE);
+
+                callback(idx, false, None, output.into()).await;
+
+                remnant = remnant_slice.len();
+                buffer.copy_within(len-remnant..len, 0);
                 idx += 1;
             }
             _ = &mut timeout => {
                 info!("execute_stream func timeout");
                 unsafe { kill_process_group(pid) };
-                Err(anyhow!("command timeout, process killed"))?;
+                break Err(anyhow!("command timeout, process killed"));
             }
         };
-    }
+    };
 
-    let exit_status = child.wait().await.context("wait command failed")?;
+    let Ok(exit_status) = child.wait().await else {
+        callback(idx, true, Some(-1), Vec::new()).await;
+        return res.and(Err(anyhow!("wait command failed")));
+    };
     if !exit_status.success() {
         info!("execute_stream func exit failed: {}", exit_status);
     }
-    let exit_code = exit_status.code().context("command exit abnormally")?;
-    callback(idx, is_last, Some(exit_code), Vec::new()).await;
-    Ok(())
+    let Some(exit_code) = exit_status.code() else {
+        callback(idx, true, Some(-1), Vec::new()).await;
+        return res.and(Err(anyhow!("command exit abnormally")));
+    };
+    callback(idx, true, Some(exit_code), Vec::new()).await;
+    res
 }
 
 #[cfg(test)]
@@ -437,7 +454,10 @@ mod test {
             }
         }
 
-        writer.write("echo \"test\" \r".as_bytes()).await.unwrap();
+        writer
+            .write_all("echo \"test\" \r".as_bytes())
+            .await
+            .unwrap();
         let mut buffer: [u8; 1024] = [0; 1024];
         let mut len = 0;
 
@@ -479,7 +499,7 @@ mod test {
         let cb: PtyExecCallback = Box::new(move |idx, is_last, exit_code, data| {
             let (expect_is_last, expect_exit_code, expect_data) = data_map
                 .get(&idx)
-                .expect(&format!("idx `{idx}` not expect"));
+                .unwrap_or_else(|| panic!("idx `{}` not expect", idx));
             assert_eq!(*expect_is_last, is_last);
             assert_eq!(*expect_exit_code, exit_code);
             assert_eq!(*expect_data, data);
@@ -506,7 +526,7 @@ mod test {
             // Timeout without output
             ("while true; do sleep 100; done", Some(1)),
             // Timeout with exceeding data length multiple output
-            ("while true; do echo -n foofoo; sleep 1; done", Some(1)),
+            ("while true; do echo -n foofoo; sleep 2; done", Some(1)),
             // Failed without output
             ("exit 1", None),
             // Failed with output
@@ -527,7 +547,7 @@ mod test {
             ("while ($true) { Start-Sleep -Seconds 100 }", Some(1)),
             // Timeout with exceeding data length multiple output
             (
-                r#"while ($true) { [Console]::Write("foofoo"); Start-Sleep -Seconds 1 }"#,
+                r#"while ($true) { [Console]::Write("foofoo"); Start-Sleep -Seconds 2 }"#,
                 Some(1),
             ),
             // Failed without output
@@ -565,7 +585,7 @@ mod test {
             ),
             (
                 // Timeout without output
-                HashMap::new(),
+                HashMap::from([(0, (true, Some(-1), vec![]))]),
                 Err("command timeout, process killed".to_owned()),
             ),
             (
@@ -573,8 +593,7 @@ mod test {
                 HashMap::from([
                     (0, (false, None, b"foofo".to_vec())),
                     (1, (false, None, b"o".to_vec())),
-                    (2, (false, None, b"foofo".to_vec())),
-                    (3, (false, None, b"o".to_vec())),
+                    (2, (true, Some(-1), vec![])),
                 ]),
                 Err("command timeout, process killed".to_owned()),
             ),

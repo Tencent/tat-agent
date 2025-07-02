@@ -1,5 +1,5 @@
-use super::{session::Channel, TSSH};
-use crate::common::evbus::EventBus;
+use super::{session::Channel, Tssh};
+use crate::common::evbus;
 use crate::network::{PtyBinBase, PtyBinErrMsg, PtyError, PtyJsonBase, WsMsg};
 
 use std::{future::Future, io::Cursor, sync::Arc};
@@ -25,24 +25,23 @@ pub trait Handler {
 }
 
 /// use for handling a type of request message, such as JSON or BSON requests
-pub trait HandlerExt: Handler {
+pub trait HandlerExt: Handler + 'static {
     /// get the unique ID of a channel for logging purposes
     fn id(&self) -> String;
 
     /// preprocess upon receiving a request and call the handling function
-    fn dispatch(msg: Vec<u8>, need_channel: bool) -> impl Future<Output = ()> + Send;
+    fn dispatch(msg: Vec<u8>) -> impl Future<Output = ()> + Send + 'static;
 
     /// reply the response message
     async fn reply<M: Serialize>(&self, data: M);
 
     /// register the request handler to the event bus
-    fn register_to(event_bus: &Arc<EventBus>, slot: &str) {
-        event_bus.slot_register(slot, Self::MSG_TYPE, move |msg| {
-            if Self::NEED_SYNC_DISPATCH {
-                return TSSH::sync_dispatch::<Self>(msg, Self::NEED_CHANNEL);
-            }
-            TSSH::dispatch::<Self>(msg, Self::NEED_CHANNEL);
-        });
+    async fn register() {
+        if Self::NEED_SYNC_DISPATCH {
+            return evbus::subscribe_future(Self::MSG_TYPE, Self::dispatch).await;
+        }
+        let handler = |msg| tokio::spawn(async move { Self::dispatch(msg).await });
+        evbus::subscribe(Self::MSG_TYPE, handler).await;
     }
 }
 
@@ -54,14 +53,14 @@ pub struct BsonHandler<T> {
 
 impl<T> HandlerExt for BsonHandler<T>
 where
-    T: DeserializeOwned + Default + Send + Sync,
+    T: DeserializeOwned + Default + Send + Sync + 'static,
     Self: Handler,
 {
     fn id(&self) -> String {
         format!("{}:{}", self.request.session_id, self.request.channel_id)
     }
 
-    async fn dispatch(msg: Vec<u8>, need_channel: bool)
+    async fn dispatch(msg: Vec<u8>)
     where
         Self: Handler,
     {
@@ -96,13 +95,13 @@ where
         let session_id = &handler.request.session_id;
         let channel_id = &handler.request.channel_id;
 
-        if let Some(session) = TSSH::get_session(session_id).await {
+        if let Some(session) = Tssh::get_session(session_id).await {
             if let Some(channel) = session.get_channel(channel_id).await {
                 handler.channel = Some(channel);
             }
         }
 
-        if need_channel && handler.channel.is_none() {
+        if Self::NEED_CHANNEL && handler.channel.is_none() {
             error!("BsonHandler::dispatch channel `{}` not found", handler.id());
             return handler.reply(PtyBinErrMsg::new("Channel not found")).await;
         }
@@ -117,7 +116,7 @@ where
             custom_data: self.request.custom_data.clone(),
             data,
         };
-        TSSH::reply_bson_msg(&self.op_type, msg).await
+        Tssh::reply_bson_msg(&self.op_type, msg).await
     }
 }
 
@@ -128,14 +127,14 @@ pub struct JsonHandler<T> {
 
 impl<T> HandlerExt for JsonHandler<T>
 where
-    T: DeserializeOwned + Default + Send + Sync,
+    T: DeserializeOwned + Default + Send + Sync + 'static,
     Self: Handler,
 {
     fn id(&self) -> String {
         format!("{}:{}", self.request.session_id, self.request.channel_id)
     }
 
-    async fn dispatch(msg: Vec<u8>, need_channel: bool)
+    async fn dispatch(msg: Vec<u8>)
     where
         Self: Handler,
     {
@@ -158,8 +157,7 @@ where
         // If no channel_id is provided, use empty string as channel_id.
         let channel_id = json_data
             .get("ChannelId")
-            .map(|v| v.as_str())
-            .flatten()
+            .and_then(|v| v.as_str())
             .unwrap_or_default()
             .to_owned();
 
@@ -172,13 +170,13 @@ where
             request,
         };
 
-        if let Some(session) = TSSH::get_session(&session_id).await {
+        if let Some(session) = Tssh::get_session(&session_id).await {
             if let Some(channel) = session.get_channel(&channel_id).await {
                 handler.channel = Some(channel);
             }
         }
 
-        if need_channel && handler.channel.is_none() {
+        if Self::NEED_CHANNEL && handler.channel.is_none() {
             error!("JsonHandler::dispatch channel `{}` not found", handler.id());
             return handler.reply(PtyError::new("Channel not found")).await;
         }
@@ -193,7 +191,7 @@ where
             channel_id: self.request.channel_id.clone(),
             data,
         };
-        TSSH::reply_json_msg(&msg_type, body).await
+        Tssh::reply_json_msg(&msg_type, body).await
     }
 }
 

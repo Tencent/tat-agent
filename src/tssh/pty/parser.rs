@@ -133,7 +133,7 @@ fn cursor_control_parser(input: &str) -> IResult<&str, EscapeItem> {
 }
 
 fn erase_parser(input: &str) -> IResult<&str, EscapeItem> {
-    return alt((
+    alt((
         map(tag("[J"), |_| EscapeItem::EraseDisplay(None)),
         map(tag("[0J"), |_| EscapeItem::EraseDisplay(Some(0))),
         map(tag("[1J"), |_| EscapeItem::EraseDisplay(Some(1))),
@@ -143,7 +143,7 @@ fn erase_parser(input: &str) -> IResult<&str, EscapeItem> {
         map(tag("[0K"), |_| EscapeItem::EraseLine(Some(0))),
         map(tag("[1K"), |_| EscapeItem::EraseLine(Some(1))),
         map(tag("[2K"), |_| EscapeItem::EraseLine(Some(2))),
-    ))(input);
+    ))(input)
 }
 
 fn graphics_mode_parser(input: &str) -> IResult<&str, EscapeItem> {
@@ -222,11 +222,11 @@ fn graphics_mode_parser(input: &str) -> IResult<&str, EscapeItem> {
 }
 
 fn screen_mode_parser(input: &str) -> IResult<&str, EscapeItem> {
-    return alt((
+    alt((
         //Changes the screen width or type to the mode specified by value.
         map(tag("[?25h"), |_| EscapeItem::ShowCursor),
         map(tag("[?25l"), |_| EscapeItem::HideCursor),
-    ))(input);
+    ))(input)
 }
 
 fn common_private_parser(input: &str) -> IResult<&str, EscapeItem> {
@@ -242,13 +242,13 @@ fn common_private_parser(input: &str) -> IResult<&str, EscapeItem> {
 }
 
 fn escape_parse(input: &str) -> IResult<&str, EscapeItem> {
-    return alt((
+    alt((
         cursor_control_parser,
         erase_parser,
         graphics_mode_parser,
         screen_mode_parser,
         common_private_parser,
-    ))(input);
+    ))(input)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -277,13 +277,13 @@ pub fn do_parse(input: &str) -> Vec<AnsiItem> {
         }
         let loc = match buf[pos..].find('\u{1b}') {
             Some(loc) => loc,
-            None if buf[..pos].len() != 0 => break result.push(Text(buf[..pos].to_string())),
+            None if !buf[..pos].is_empty() => break result.push(Text(buf[..pos].to_string())),
             None => break,
         };
         pos += loc;
         match escape_parse(&buf[pos + 1..]) {
             Ok(seq) => {
-                if buf[..pos].len() != 0 {
+                if !buf[..pos].is_empty() {
                     result.push(Text(buf[..pos].to_string()));
                 }
                 result.push(Escape(seq.1));
@@ -293,7 +293,7 @@ pub fn do_parse(input: &str) -> Vec<AnsiItem> {
             Err(_) => pos += 1, //skip esc
         };
     }
-    return result;
+    result
 }
 
 #[cfg(test)]

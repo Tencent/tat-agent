@@ -1,11 +1,11 @@
-use super::{proxy::Proxy, pty::Pty, TSSH};
+use super::{proxy::Proxy, pty::Pty, Tssh};
 use crate::common::{Stopper, Timer};
 use crate::executor::User;
 use crate::network::{PtyBinBase, PtyJsonBase};
 
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use anyhow::{anyhow, Result};
+use anyhow::{bail, Result};
 use log::{error, info};
 use tokio::sync::RwLock;
 
@@ -39,7 +39,7 @@ impl Session {
         let mut chs = self.channels.write().await;
         if chs.contains_key(channel_id) {
             error!("duplicate add_channel `{id}`");
-            Err(anyhow!("channel `{id}` already start"))?
+            bail!("channel `{id}` already start");
         }
         chs.insert(channel_id.to_owned(), channel.clone());
         info!("add_channel `{id}`");
@@ -74,7 +74,7 @@ impl Session {
             _ = stopper_rx => info!("session `{}` stopped", self.session_id),
             _ = self.timer.timeout() => info!("session `{}` timeout", self.session_id),
         };
-        TSSH::remove_session(&self.session_id).await;
+        Tssh::remove_session(&self.session_id).await;
         info!("session `{}` process_output finished", self.session_id);
     }
 }
@@ -114,7 +114,7 @@ impl Channel {
         info!("=>Channel::process_output: {}", id);
         self.plugin.process().await;
         info!("channel `{}` process_output finished", id);
-        let Some(session) = TSSH::get_session(&self.session_id).await else {
+        let Some(session) = Tssh::get_session(&self.session_id).await else {
             return;
         };
         session.remove_channel(&self.channel_id).await;
@@ -174,7 +174,7 @@ impl PluginComp {
         match self {
             Self::Pty(pty) => Ok(pty.user.clone()),
             Self::Nil { username } => User::new(username).map(Arc::new),
-            _ => Err(anyhow!("unsupported channel plugin"))?,
+            _ => bail!("unsupported channel plugin"),
         }
     }
 }

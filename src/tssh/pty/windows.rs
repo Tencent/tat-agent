@@ -24,7 +24,7 @@ use std::ptr::null_mut;
 use std::sync::Arc;
 use std::{mem, ptr};
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{bail, Result};
 use log::{error, info};
 use ntapi::ntpsapi::{
     NtResumeProcess, NtSetInformationProcess, ProcessAccessToken, PROCESS_ACCESS_TOKEN,
@@ -69,7 +69,7 @@ impl Pty {
             );
             if conin == INVALID_HANDLE_VALUE {
                 let err = Error::last_os_error();
-                Err(anyhow!("CreateFileW error: {}", err))?
+                bail!("CreateFileW error: {}", err);
             }
             StdFile::from_raw_handle(conin)
         };
@@ -117,7 +117,7 @@ impl Pty {
                 let mut maker = BlockMarker::new(input, write_pipe);
                 maker.work().await;
             });
-            return Ok(read_pipe);
+            Ok(read_pipe)
         }
     }
 
@@ -164,7 +164,7 @@ impl PluginComp {
                 CloseHandle(handle);
                 return Ok(());
             }
-            return Err(anyhow!("access deny"));
+            bail!("access deny");
         }
     }
 
@@ -174,8 +174,8 @@ impl PluginComp {
             ImpersonateLoggedOnUser(handle);
             let result = f();
             RevertToSelf();
-            return result;
-        };
+            result
+        }
     }
 
     pub async fn execute_stream(
@@ -190,7 +190,7 @@ impl PluginComp {
             work_dir = EXE_DIR.to_string_lossy().into_owned();
         }
         let (receiver, sender) = unsafe { anon_pipe(true)? };
-        let mut cmd = init_powershell_command(&cmd);
+        let mut cmd = init_powershell_command(cmd);
         configure_command(&mut cmd, &user, &work_dir, sender).await?;
 
         let callback = callback.unwrap_or_else(|| Box::new(|_, _, _, _| Box::pin(async {})));
@@ -276,7 +276,6 @@ impl BlockMarker {
         }
         let _ = Write::write(output, item.to_string().as_bytes());
         self.save_history(item);
-        return;
     }
 
     fn save_history(&mut self, item: AnsiItem) {

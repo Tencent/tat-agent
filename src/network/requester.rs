@@ -1,7 +1,7 @@
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use anyhow::{anyhow, Result};
+use anyhow::{bail, Result};
 use log::{error, info, warn};
 use reqwest::header::{self, HeaderMap, HeaderValue};
 use reqwest::{Client, ClientBuilder, RequestBuilder, Response};
@@ -74,7 +74,7 @@ impl HttpRequester {
             }
             tokio::time::sleep(self.interval).await;
         }
-        Err(anyhow!("request error reached {} times", self.retries))
+        bail!("request error reached {} times", self.retries);
     }
 
     fn new(rb: RequestBuilder) -> Self {

@@ -44,7 +44,7 @@ pub enum EnumCommands {
 
 impl Opts {
     pub fn get_opts() -> &'static Opts {
-        static INS: LazyLock<Opts> = LazyLock::new(|| Opts::parse());
+        static INS: LazyLock<Opts> = LazyLock::new(Opts::parse);
         &INS
     }
 }

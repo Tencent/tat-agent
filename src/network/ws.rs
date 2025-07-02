@@ -1,9 +1,8 @@
 use super::{build_extra_headers, urls::get_ws_url};
-use crate::common::{evbus::EventBus, Opts};
+use crate::common::{evbus, Opts};
 
 use std::cmp::min;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use bson::Document;
@@ -37,19 +36,18 @@ type WsRes = Result<Message, Error>;
 
 struct WsContext {
     receiver: Option<UnboundedReceiverStream<WsRes>>,
-    event_bus: Arc<EventBus>,
     ping_cnt_from_last_pong: AtomicUsize,
     close_sent: AtomicBool,
 }
 
-pub async fn run(event_bus: &Arc<EventBus>) {
+pub async fn run() {
     if Opts::get_opts().server_mode {
-        return work_as_server(&event_bus).await;
+        return work_as_server().await;
     }
 
     let mut retry_count = 0u32;
     loop {
-        match work_as_client(event_bus.clone()).await {
+        match work_as_client().await {
             Ok(_) => retry_count = 0,
             Err(_) => retry_count += 1,
         };
@@ -57,9 +55,9 @@ pub async fn run(event_bus: &Arc<EventBus>) {
     }
 }
 
-async fn work_as_client(event_bus: Arc<EventBus>) -> Result<(), Error> {
+async fn work_as_client() -> Result<(), Error> {
     info!("ws: start connection...");
-    let mut ctx = WsContext::new(event_bus.clone());
+    let mut ctx = WsContext::new().await;
     let req = handshake_request().await.expect("ws: gen request failed");
     let (ws_stream, _) = connect_async(req)
         .await
@@ -67,15 +65,15 @@ async fn work_as_client(event_bus: Arc<EventBus>) -> Result<(), Error> {
     info!("ws: connection established");
     let (sink, stream) = ws_stream.split();
 
-    tokio::spawn(async move {
+    tokio::spawn(async {
         sleep(Duration::from_secs(2)).await; // avoid record not found
-        event_bus.dispatch(EVENT_KICK, Vec::from(SOURCE_START));
+        evbus::emit(EVENT_KICK, Vec::from(SOURCE_START)).await;
     });
 
     let select = stream_select!(
         ctx.receiver.take().unwrap().boxed(),
         ctx.ping_check().boxed(),
-        stream.filter_map(|m| async { ctx.handle_msg(m) }).boxed(),
+        stream.filter_map(|msg| async { ctx.on(msg).await }).boxed(),
     );
     let _ = select
         .forward(sink)
@@ -84,21 +82,22 @@ async fn work_as_client(event_bus: Arc<EventBus>) -> Result<(), Error> {
     Ok(())
 }
 
-async fn work_as_server(event_bus: &Arc<EventBus>) {
+// only used for debug
+async fn work_as_server() {
     info!("ws: work as server...");
     let listener = TcpListener::bind("0.0.0.0:3333")
         .await
         .expect("ws server: TcpListener::bind failed");
 
     while let Ok((tcp_stream, _)) = listener.accept().await {
-        let mut ctx = WsContext::new(event_bus.clone());
+        let mut ctx = WsContext::new().await;
         let (sink, stream) = match accept_async(tcp_stream).await {
             Ok(ws) => ws.split(),
             Err(e) => return error!("ws server: connect failed, {e:#}"),
         };
         let select = stream_select!(
             ctx.receiver.take().unwrap().boxed(),
-            stream.filter_map(|m| async { ctx.handle_msg(m) }).boxed(),
+            stream.filter_map(|msg| async { ctx.on(msg).await }).boxed(),
         );
         let _ = select
             .forward(sink)
@@ -108,7 +107,8 @@ async fn work_as_server(event_bus: &Arc<EventBus>) {
 }
 
 async fn exponential_backoff_with_jitter(retry_count: u32) {
-    let exponential_max = BASE_DELAY * 2u64.pow(retry_count);
+    let exponent = min(retry_count, MAX_DELAY.ilog2()); // avoid overflow
+    let exponential_max = BASE_DELAY * 2u64.pow(exponent);
     let max_delay = min(exponential_max, MAX_DELAY);
     let jitter = thread_rng().gen_range(MIN_DELAY..max_delay);
     info!("Retrying in {} seconds...", jitter);
@@ -122,42 +122,38 @@ async fn handshake_request() -> Result<Request, Error> {
 }
 
 impl WsContext {
-    fn new(event_bus: Arc<EventBus>) -> Self {
+    async fn new() -> Self {
         let (tx, rx) = unbounded_channel::<WsRes>();
         //pty message to server
-        event_bus.register(WS_TXT_MSG, {
+        let text_handler = {
             let tx = tx.clone();
-            move |data| {
-                let data = String::from_utf8_lossy(&data).to_string();
-                let _ = tx.send(Ok(Text(data)));
-            }
-        });
-        event_bus.register(WS_BIN_MSG, {
+            move |data: Vec<_>| tx.send(Ok(Text(String::from_utf8_lossy(&data).to_string())))
+        };
+        let binary_handler = {
             let tx = tx.clone();
-            move |data| {
-                let _ = tx.send(Ok(Binary(data)));
-            }
-        });
+            move |data| tx.send(Ok(Binary(data)))
+        };
+        evbus::subscribe(WS_TXT_MSG, text_handler).await;
+        evbus::subscribe(WS_BIN_MSG, binary_handler).await;
 
         WsContext {
             receiver: Some(UnboundedReceiverStream::new(rx)),
             ping_cnt_from_last_pong: AtomicUsize::new(0),
             close_sent: AtomicBool::new(false),
-            event_bus,
         }
     }
 
-    fn handle_msg(&self, msg: WsRes) -> Option<WsRes> {
+    async fn on(&self, msg: WsRes) -> Option<WsRes> {
         let msg = msg
             .inspect_err(|e| error!("ws: receive error, {e:#}"))
             .ok()?;
 
         // handle
         match &msg {
-            Text(msg) => self.on_text(msg),
-            Binary(msg) => self.on_binary(msg),
-            Pong(_) => self.ping_cnt_from_last_pong.store(0, SeqCst),
-            Close(_) => self.close_sent.store(true, SeqCst),
+            Text(msg) => self.on_text(msg).await,
+            Binary(msg) => self.on_binary(msg).await,
+            Pong(_) => self.ping_cnt_from_last_pong.store(0, Ordering::Relaxed),
+            Close(_) => self.close_sent.store(true, Ordering::Relaxed),
             _ => (),
         }
 
@@ -170,10 +166,10 @@ impl WsContext {
             }))),
             _ => None,
         }
-        .map(|r| Ok(r))
+        .map(Ok)
     }
 
-    fn on_text(&self, msg: &str) {
+    async fn on_text(&self, msg: &str) {
         let Ok(json) = serde_json::from_str::<Value>(msg) else {
             return;
         };
@@ -196,28 +192,28 @@ impl WsContext {
             }
             _ => Vec::from(msg),
         };
-        self.event_bus.dispatch(msg_type, vec);
+        evbus::emit(msg_type, vec).await;
     }
 
-    fn on_binary(&self, msg: &[u8]) {
+    async fn on_binary(&self, msg: &[u8]) {
         let Ok(bson) = Document::from_reader(msg) else {
             return;
         };
         let Ok(msg_type) = bson.get_str("Type") else {
             return;
         };
-        self.event_bus.dispatch(msg_type, msg.to_vec());
+        evbus::emit(msg_type, msg.to_vec()).await;
     }
 
-    fn ping_check<'a>(&'a self) -> impl Stream<Item = WsRes> + 'a {
+    fn ping_check(&self) -> impl Stream<Item = WsRes> + '_ {
         IntervalStream::new(interval(Duration::from_secs(2 * 60))).map(move |_| {
-            if self.close_sent.load(SeqCst) {
+            if self.close_sent.load(Ordering::Relaxed) {
                 return Err(Error::ConnectionClosed);
             }
-            let cnt = self.ping_cnt_from_last_pong.fetch_add(1, SeqCst);
+            let cnt = self.ping_cnt_from_last_pong.fetch_add(1, Ordering::Relaxed);
             if cnt >= MAX_PING_FROM_LAST_PONG {
                 error!("ws: ping_check error, max ping count reached since last pong");
-                self.close_sent.store(true, SeqCst);
+                self.close_sent.store(true, Ordering::Relaxed);
                 return Ok(Close(Some(CloseFrame {
                     reason: WS_ACTIVE_CLOSE.into(),
                     code: CloseCode::Away,

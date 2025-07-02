@@ -63,13 +63,14 @@ mod unix {
 
         new_entry.ut_type = ut_type as _;
         new_entry.ut_pid = pid;
-        new_entry.ut_session = sid.into();
 
         cfg_if::cfg_if! {
             if #[cfg(target_arch = "aarch64")] {
+                new_entry.ut_session = sid as i64;
                 let current_timestamp = unsafe { time(ptr::null_mut()) as i64 };
             } else {
                 let current_timestamp = unsafe { time(ptr::null_mut()) as i32 };
+                new_entry.ut_session = sid as i32;
             }
         }
 
@@ -86,8 +87,6 @@ mod unix {
 
         let wtmp_path = CString::new(_PATH_WTMP).expect("CString::new failed");
         unsafe { updwtmp(wtmp_path.as_ptr(), &raw const new_entry) };
-
-        return;
     }
 }
 

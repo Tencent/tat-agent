@@ -6,48 +6,40 @@ pub mod windows;
 
 use self::task::{Task, EXIT_CODE_ERROR, TASK_RESULT_START_FAILED};
 #[cfg(unix)]
-pub use self::unix::{decode_output, kill_process_group, User};
+pub use self::unix::{kill_process_group, User};
 #[cfg(windows)]
-pub use self::windows::{decode_output, kill_process_group, User};
-use crate::common::{evbus::EventBus, get_now_secs, Stopper};
+pub use self::windows::{kill_process_group, User};
+use crate::common::{evbus, get_now_secs, Stopper};
 use crate::network::{InvocationCancelTask, InvocationNormalTask};
 use crate::network::{Invoke, InvokeAdapter, EVENT_KICK};
+use crate::STOP_COUNTER;
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{atomic::Ordering, Arc, LazyLock};
 use std::time::Duration;
 
 use log::{error, info};
-use tokio::{runtime::Runtime, sync::Mutex, time::sleep};
+use tokio::{sync::Mutex, time::sleep};
 
-pub fn run(dispatcher: &Arc<EventBus>, stop_counter: Arc<AtomicU64>, rt: Arc<Runtime>) {
-    let exc = Arc::new(Executor::new(stop_counter));
-    dispatcher.register(EVENT_KICK, move |source| {
-        rt.spawn({
-            let exc = exc.clone();
-            let source = String::from_utf8_lossy(&source).to_string();
-            async move { exc.process::<InvokeAdapter>(&source).await }
-        });
-    });
+static EXECUTOR: LazyLock<Arc<Executor>> = LazyLock::new(Default::default);
+
+pub async fn run() {
+    let handler = |source: Vec<_>| {
+        tokio::spawn(async move {
+            Executor::process::<InvokeAdapter>(&String::from_utf8_lossy(&source)).await
+        })
+    };
+    evbus::subscribe(EVENT_KICK, handler).await;
 }
 
+#[derive(Default)]
 struct Executor {
     running: Mutex<HashMap<String, Stopper>>,
     cache: Mutex<HashSet<String>>,
-    stop_counter: Arc<AtomicU64>,
 }
 
 impl Executor {
-    fn new(stop_counter: Arc<AtomicU64>) -> Self {
-        Self {
-            running: Default::default(),
-            cache: Default::default(),
-            stop_counter,
-        }
-    }
-
-    async fn process<T: Invoke>(self: Arc<Self>, source: &str) {
+    async fn process<T: Invoke>(source: &str) {
         info!("executor start processing dispatch from: {}", source);
         let resp = match T::describe_tasks().await {
             Ok(resp) => resp,
@@ -56,10 +48,10 @@ impl Executor {
         info!("describe task success: {:?}", resp);
 
         for task in resp.invocation_normal_task_set {
-            self.clone().execute::<T>(task).await;
+            EXECUTOR.clone().execute::<T>(task).await;
         }
         for cancel in resp.invocation_cancel_task_set {
-            self.cancel(cancel).await;
+            EXECUTOR.cancel(cancel).await;
         }
     }
 
@@ -69,7 +61,7 @@ impl Executor {
             return false;
         }
 
-        self.stop_counter.fetch_add(1, Ordering::SeqCst);
+        STOP_COUNTER.fetch_add(1, Ordering::Relaxed);
         tokio::spawn(async move {
             info!("task `{id}` execute begin");
             let stopper = Stopper::new();
@@ -77,7 +69,7 @@ impl Executor {
             self.running.lock().await.insert(id.clone(), stopper);
             if let Err(e) = T::report_task_start(&id, get_now_secs()).await {
                 error!("task `{id}` report_task_start error: {e:#}");
-                self.stop_counter.fetch_sub(1, Ordering::SeqCst);
+                STOP_COUNTER.fetch_sub(1, Ordering::Relaxed);
                 self.running.lock().await.remove(&id);
                 self.cache.lock().await.remove(&id); // id is not cached if report_task_start fails
                 return;
@@ -92,7 +84,7 @@ impl Executor {
                     error!("task `{id}` report_task_finish error: {e:#}")
                 }
             };
-            self.stop_counter.fetch_sub(1, Ordering::SeqCst);
+            STOP_COUNTER.fetch_sub(1, Ordering::Relaxed);
             self.running.lock().await.remove(&id);
             tokio::spawn(async move {
                 sleep(Duration::from_secs(120)).await; // cache the id
@@ -139,7 +131,7 @@ pub mod test {
         InvocationNormalTask {
             invocation_task_id: format!("invt-{}", gen_rand_str_with(10)),
             time_out: 60,
-            command: STANDARD.encode(&cmd),
+            command: STANDARD.encode(cmd),
             command_type: command_type.to_string(),
             username: get_current_username(),
             working_directory: EXE_DIR.display().to_string(),
@@ -189,7 +181,7 @@ pub mod test {
             }
         }
 
-        let exc = Arc::new(Executor::new(Default::default()));
+        let exc = Arc::<Executor>::default();
         let task = new_task("");
         let found_new = exc.clone().execute::<ReportTaskStartError>(task).await;
         assert!(found_new);
@@ -202,7 +194,7 @@ pub mod test {
         struct ReportTaskFinishError;
         impl_invoke!(ReportTaskFinishError, |_, _, _, _| bail!(""));
 
-        let exc = Arc::new(Executor::new(Default::default()));
+        let exc = Arc::<Executor>::default();
         let task = new_task("");
         let found_new = exc.clone().execute::<ReportTaskFinishError>(task).await;
         assert!(found_new);
@@ -284,7 +276,7 @@ pub mod test {
             assert_eq!(exit_code, -1);
             Ok(ReportTaskFinishResponse {})
         });
-        let exc = Arc::new(Executor::new(Default::default()));
+        let exc = Arc::<Executor>::default();
         let task = new_task(&format!("{SLEEP} 10"));
         let task_id = task.invocation_task_id.clone();
         let cancel = InvocationCancelTask {

@@ -8,7 +8,7 @@ pub mod sysinfo;
 pub use option::Opts;
 
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, UNIX_EPOCH};
 
 use anyhow::Result;
@@ -53,12 +53,12 @@ impl Timer {
     }
 
     pub fn freeze(&self) {
-        self.freeze_count.fetch_add(1, SeqCst);
+        self.freeze_count.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn unfreeze(&self) {
         self.refresh();
-        self.freeze_count.fetch_sub(1, SeqCst);
+        self.freeze_count.fetch_sub(1, Ordering::Relaxed);
     }
 
     pub fn refresh(&self) {
@@ -69,7 +69,7 @@ impl Timer {
         loop {
             tokio::select! {
                 _ = self.refresher.notified() => {}, // Continue loop, recreate sleep future
-                _ = sleep(self.interval) => if self.freeze_count.load(SeqCst) == 0 {
+                _ = sleep(self.interval) => if self.freeze_count.load(Ordering::Relaxed) == 0 {
                     break;
                 },
             }
@@ -118,20 +118,18 @@ pub fn get_current_username() -> String {
     use winapi::um::{winbase::GetUserNameW, winnt::LPWSTR};
     unsafe {
         let mut len: DWORD = 256;
-        let mut username: Vec<u16> = Vec::new();
-        username.resize(len as usize, 0);
+        let mut username: Vec<u16> = vec![0; len as usize];
 
         GetUserNameW(username.as_ptr() as LPWSTR, &raw mut len as LPDWORD);
         username.set_len(len as usize);
 
-        let username = wsz2string(username.as_ptr());
-        username
+        wsz2string(username.as_ptr())
     }
 }
 
 #[cfg(unix)]
 pub fn get_current_username() -> String {
-    let name = users::get_current_username().expect("get_current_username failed");
+    let name = uzers::get_current_username().expect("get_current_username failed");
     String::from(name.to_str().expect("get_current_username failed"))
 }
 
@@ -203,4 +201,19 @@ pub async fn set_permissions_recursively(
         tokio::fs::set_permissions(p, perm.clone()).await?;
     }
     Ok(())
+}
+
+// Checks a byte buffer for potential UTF-8 character truncation at the end.
+pub fn utf8_truncation_check(buffer: &[u8], is_full: bool) -> (&[u8], &[u8]) {
+    if !is_full {
+        return (buffer, &[]); // No UTF-8 truncation check needed when buffer not full
+    }
+
+    let remnant = match buffer.utf8_chunks().last().map(|c| c.invalid().len()) {
+        Some(len) if len > 0 && len < 4 => len, // only check single UTF-8 char truncation
+        _ => return (buffer, &[]),
+    };
+
+    let separator = buffer.len() - remnant;
+    (&buffer[..separator], &buffer[separator..])
 }

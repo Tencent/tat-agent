@@ -5,7 +5,7 @@ use crate::network::AGENT_VERSION;
 
 use std::fmt;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
 
@@ -92,7 +92,7 @@ impl<T> ServerRawResponse<T> {
     pub fn into_response(self) -> Result<T> {
         if !self.response.is_ok() {
             let e = self.response.error().context("cannot get response error")?;
-            return Err(anyhow!("{}: {}", e.code, e.message));
+            bail!("{}: {}", e.code, e.message);
         }
         let resp = self
             .response
@@ -508,7 +508,7 @@ mod tests {
         struct MyResp {
             _name: String,
         }
-        let raw_resp = serde_json::from_str::<ServerRawResponse<MyResp>>(&error_str).unwrap();
+        let raw_resp = serde_json::from_str::<ServerRawResponse<MyResp>>(error_str).unwrap();
         let general_resp = &raw_resp.response;
         assert_eq!(
             &general_resp.request_id,
@@ -518,7 +518,7 @@ mod tests {
         assert_eq!(&error.code, "ExampleCode");
         assert_eq!(&error.message, "Some message");
         // assert_eq!(general_resp.content.as_ref().unwrap(), None);
-        assert_eq!(general_resp.content.is_none(), true);
+        assert!(general_resp.content.is_none());
     }
 
     #[test]
@@ -552,7 +552,7 @@ mod tests {
         struct MyResp {
             user_set: Vec<MyUser>,
         }
-        let raw_resp = serde_json::from_str::<ServerRawResponse<MyResp>>(&resp_str).unwrap();
+        let raw_resp = serde_json::from_str::<ServerRawResponse<MyResp>>(resp_str).unwrap();
         let general_resp = &raw_resp.response;
         assert_eq!(
             &general_resp.request_id,
@@ -567,17 +567,17 @@ mod tests {
     #[test]
     fn test_decode_normal_command() {
         let tasks1 = InvocationNormalTask {
-            invocation_task_id: format!(""),
+            invocation_task_id: String::new(),
             #[cfg(unix)]
-            command_type: format!("SHELL"),
+            command_type: "SHELL".to_string(),
             #[cfg(windows)]
-            command_type: format!("POWERSHELL"),
+            command_type: "POWERSHELL".to_string(),
             time_out: 0,
             command: String::from("bHMgLWw7CmVjaG8gIkhlbGxvIFdvcmxkIg=="),
-            username: format!("root"),
-            working_directory: format!(""),
-            cos_bucket_url: format!(""),
-            cos_bucket_prefix: format!(""),
+            username: "root".to_string(),
+            working_directory: String::new(),
+            cos_bucket_url: String::new(),
+            cos_bucket_prefix: String::new(),
         };
 
         #[cfg(unix)]
@@ -599,16 +599,16 @@ mod tests {
     #[test]
     fn test_decode_invalid_command() {
         let tasks1 = InvocationNormalTask {
-            invocation_task_id: format!(""),
-            command_type: format!("SHELL"),
+            invocation_task_id: String::new(),
+            command_type: "SHELL".to_string(),
             time_out: 0,
             command: String::from("ls -l;\necho \"Hello World\""),
-            username: format!("root"),
-            working_directory: format!(""),
-            cos_bucket_url: format!(""),
-            cos_bucket_prefix: format!(""),
+            username: "root".to_string(),
+            working_directory: String::new(),
+            cos_bucket_url: String::new(),
+            cos_bucket_prefix: String::new(),
         };
-        assert_eq!(tasks1.decode_command().is_err(), true);
+        assert!(tasks1.decode_command().is_err());
     }
 
     #[cfg(unix)]
@@ -631,7 +631,7 @@ mod tests {
         let mut buf = Vec::new();
         // read the whole file
         f.read_to_end(&mut buf).expect("random-file read failed");
-        assert_eq!(remove_file("/tmp/random-file").is_ok(), true);
+        assert!(remove_file("/tmp/random-file").is_ok());
         let _ = UploadTaskLogRequest::new("invk-123123", 0, buf, 0);
     }
 }

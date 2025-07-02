@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.7] - 2025-07-01
+
+### Changed
+
+- Fix failure to obtain machine ID on some older OSes during instance registration.
+- Fix rare config file truncation when reading in register instances.
+- Fix possible UTF-8 character truncation in buffered reads.
+- Refactor event bus for improved async performance.
+- Limit the maximum number of Tokio worker threads to 8.
+
 ## [1.1.6] - 2025-04-23
 
 ### Changed

@@ -107,7 +107,7 @@ async fn get_zombie_process() -> u32 {
     let mut sys = system().await;
     sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
     let mut count = 0;
-    for (_, p) in sys.processes() {
+    for p in sys.processes().values() {
         if p.parent() == Some(current) && p.status() == sysinfo::ProcessStatus::Zombie {
             count += 1;
         }

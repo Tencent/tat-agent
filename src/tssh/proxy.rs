@@ -1,7 +1,6 @@
 use super::handler::{BsonHandler, Handler, HandlerExt};
 use super::session::{Channel, Plugin, PluginComp, PluginCtrl, PluginData, Session};
-use super::TSSH;
-use crate::common::evbus::EventBus;
+use super::Tssh;
 use crate::network::{ProxyClose, ProxyData, ProxyNew, ProxyReady, PtyBinBase, PtyBinErrMsg};
 
 use std::{sync::Arc, time::Duration};
@@ -12,15 +11,14 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::{net::TcpStream, sync::Mutex};
 
-use super::SLOT_PTY_BIN;
 const WS_MSG_TYPE_PTY_PROXY_READY: &str = "PtyProxyReady";
 const PROXY_TTL: Duration = Duration::from_secs(60 * 5); // 5 min
 const PROXY_BUF_SIZE: usize = 2048;
 
-pub fn register_proxy_handlers(event_bus: &Arc<EventBus>) {
-    BsonHandler::<ProxyNew>::register_to(event_bus, SLOT_PTY_BIN);
-    BsonHandler::<ProxyData>::register_to(event_bus, SLOT_PTY_BIN);
-    BsonHandler::<ProxyClose>::register_to(event_bus, SLOT_PTY_BIN);
+pub async fn register_proxy_handlers() {
+    BsonHandler::<ProxyNew>::register().await;
+    BsonHandler::<ProxyData>::register().await;
+    BsonHandler::<ProxyClose>::register().await;
 }
 
 impl Handler for BsonHandler<ProxyNew> {
@@ -72,11 +70,11 @@ impl Handler for BsonHandler<ProxyNew> {
             controller: PluginCtrl::new(PROXY_TTL),
         };
         let channel = Arc::new(Channel::new(&session_id, &channel_id, plugin));
-        let session = match TSSH::get_session(&session_id).await {
+        let session = match Tssh::get_session(&session_id).await {
             Some(s) => s,
             None => {
                 let s = Arc::new(Session::new(&session_id));
-                let _ = TSSH::add_session(&session_id, s.clone()).await;
+                let _ = Tssh::add_session(&session_id, s.clone()).await;
                 s
             }
         };
@@ -91,7 +89,7 @@ impl Handler for BsonHandler<ProxyNew> {
             custom_data: "".to_owned(),
             data: ProxyReady { proxy_id },
         };
-        TSSH::reply_bson_msg(WS_MSG_TYPE_PTY_PROXY_READY, data).await
+        Tssh::reply_bson_msg(WS_MSG_TYPE_PTY_PROXY_READY, data).await
     }
 }
 
@@ -108,7 +106,7 @@ impl Handler for BsonHandler<ProxyData> {
         // Compatible with legacy front-end code
         // If no channel_id is provided, use proxy_id as channel_id.
         if req.channel_id.is_empty() {
-            if let Some(session) = TSSH::get_session(&req.session_id).await {
+            if let Some(session) = Tssh::get_session(&req.session_id).await {
                 if let Some(channel) = session.get_channel(&proxy_id).await {
                     ch = channel.clone();
                 }
@@ -133,7 +131,7 @@ impl Handler for BsonHandler<ProxyClose> {
         let req = &self.request;
         let proxy_id = &req.data.proxy_id;
         info!("=>proxy_closed `{}`, channel `{}`", proxy_id, self.id());
-        let Some(session) = TSSH::get_session(&req.session_id).await else {
+        let Some(session) = Tssh::get_session(&req.session_id).await else {
             return;
         };
         if req.channel_id.is_empty() {
@@ -208,6 +206,6 @@ impl Proxy {
             custom_data: "".to_owned(),
             data,
         };
-        TSSH::reply_bson_msg(BsonHandler::<T>::MSG_TYPE, data).await
+        Tssh::reply_bson_msg(BsonHandler::<T>::MSG_TYPE, data).await
     }
 }

@@ -1,10 +1,10 @@
-use super::{decode_output, kill_process_group, User};
-use crate::common::{cbs_exist, create_file_with_parents, get_now_secs};
+use super::{kill_process_group, User};
+use crate::common::{cbs_exist, create_file_with_parents, get_now_secs, utf8_truncation_check};
 use crate::network::urls::get_meta_url;
 use crate::network::{COSAdapter, InvocationNormalTask, Invoke, MetadataAdapter};
 use crate::EXE_DIR;
 
-use std::fmt::{self, Display};
+use std::fmt::{self, Display, Write};
 use std::mem::{swap, take};
 use std::{cmp::min, future::Future, time::Duration};
 use std::{path::PathBuf, process::ExitStatus};
@@ -107,15 +107,17 @@ impl Task {
         });
 
         let mut buffer = [0u8; BUF_SIZE];
+        let mut remnant = 0;
         loop {
             tokio::select! {
-                len = reader.read(&mut buffer) => {
-                    let buf = match len {
-                        Err(e) => break error!("task `{tid}` read error: {e}, pid: {pid}"),
+                len = reader.read(&mut buffer[remnant..]) => {
+                    let (buf, len) = match len.map(|l| l + remnant) {
+                        Err(e) => break error!("task `{tid}` read error: {e:#}, pid: {pid}"),
                         Ok(0) => break info!("task `{tid}` read finished normally, pid: {pid}"),
-                        Ok(len) => &buffer[..len],
+                        Ok(len) => (&buffer[..len], len),
                     };
-                    task.on_output(buf).await;
+                    remnant = task.on_output(buf).await.len();
+                    buffer.copy_within(len-remnant..len, 0);
 
                     if task.output.buffer.len() >= MAX_SINGLE_REPORT_BYTES {
                         report_notify.notify_one();
@@ -126,7 +128,7 @@ impl Task {
 
                     // if the task output is dropped, it won't report until finished
                     let dropped = task.output.dropped() > 0;
-                    let interval = dropped.then_some(ttl).unwrap_or(REPORT_INTERVAL);
+                    let interval = if dropped { ttl } else { REPORT_INTERVAL };
                     report_notified = Box::pin(timeout(interval, report_notify.notified()));
                 },
                 _ = &mut timer => {
@@ -150,17 +152,18 @@ impl Task {
         Ok(())
     }
 
-    async fn on_output(&mut self, buf: &[u8]) {
-        let output = decode_output(buf);
-        self.output.append_output(&output, &self.info.task_id);
+    async fn on_output<'a>(&mut self, buf: &'a [u8]) -> &'a [u8] {
+        let (output, remnant) = utf8_truncation_check(buf, buf.len() == BUF_SIZE);
+        self.output.append_output(output, &self.info.task_id);
         if let Some(conf) = self.upload_conf.as_mut() {
-            conf.write_output_file(&output).await;
+            conf.write_output_file(output).await;
         }
+        remnant
     }
 
     fn on_report<T: Invoke>(&mut self, report_js: &mut JoinSet<()>) {
         let dropped = self.output.dropped();
-        if self.output.buffer.len() == 0 && dropped == 0 {
+        if self.output.buffer.is_empty() && dropped == 0 {
             return;
         }
 
@@ -215,7 +218,7 @@ impl Task {
 
         let (mut url, mut err) = Default::default();
         if let Some(ref mut conf) = self.upload_conf {
-            match conf.upload_cos::<T>(&tid).await {
+            match conf.upload_cos::<T>(tid).await {
                 Ok(output_url) => url = output_url,
                 Err(output_err_info) => err = format!("{output_err_info:#}"),
             }
@@ -403,14 +406,17 @@ impl TaskUploadConf {
     }
 
     fn object_name(&self, invocation_id: &str, task_id: &str) -> String {
-        IntoIterator::into_iter([
+        [
             &self.cos_bucket_prefix,
             invocation_id,
             &format!("{}.log", task_id),
-        ])
+        ]
+        .iter()
         .filter(|s| !s.is_empty())
-        .map(|s| format!("/{s}"))
-        .collect()
+        .fold(String::new(), |mut output, s| {
+            let _ = write!(output, "/{s}");
+            output
+        })
     }
 
     fn output_url(&self, invocation_id: &str, task_id: &str) -> String {
@@ -527,8 +533,10 @@ mod test {
         assert_eq!(st.exit_code, Some(1));
         assert!(matches!(st.result, Some(TaskResult::Failed)));
 
-        let mut st = TaskStatus::default();
-        st.result = Some(TaskResult::Terminate);
+        let mut st = TaskStatus {
+            result: Some(TaskResult::Terminate),
+            ..Default::default()
+        };
         let es = init_command("exit 1").await.spawn().unwrap().wait().await;
         st.finish(es.unwrap());
         assert_eq!(st.exit_code, Some(1));

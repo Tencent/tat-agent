@@ -1,10 +1,9 @@
 use super::handler::{BsonHandler, Handler, HandlerExt};
-use crate::common::evbus::EventBus;
 use crate::network::*;
 
 use std::fs::{create_dir, create_dir_all, read_dir, File, Metadata};
 use std::iter::{once, repeat};
-use std::{io::SeekFrom, path::Path, sync::Arc, time::SystemTime};
+use std::{io::SeekFrom, path::Path, time::SystemTime};
 
 use anyhow::Result;
 use glob::Pattern;
@@ -25,26 +24,24 @@ cfg_if::cfg_if! {
         use std::os::linux::fs::MetadataExt;
         use std::os::unix::prelude::PermissionsExt;
         use std::fs::{set_permissions, Permissions};
-        use users::get_user_by_uid;
-        use users::get_group_by_gid;
-        use chrono::Local;
-        use chrono::DateTime;
+        use uzers::{get_user_by_uid, get_group_by_gid};
+        use chrono::{Local, DateTime};
     }
 }
 
-use super::{PTY_INSPECT_READ, PTY_INSPECT_WRITE, SLOT_PTY_BIN};
+use super::{PTY_INSPECT_READ, PTY_INSPECT_WRITE};
 const FS_TYPE_FILE: &str = "-";
 const FS_TYPE_DIR: &str = "d";
 const FS_TYPE_LINK: &str = "l";
 
-pub fn register_file_handlers(event_bus: &Arc<EventBus>) {
-    BsonHandler::<CreateFileReq>::register_to(event_bus, SLOT_PTY_BIN);
-    BsonHandler::<DeleteFileReq>::register_to(event_bus, SLOT_PTY_BIN);
-    BsonHandler::<ListPathReq>::register_to(event_bus, SLOT_PTY_BIN);
-    BsonHandler::<FileExistsReq>::register_to(event_bus, SLOT_PTY_BIN);
-    BsonHandler::<FileInfoReq>::register_to(event_bus, SLOT_PTY_BIN);
-    BsonHandler::<WriteFileReq>::register_to(event_bus, SLOT_PTY_BIN);
-    BsonHandler::<ReadFileReq>::register_to(event_bus, SLOT_PTY_BIN);
+pub async fn register_file_handlers() {
+    BsonHandler::<CreateFileReq>::register().await;
+    BsonHandler::<DeleteFileReq>::register().await;
+    BsonHandler::<ListPathReq>::register().await;
+    BsonHandler::<FileExistsReq>::register().await;
+    BsonHandler::<FileInfoReq>::register().await;
+    BsonHandler::<WriteFileReq>::register().await;
+    BsonHandler::<ReadFileReq>::register().await;
 }
 
 impl Handler for BsonHandler<CreateFileReq> {
@@ -176,7 +173,7 @@ impl Handler for BsonHandler<FileExistsReq> {
         let path = &self.request.data.path;
         info!("=>file_exists `{}`, path: {}", self.id(), path);
         let exists = Path::new(path).exists();
-        return self.reply(FileExistResp { exists }).await;
+        self.reply(FileExistResp { exists }).await
     }
 }
 
@@ -288,7 +285,7 @@ fn get_win32_ready_drives() -> Vec<String> {
         .enumerate()
         // construct label if the corresponding bit is set
         .filter_map(|(n, lable)| ((driver_bit >> n) & 1 == 1).then(|| format!("{lable}:/")))
-        .filter(|l| unsafe { GetDriveTypeW(str2wsz(&l).as_ptr()) } == DRIVE_FIXED)
+        .filter(|l| unsafe { GetDriveTypeW(str2wsz(l).as_ptr()) } == DRIVE_FIXED)
         .collect()
 }
 
@@ -333,7 +330,7 @@ fn list_path(path: &str, filter: &Pattern, show_hidden: bool) -> Result<Vec<File
         files.push(file_info_data(&name, &metadata))
     }
     files.sort_by(|a, b| a.name.cmp(&b.name));
-    return Ok(files);
+    Ok(files)
 }
 
 fn file_info_data(name: &str, metadata: &Metadata) -> FileInfoResp {
@@ -368,7 +365,7 @@ fn file_info_data(name: &str, metadata: &Metadata) -> FileInfoResp {
         #[cfg(unix)]
         rights: unix_mode::to_string(metadata.permissions().mode()),
         #[cfg(unix)]
-        longname: get_long_name(name, &metadata),
+        longname: get_long_name(name, metadata),
     }
 }
 
@@ -394,7 +391,7 @@ fn get_long_name(name: &str, metadata: &Metadata) -> String {
         "{} {} {} {} {} {} {}",
         rights, link_count, owner_name, group_name, size, time, name
     );
-    return longname;
+    longname
 }
 
 #[cfg(unix)]

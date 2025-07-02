@@ -7,19 +7,19 @@ mod session;
 use self::file::register_file_handlers;
 use self::proxy::register_proxy_handlers;
 use self::pty::register_pty_handlers;
-use self::{handler::HandlerExt, session::Session};
-use crate::common::evbus::EventBus;
+use self::session::Session;
 use crate::network::{PtyBinBase, PtyJsonBase, WsMsg};
+use crate::{common::evbus, STOP_COUNTER};
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
-use std::sync::{Arc, OnceLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
-use anyhow::{anyhow, Result};
+use anyhow::{bail, Result};
 use leaky_bucket::RateLimiter;
 use log::{error, info};
 use serde::Serialize;
-use tokio::{runtime::Runtime, sync::RwLock};
+use tokio::{sync::OnceCell, sync::RwLock};
 
 const WS_MSG_TYPE_PTY_ERROR: &str = "PtyError";
 const WS_MSG_TYPE_PTY_OUTPUT: &str = "PtyOutput";
@@ -29,94 +29,78 @@ pub const WS_TXT_MSG: &str = "pty_cmd_msg";
 pub const WS_BIN_MSG: &str = "pty_file_msg";
 pub const PTY_INSPECT_READ: u8 = 0x0;
 pub const PTY_INSPECT_WRITE: u8 = 0x1;
-pub const SLOT_PTY_BIN: &str = "event_slot_pty_file";
 #[cfg(windows)]
 pub const PTY_FLAG_ENABLE_BLOCK: u32 = 0x00000001;
 #[cfg(not(test))]
 pub const PTY_EXEC_DATA_SIZE: usize = 2048;
 #[cfg(test)]
 pub const PTY_EXEC_DATA_SIZE: usize = 5;
-const SIZE_1MB: usize = 1 * 1024 * 1024;
+const SIZE_1MB: usize = 1024 * 1024;
 
-pub struct TSSH {
-    event_bus: Arc<EventBus>,
-    stop_counter: Arc<AtomicU64>,
+pub struct Tssh {
     sessions: RwLock<HashMap<String, Arc<Session>>>,
     ws_seq_num: AtomicU64,
     limiter: RwLock<RateLimiter>,
-    runtime: Arc<Runtime>,
 }
 
-static TSSH: OnceLock<TSSH> = OnceLock::new();
+static TSSH: OnceCell<Tssh> = OnceCell::const_new();
 
-pub fn run(event_bus: &Arc<EventBus>, stop_counter: Arc<AtomicU64>, rt: Arc<Runtime>) {
-    TSSH.get_or_init(|| {
-        let g = TSSH {
-            event_bus: event_bus.clone(),
-            stop_counter,
+pub async fn run() {
+    TSSH.get_or_init(|| async {
+        let g = Tssh {
             sessions: RwLock::new(HashMap::new()),
             ws_seq_num: AtomicU64::new(0),
             limiter: RwLock::new(build_limiter(SIZE_1MB)),
-            runtime: rt,
         };
 
-        register_pty_handlers(event_bus);
-        register_file_handlers(event_bus);
-        register_proxy_handlers(event_bus);
+        register_pty_handlers().await;
+        register_file_handlers().await;
+        register_proxy_handlers().await;
         g
-    });
+    })
+    .await;
 }
 
-impl TSSH {
-    pub fn instance() -> &'static TSSH {
+impl Tssh {
+    pub fn instance() -> &'static Tssh {
         TSSH.get().expect("runtime")
     }
 
-    pub fn sync_dispatch<T: HandlerExt + ?Sized>(msg: Vec<u8>, need_channel: bool) {
-        let rt = &TSSH::instance().runtime;
-        rt.block_on(T::dispatch(msg, need_channel));
-    }
-
-    pub fn dispatch<T: HandlerExt + ?Sized>(msg: Vec<u8>, need_channel: bool) {
-        let rt = &TSSH::instance().runtime;
-        rt.spawn(async move { T::dispatch(msg, need_channel).await });
-    }
-
     pub async fn add_session(session_id: &str, session: Arc<Session>) -> Result<()> {
-        let gather = TSSH::instance();
+        let gather = Tssh::instance();
         let mut sessions = gather.sessions.write().await;
         if sessions.contains_key(session_id) {
             error!("duplicate add_session: {session_id}");
-            Err(anyhow!("session `{session_id}` already start"))?
+            bail!("session `{session_id}` already start");
         }
 
         sessions.insert(session_id.to_owned(), session.clone());
         info!("add_session: {}", session_id);
-        gather.stop_counter.fetch_add(1, SeqCst);
+        STOP_COUNTER.fetch_add(1, Ordering::Relaxed);
         tokio::spawn(async move { session.process_output().await });
         Ok(())
     }
 
     pub async fn remove_session(session_id: &str) {
-        let op = TSSH::instance().sessions.write().await.remove(session_id);
+        let op = Tssh::instance().sessions.write().await.remove(session_id);
         if let Some(s) = op {
-            TSSH::instance().stop_counter.fetch_sub(1, SeqCst);
+            STOP_COUNTER.fetch_sub(1, Ordering::Relaxed);
             s.stop().await;
             info!("remove_session: {}", session_id);
         }
     }
 
     pub async fn get_session(session_id: &str) -> Option<Arc<Session>> {
-        TSSH::instance()
+        Tssh::instance()
             .sessions
             .read()
             .await
             .get(session_id)
-            .map(|s| s.clone())
+            .cloned()
     }
 
     pub async fn set_limiter(rate: usize) {
-        let mut l = TSSH::instance().limiter.write().await;
+        let mut l = Tssh::instance().limiter.write().await;
         *l = build_limiter(rate);
     }
 
@@ -147,14 +131,14 @@ impl TSSH {
         T: Serialize,
         F: Fn(WsMsg<T>) -> Vec<u8>,
     {
-        let gather = TSSH::instance();
+        let gather = Tssh::instance();
         let msg = serialize(WsMsg {
             r#type: msg_type.to_string(),
-            seq: gather.ws_seq_num.fetch_add(1, SeqCst),
+            seq: gather.ws_seq_num.fetch_add(1, Ordering::Relaxed),
             data: Some(data),
         });
         gather.limiter.read().await.acquire(msg.len()).await;
-        gather.event_bus.dispatch(event, msg);
+        evbus::emit(event, msg).await;
     }
 }
 

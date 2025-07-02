@@ -110,15 +110,15 @@ pub async fn register(region: &str, register_id: &str, register_value: &str) -> 
         .context("save_register_info failed")
 }
 
-pub async fn check() {
-    if let Some(record) = get_register_info().await {
-        info!("find register info, try validate");
-        let local_ip = local_ip().expect("get local_ip failed");
-        let hostname = hostname().expect("get hostname failed");
-        match InvokeAdapter::validate_instance(&hostname, &local_ip).await {
-            Ok(_) => info!("validate_instance success, work as register instance"),
-            Err(e) => error!("validate_instance failed: {e:#}, work as normal instance"),
-        }
-        let _ = save_register_info(record);
+pub async fn check_register_info() {
+    if get_register_info().await.is_none() {
+        return;
+    }
+    info!("find register info, try validate");
+    let local_ip = local_ip().expect("get local_ip failed");
+    let hostname = hostname().expect("get hostname failed");
+    match InvokeAdapter::validate_instance(&hostname, &local_ip).await {
+        Ok(_) => info!("validate_instance success, work as register instance"),
+        Err(e) => error!("validate_instance failed: {e:#}, work as normal instance"),
     }
 }

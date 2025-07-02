@@ -1,5 +1,5 @@
 use std::{collections::HashMap, convert::TryInto};
-use std::{iter::IntoIterator, str};
+use std::{fmt::Write, iter::IntoIterator, str};
 
 use anyhow::{bail, Result};
 use chrono::{Local, Utc};
@@ -24,7 +24,7 @@ pub struct COSAdapter<'a> {
 
 impl<'a> COSAdapter<'a> {
     pub fn new(secret_id: &'a str, secret_key: &'a str, token: &'a str, endpoint: &'a str) -> Self {
-        let host = Url::parse(&endpoint).unwrap();
+        let host = Url::parse(endpoint).unwrap();
         let host = host.host().unwrap().to_string();
         Self {
             secret_id,
@@ -52,8 +52,8 @@ impl<'a> COSAdapter<'a> {
         headers.insert(CONTENT_LENGTH, file.metadata().await?.len().into());
         let authorization = cos_sign(
             "PUT",
-            &self.secret_id,
-            &self.secret_key,
+            self.secret_id,
+            self.secret_key,
             object_name,
             600,
             &headers,
@@ -65,7 +65,7 @@ impl<'a> COSAdapter<'a> {
         let body = Body::from(file);
         let resp = self
             .client
-            .put(&format!("{}{}", self.endpoint, object_name))
+            .put(format!("{}{}", self.endpoint, object_name))
             .headers(headers)
             .body(body)
             .send()
@@ -167,8 +167,9 @@ trait EncodeHex {
 
 impl<T: IntoIterator<Item = u8> + Sized> EncodeHex for T {
     fn encode_hex(self) -> String {
-        self.into_iter()
-            .map(|x| format!("{x:02x}"))
-            .collect::<String>()
+        self.into_iter().fold(String::new(), |mut output, b| {
+            let _ = write!(output, "{b:02x}");
+            output
+        })
     }
 }

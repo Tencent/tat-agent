@@ -10,7 +10,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     zip_extract::extract(Cursor::new(buf), &target_dir, true)?;
 
     // Run install command
-    Command::new("sc.exe").args(&["stop", "tatsvc"]).output()?;
+    Command::new("sc.exe").args(["stop", "tatsvc"]).output()?;
 
     let script = target_dir.join("install.bat");
     Command::new("cmd.exe")
@@ -25,7 +25,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::new(agent).args(args).spawn()?;
     }
 
-    Command::new("sc.exe").args(&["start", "tatsvc"]).output()?;
+    Command::new("sc.exe").args(["start", "tatsvc"]).output()?;
     remove_dir_all(target_dir)?;
     Ok(())
 }

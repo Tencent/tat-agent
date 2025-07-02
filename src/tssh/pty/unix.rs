@@ -13,14 +13,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::{env, io, ptr};
 
-use anyhow::{anyhow, Result};
+use anyhow::{bail, Result};
 use libc::{self, getsid, pid_t, ttyname, uid_t, winsize, STDIN_FILENO, TIOCSCTTY};
 use log::{error, info};
 use tokio::fs::{metadata, File};
 use tokio::process::Command;
 use tokio::sync::oneshot::{channel, Sender};
 use unix_mode::{is_allowed, Access, Accessor};
-use users::os::unix::UserExt;
+use uzers::os::unix::UserExt;
 
 const LOGIN_SHELL_SUPPORTED: [&str; 4] = ["bash", "zsh", "fish", "tcsh"];
 
@@ -46,7 +46,7 @@ impl Pty {
             .to_string_lossy()
             .into_owned();
 
-        let home_path = user.home_dir().to_str().unwrap_or_else(|| "/tmp");
+        let home_path = user.home_dir().to_str().unwrap_or("/tmp");
         let local_envs = load_envs(username, home_path, &shell_path.to_string_lossy()).await;
         let (master, slave) = openpty(&user, cols, rows)?;
         let mut cmd = Command::new(&shell_name);
@@ -84,7 +84,7 @@ impl Pty {
             let tty_name_c = ttyname(slave.as_raw_fd());
             CStr::from_ptr(tty_name_c).to_string_lossy().to_string()
         };
-        call_utmpx(&tty_name, username, pid, sid, &utmx_type).await;
+        call_utmpx(&tty_name, username, pid, sid, utmx_type).await;
 
         // Kill terminal process when Pty is dropped
         let (send, mut recv) = channel::<()>();
@@ -97,15 +97,15 @@ impl Pty {
             }
             let _ = child.wait().await; // Release zombie process after kill
             let utmx_type = "EXIT";
-            call_utmpx(&tty_name, &username, pid, sid, &utmx_type).await;
+            call_utmpx(&tty_name, &username, pid, sid, utmx_type).await;
         });
 
-        return Ok(Pty {
+        Ok(Pty {
             _kill_on_drop: send,
             master,
             user,
             pid,
-        });
+        })
     }
 
     pub async fn resize(&self, cols: u16, rows: u16) -> Result<()> {
@@ -172,7 +172,7 @@ impl PluginComp {
             return Ok(());
         }
 
-        Err(anyhow!("access denied"))?
+        bail!("access denied");
     }
 
     pub fn execute(&self, f: &dyn Fn() -> Result<Vec<u8>>) -> Result<Vec<u8>> {
@@ -204,14 +204,14 @@ impl PluginComp {
                 let mut output: Vec<u8> = Vec::new();
                 let mut stdout = StdFile::from_raw_fd(pipefd[0]);
                 let _ = stdout.read_to_end(&mut output);
-                let mut exit_code = 0 as i32;
+                let mut exit_code = 0_i32;
                 libc::waitpid(pid, &mut exit_code, 0);
                 if exit_code == 0 {
                     return Ok(output);
                 }
                 let err_msg = String::from_utf8_lossy(&output).to_string();
                 error!("[parent] work_as_user func exit failed: {}", err_msg);
-                return Err(anyhow!(err_msg));
+                bail!(err_msg);
             }
         }
     }
@@ -224,7 +224,7 @@ impl PluginComp {
     ) -> Result<()> {
         let user = self.get_user()?;
         let cwd_path = self.get_cwd(&user);
-        let mut cmd = init_command(&cmd, Some(user.as_ref())).await;
+        let mut cmd = init_command(cmd, Some(user.as_ref())).await;
         configure_command(&mut cmd, &user, cwd_path).await;
 
         let callback = callback.unwrap_or_else(|| Box::new(|_, _, _, _| Box::pin(async {})));
@@ -244,7 +244,7 @@ fn openpty(user: &User, cols: u16, rows: u16) -> Result<(File, StdFile)> {
     let mut master: RawFd = -1;
     let mut slave: RawFd = -1;
 
-    let mut size = winsize {
+    let size = winsize {
         ws_col: cols,
         ws_row: rows,
         ws_xpixel: 0,
@@ -257,9 +257,9 @@ fn openpty(user: &User, cols: u16, rows: u16) -> Result<(File, StdFile)> {
             &mut slave,
             ptr::null_mut(),
             ptr::null_mut(),
-            &mut size,
+            &size,
         ) {
-            return Err(anyhow!("openpty failed: {}", io::Error::last_os_error()));
+            bail!("openpty failed: {}", io::Error::last_os_error());
         };
 
         libc::fchown(slave, user.uid(), user.primary_group_id());

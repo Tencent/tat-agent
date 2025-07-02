@@ -40,9 +40,9 @@ pub trait Invoke {
                 local_ip,
             );
 
-            let url = get_register_url(region);
+            let url = get_register_url(region).await;
             let resp: RegisterInstanceResponse =
-                call_invoke_api("RegisterInstance", &url.await, req, RETRIES).await?;
+                call_invoke_api("RegisterInstance", &url, req, RETRIES).await?;
 
             let record = RegisterInfo {
                 region: region.to_string(),
@@ -76,6 +76,7 @@ pub trait Invoke {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn report_task_finish(
         invocation_task_id: &str,
         result: &str,
@@ -175,7 +176,7 @@ where
         .retry_interval(Duration::from_millis(500))
         .send()
         .await?;
-    Ok(parse(resp).await?)
+    parse(resp).await
 }
 
 // parse standard formatted response to custom type
@@ -183,12 +184,12 @@ async fn parse<T: DeserializeOwned>(reqwest_resp: Response) -> Result<T> {
     let txt = reqwest_resp.text().await?;
     info!("response text {}", txt);
     let raw_resp = from_str::<ServerRawResponse<T>>(&txt)?;
-    Ok(raw_resp.into_response()?)
+    raw_resp.into_response()
 }
 
 impl InvokeAdapter {
     pub async fn log(log: &str) {
-        let _ = InvokeAdapter::report_agent_log("ERROR", &log).await;
+        let _ = InvokeAdapter::report_agent_log("ERROR", log).await;
         error!("{log}");
     }
 }

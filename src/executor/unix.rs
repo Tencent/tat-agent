@@ -10,14 +10,13 @@ use anyhow::{anyhow, bail, Result};
 use tokio::fs::{read_to_string, try_exists};
 use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
-use users::get_user_by_name;
-use users::os::unix::UserExt;
+use uzers::{get_user_by_name, os::unix::UserExt};
 
 const CMD_TYPE_SHELL: &str = "SHELL";
 const EXTENSION_SHELL: &str = "sh";
 pub const EXEC_MODE: u32 = 0o755;
 
-pub struct User(users::User);
+pub struct User(uzers::User);
 
 impl Task {
     pub async fn spawn(&mut self) -> Result<(Child, impl AsyncReadExt + Unpin)> {
@@ -67,7 +66,7 @@ pub async fn init_command(script: &str, user: Option<&User>) -> Command {
     let (shell, init_script) = get_available_shell(user).await;
     let script = format!("{} {}", init_script, script);
     let mut cmd = Command::new(shell);
-    cmd.args(&["-c", &script]);
+    cmd.args(["-c", &script]);
     cmd
 }
 
@@ -92,7 +91,7 @@ pub async fn configure_command(cmd: &mut Command, user: &User, work_dir: impl As
     }
 }
 
-pub fn get_user(username: &str) -> Result<users::User> {
+pub fn get_user(username: &str) -> Result<uzers::User> {
     get_user_by_name(username).ok_or(anyhow!("user `{}` not exists", username))
 }
 
@@ -202,16 +201,11 @@ fn own_process_group() -> Result<(), io::Error> {
 pub unsafe fn kill_process_group(pid: u32) {
     // send SIGKILL to the process group of pid, note the -1
     // see more details at man 2 kill
-    libc::kill(pid as i32 * -1, libc::SIGKILL);
-}
-
-pub fn decode_output(v: &[u8]) -> &[u8] {
-    // Unix does not need decode
-    v
+    libc::kill(-(pid as i32), libc::SIGKILL);
 }
 
 impl Deref for User {
-    type Target = users::User;
+    type Target = uzers::User;
 
     fn deref(&self) -> &Self::Target {
         &self.0

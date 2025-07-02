@@ -1,11 +1,12 @@
 use super::task::{Task, TaskInfo};
 use crate::common::{gen_rand_str_with, get_current_username, str2wsz, wsz2string};
 
+use core::str;
 use std::collections::HashMap;
 use std::fs::{File as StdFile, OpenOptions};
 use std::os::windows::prelude::{AsRawHandle, FromRawHandle};
 use std::{mem, ptr::null_mut, slice};
-use std::{path::Path, process::Stdio, sync::LazyLock};
+use std::{path::Path, process::Stdio};
 
 use anyhow::{bail, Context, Result};
 use libc::{c_void, free, malloc, memcpy};
@@ -42,7 +43,6 @@ use winapi::{
         winbase::{CREATE_SUSPENDED, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED},
         winbase::{PIPE_ACCESS_INBOUND, PIPE_ACCESS_OUTBOUND},
         winbase::{PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT},
-        winnls::GetOEMCP,
         winnt::{RtlZeroMemory, SecurityImpersonation, TokenPrimary, HANDLE, PROCESS_ALL_ACCESS},
         winnt::{PROCESS_TERMINATE, PTOKEN_GROUPS, QUOTA_LIMITS, TOKEN_ALL_ACCESS, TOKEN_SOURCE},
     },
@@ -108,18 +108,18 @@ impl User {
 
 pub fn init_powershell_command(script: &str) -> Command {
     let mut cmd = Command::new("powershell");
-    cmd.args(&[
+    cmd.args([
         "-ExecutionPolicy",
         "Bypass",
         "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8;",
-        &script,
+        script,
     ]);
     cmd
 }
 
 pub fn init_bat_command(script: &str) -> Command {
     let mut cmd = Command::new("cmd.exe");
-    cmd.args(&["/C", script]);
+    cmd.args(["/C", script]);
     cmd
 }
 
@@ -266,7 +266,7 @@ unsafe fn create_user_token(username: &str) -> Result<File> {
 
     free(buffer);
     LsaDeregisterLogonProcess(lsa_handle);
-    if profile != null_mut() {
+    if profile.is_null() {
         LsaFreeReturnBuffer(profile);
     }
     if status != 0 {
@@ -283,7 +283,7 @@ unsafe fn create_user_token(username: &str) -> Result<File> {
         TokenPrimary,
         &raw mut primary_token,
     );
-    if primary_token == null_mut() {
+    if primary_token.is_null() {
         bail!("DuplicateTokenEx failed: {}", GetLastError());
     }
     Ok(File::from_raw_handle(primary_token))
@@ -343,10 +343,8 @@ pub unsafe fn anon_pipe(ours_readable: bool) -> Result<(File, StdFile)> {
 
         if handle == INVALID_HANDLE_VALUE {
             let err = GetLastError();
-            if tries < 10 {
-                if err == ERROR_ACCESS_DENIED {
-                    continue;
-                }
+            if tries < 10 && err == ERROR_ACCESS_DENIED {
+                continue;
             }
             bail!("create namepipe failed: {}", err);
         }
@@ -397,23 +395,7 @@ pub unsafe fn kill_process_group(pid: u32) {
             error!("open pid error: {}", GetLastError());
             continue;
         }
-        TerminateProcess(handle, 0xffffffff as u32);
+        TerminateProcess(handle, 0xffffffff_u32);
         CloseHandle(handle);
     }
-}
-
-pub fn decode_output(v: &[u8]) -> Vec<u8> {
-    static CODEPAGE: LazyLock<u16> = LazyLock::new(|| {
-        let codepage = unsafe { GetOEMCP() } as u16;
-        info!("CODEPAGE: {codepage}");
-        codepage
-    });
-    match std::str::from_utf8(&v) {
-        Ok(output) => output.into(),
-        Err(_) => codepage_strings::Coding::new(*CODEPAGE)
-            .expect("create decoder failed")
-            .decode_lossy(&v),
-    }
-    .into_owned()
-    .into_bytes()
 }

@@ -69,7 +69,7 @@ unsafe extern "system" fn service_handler(
             std::process::exit(0);
         });
     };
-    return 0;
+    0
 }
 
 fn try_start_service(entry: fn()) {
@@ -95,7 +95,7 @@ fn try_start_service(entry: fn()) {
 
 fn clean_update_files() {
     let _ = Command::new("cmd.exe")
-        .args(&[
+        .args([
             "/C",
             "del",
             "/f",
@@ -116,7 +116,7 @@ unsafe fn already_start() -> bool {
         event_name.as_ptr(),
     );
     let err = GetLastError();
-    return err == ERROR_ALREADY_EXISTS || err == ERROR_ACCESS_DENIED;
+    err == ERROR_ALREADY_EXISTS || err == ERROR_ACCESS_DENIED
 }
 
 unsafe fn adjust_privileges() {
@@ -172,7 +172,7 @@ unsafe fn read_image_state() -> Option<String> {
     RegCloseKey(h_key);
 
     let image_state = wsz2string(buffer.as_ptr());
-    return Some(image_state);
+    Some(image_state)
 }
 
 fn wait_image_state_complete(timeout: u64) {
@@ -204,7 +204,7 @@ mod test {
     #[test]
     fn test_read_image_state() {
         let opt_state = unsafe { read_image_state() };
-        assert_eq!(true, opt_state.is_some());
+        assert!(opt_state.is_some());
         let state = opt_state.unwrap();
         assert_eq!(state, IMAGE_STATE_COMPLETE)
     }

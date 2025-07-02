@@ -3,22 +3,23 @@ use super::MetadataAdapter;
 use crate::common::config;
 use crate::network::mock_enabled;
 
+use std::borrow::Cow;
 use std::net::ToSocketAddrs;
-use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use log::info;
 use tokio::sync::OnceCell;
 use url::Url;
 
 const WS_URL_MOCK: &str = "ws://notify:8086/ws";
-const WS_URLS: [&'static str; 4] = [
+const WS_URLS: [&str; 4] = [
     "wss://notify.tat-tc.tencent.cn:8186/ws",
     "wss://notify.tat-tc.tencent.com.cn:8186/ws",
     "wss://notify.tat-tc.tencentyun.com:8186/ws",
     "wss://notify.tat.tencent-cloud.com:8186/ws",
 ];
 const INVOKE_URL_MOCK: &str = "http://invoke";
-const INVOKE_URLS: [&'static str; 4] = [
+const INVOKE_URLS: [&str; 4] = [
     "https://invoke.tat-tc.tencent.cn",
     "https://invoke.tat-tc.tencent.com.cn",
     "https://invoke.tat-tc.tencentyun.com",
@@ -33,22 +34,22 @@ enum UrlType {
 }
 
 impl UrlType {
-    async fn get_available_url(&self, region: Option<String>) -> String {
+    async fn get_available_url(&self, register_region: Option<String>) -> Cow<'static, str> {
         if let Some(url) = self.config_url().await.or_else(|| self.mock_url()) {
-            return url;
+            return url.into();
         }
-        let rg = match region {
+        let rins_rg = match register_region.as_deref() {
             Some(rg) => rg,
             None => get_register_region().await.unwrap_or_default(),
         };
-        if rg.is_empty() || rg == get_current_region().await {
+        if rins_rg.is_empty() || rins_rg == get_current_region().await {
             // Prioritize internal network for the same region
-            return find_available(self.intranet_urls(), dns_resolve);
+            return find_available(self.intranet_urls(), dns_resolve).into();
         }
-        self.public_url(&rg)
+        self.public_url(rins_rg).into()
     }
 
-    fn intranet_urls(&self) -> &[&str] {
+    fn intranet_urls(&self) -> &[&'static str] {
         match self {
             Ws => &WS_URLS,
             Invoke => &INVOKE_URLS,
@@ -62,15 +63,15 @@ impl UrlType {
         }
     }
 
-    fn mock_url(&self) -> Option<String> {
+    fn mock_url(&self) -> Option<&'static str> {
         match self {
             _ if !mock_enabled() => None,
-            Ws => Some(WS_URL_MOCK.to_owned()),
-            Invoke => Some(INVOKE_URL_MOCK.to_owned()),
+            Ws => Some(WS_URL_MOCK),
+            Invoke => Some(INVOKE_URL_MOCK),
         }
     }
 
-    async fn config_url(&self) -> Option<String> {
+    async fn config_url(&self) -> Option<&'static str> {
         match self {
             Ws => config::get_ws_url().await,
             Invoke => config::get_invoke_url().await,
@@ -78,22 +79,22 @@ impl UrlType {
     }
 }
 
-pub async fn get_ws_url() -> String {
+pub async fn get_ws_url() -> Cow<'static, str> {
     let url = Ws.get_available_url(None).await;
     info!("get_ws_url: {}", url);
     url
 }
 
-pub async fn get_invoke_url() -> String {
+pub async fn get_invoke_url() -> Cow<'static, str> {
     let url = Invoke.get_available_url(None).await;
     info!("get_invoke_url: {}", url);
     url
 }
 
-pub async fn get_register_url(region: &str) -> String {
+pub async fn get_register_url(region: &str) -> Cow<'static, str> {
     let url = Invoke.get_available_url(Some(region.to_owned())).await;
     info!("get_register_url: {}", url);
-    return url;
+    url
 }
 
 pub fn get_meta_url() -> String {
@@ -109,34 +110,33 @@ fn dns_resolve(url: &str) -> bool {
     format!("{}:{}", host, 80).to_socket_addrs().is_ok()
 }
 
-fn find_available(urls: &[&str], resolver: impl Fn(&str) -> bool) -> String {
+fn find_available<'a>(urls: &[&'a str], resolver: impl Fn(&str) -> bool) -> &'a str {
     static IDX: AtomicUsize = AtomicUsize::new(0);
-    let idx = IDX.load(SeqCst);
+    let idx = IDX.load(Ordering::Relaxed);
     // starts from the current idx, wraps around to the beginning of urls
     let mut iter = urls.iter().enumerate().cycle().skip(idx).take(urls.len());
     match iter.find(|(_, url)| resolver(url)) {
-        Some((cur, url)) if cur != idx && cur != IDX.swap(cur, SeqCst) => {
+        Some((cur, url)) if cur != idx && cur != IDX.swap(cur, Ordering::Relaxed) => {
             info!("cache index was changed to {}", cur);
-            url.to_string()
+            url
         }
-        _ => urls[idx].to_string(),
+        _ => urls[idx],
     }
 }
 
-async fn get_register_region() -> Option<String> {
-    config::get_register_info().await.map(|info| info.region)
+async fn get_register_region() -> Option<&'static str> {
+    config::get_register_info().await.map(|i| i.region.as_str())
 }
 
 async fn get_current_region() -> &'static str {
-    static REGION: OnceCell<String> = OnceCell::const_new();
-    let rg = REGION
-        .get_or_init(|| async {
-            let ma = MetadataAdapter::build(&get_meta_url());
-            ma.region().await.unwrap_or_default()
-        })
-        .await;
-    info!("=>get_current_region: {}", rg);
-    rg
+    static ONCE: OnceCell<String> = OnceCell::const_new();
+    ONCE.get_or_init(|| async {
+        let ma = MetadataAdapter::build(&get_meta_url());
+        let rg = ma.region().await.unwrap_or_default();
+        info!("=>get_current_region: {}", rg);
+        rg
+    })
+    .await
 }
 
 #[cfg(test)]
@@ -144,7 +144,7 @@ mod test {
     use super::{INVOKE_URLS, WS_URLS};
     use crate::network::urls::find_available;
     use std::sync::atomic::AtomicU8;
-    use std::sync::atomic::Ordering::SeqCst;
+    use std::sync::atomic::Ordering::Relaxed;
     use std::sync::Arc;
 
     #[test]
@@ -152,35 +152,35 @@ mod test {
         let resolve_1_cnt = Arc::new(AtomicU8::new(0));
         let count_1 = resolve_1_cnt.clone();
         let resolve_1 = |url: &str| {
-            count_1.fetch_add(1, SeqCst);
+            count_1.fetch_add(1, Relaxed);
             url.contains("tencentyun.com")
         };
 
         let resolve_2_cnt = Arc::new(AtomicU8::new(0));
         let count_2 = resolve_2_cnt.clone();
         let resolve_2 = |url: &str| {
-            count_2.fetch_add(1, SeqCst);
+            count_2.fetch_add(1, Relaxed);
             url.contains("tencent.com.cn")
         };
 
         let resolve_3_cnt = Arc::new(AtomicU8::new(0));
         let count_3 = resolve_3_cnt.clone();
         let resolve_3 = |_url: &str| {
-            count_3.fetch_add(1, SeqCst);
+            count_3.fetch_add(1, Relaxed);
             false
         };
 
         let url = find_available(&WS_URLS, resolve_1);
         assert_eq!(url, "wss://notify.tat-tc.tencentyun.com:8186/ws");
-        assert_eq!(resolve_1_cnt.load(SeqCst), 3);
+        assert_eq!(resolve_1_cnt.load(Relaxed), 3);
 
         let url = find_available(&INVOKE_URLS, resolve_2);
         assert_eq!(url, "https://invoke.tat-tc.tencent.com.cn");
-        assert_eq!(resolve_2_cnt.load(SeqCst), 4);
+        assert_eq!(resolve_2_cnt.load(Relaxed), 4);
 
         //use last ok, count eq urls len
         let url = find_available(&INVOKE_URLS, resolve_3);
         assert_eq!(url, "https://invoke.tat-tc.tencent.com.cn");
-        assert_eq!(resolve_3_cnt.load(SeqCst), 4);
+        assert_eq!(resolve_3_cnt.load(Relaxed), 4);
     }
 }

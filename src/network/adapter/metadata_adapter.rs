@@ -55,7 +55,7 @@ impl MetadataAdapter {
     }
 
     async fn get(url: &str) -> Result<String> {
-        let resp_text = HttpRequester::get(&url)
+        let resp_text = HttpRequester::get(url)
             .timeout(3)
             .send()
             .await

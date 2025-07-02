@@ -1,10 +1,9 @@
 use super::RESTART_CHECK_INVL;
 use crate::network::{HttpRequester, Invoke, InvokeAdapter};
-use crate::{common::create_file_with_parents, EXE_DIR};
+use crate::{common::create_file_with_parents, EXE_DIR, STOP_COUNTER};
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use anyhow::{bail, Context, Result};
 use futures::StreamExt;
@@ -30,17 +29,17 @@ fn self_update_unzip_dir() -> PathBuf {
     self_update_dir().join(UPDATE_FILE_UNZIP_DIR)
 }
 
-pub async fn check_update(stop_counter: &Arc<AtomicU64>) {
+pub async fn check_update() {
     match update().await {
         Err(e) => return InvokeAdapter::log(&format!("try_update error: {e:#}")).await,
         Ok(false) => return, // no newer version
         _ => (),
     }
-    wait_and_restart(stop_counter).await
+    wait_and_restart().await
 }
 
-async fn wait_and_restart(stop_counter: &Arc<AtomicU64>) -> ! {
-    while stop_counter.load(Ordering::SeqCst) != 0 {
+async fn wait_and_restart() -> ! {
+    while STOP_COUNTER.load(Ordering::Relaxed) != 0 {
         sleep(RESTART_CHECK_INVL).await;
     }
 
@@ -99,7 +98,7 @@ async fn download_file(from: &str, to: impl AsRef<Path>) -> Result<String> {
         .context(format!("file `{path:?}` create failed"))?;
 
     info!("start to download file from: {from}");
-    let mut bytes_stream = HttpRequester::get(&from)
+    let mut bytes_stream = HttpRequester::get(from)
         .timeout(UPDATE_DOWNLOAD_TIMEOUT)
         .send()
         .await
@@ -109,7 +108,7 @@ async fn download_file(from: &str, to: impl AsRef<Path>) -> Result<String> {
     let mut md5 = md5::Context::new();
     while let Some(item) = bytes_stream.next().await {
         let bytes = item.context("bytes_stream get item failed")?;
-        file.write_all(&*bytes).await.context("write_all failed")?;
+        file.write_all(&bytes).await.context("write_all failed")?;
         md5.consume(bytes);
     }
     file.sync_all().await.context("sync_all failed")?;
@@ -176,7 +175,7 @@ pub async fn restart() -> Result<()> {
     let out = {
         let script = include_str!(r"../../install/install.sh");
         Command::new("sh")
-            .args(&["-c", script, "install.sh", "restart"])
+            .args(["-c", script, "install.sh", "restart"])
             .output()
             .await?
     };
