@@ -115,8 +115,8 @@ install() {
         if [ ! -f "${TARGET_FILE}" ] || ! diff "${SERVICE_FILE}" "${TARGET_FILE}" > /dev/null; then
             cp -f "${SERVICE_FILE}" "${SYSTEMD_DIR}"
             systemctl daemon-reload
+            systemctl enable "${SERVICE_FILE}"
         fi
-        systemctl enable "${SERVICE_FILE}"
     elif has_upstart; then
         echo "use upstart(initctl) to manage service"
         cp -f tat_agent_service.conf /etc/init/
