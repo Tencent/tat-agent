@@ -79,6 +79,7 @@ install() {
         exit 1
     fi
 
+    umask 022
     mkdir -p ${SERVICE_DIR}
     if [ $? -ne 0 ]; then
         # handle special case for CoreOS whose /usr is Read-only

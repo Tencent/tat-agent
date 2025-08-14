@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.8] - 2025-08-14
+
+### Changed
+
+- Add execute permission to the program directory.
+
 ## [1.1.7] - 2025-07-01
 
 ### Changed

@@ -194,11 +194,12 @@ pub async fn set_permissions_recursively(
     end: Option<impl AsRef<Path>>,
     perm: std::fs::Permissions,
 ) -> Result<()> {
+    let end = end.as_ref().map(AsRef::as_ref);
     for p in start.as_ref().ancestors() {
-        if end.is_some() && p == end.as_ref().unwrap().as_ref() {
+        tokio::fs::set_permissions(p, perm.clone()).await?;
+        if Some(p) == end {
             break;
         }
-        tokio::fs::set_permissions(p, perm.clone()).await?;
     }
     Ok(())
 }
