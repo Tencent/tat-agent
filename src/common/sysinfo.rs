@@ -2,10 +2,12 @@ use std::{cmp::min, num::NonZeroUsize, thread::available_parallelism};
 use std::{env::consts::OS, net::UdpSocket, sync::LazyLock};
 
 use anyhow::{anyhow, Result};
+use smbioslib::{table_load_from_device, DefinedStruct, SystemUuidData};
 use sysinfo::{set_open_files_limit, System};
 use tokio::sync::{Mutex, MutexGuard};
 
 const MAX_PARALLELISM: usize = 8;
+static MACHINE_ID: LazyLock<Result<String>> = LazyLock::new(get_machine_id);
 
 pub async fn system() -> MutexGuard<'static, System> {
     static SYSTEM: LazyLock<Mutex<System>> = LazyLock::new(|| {
@@ -22,8 +24,28 @@ pub fn local_ip() -> Result<String> {
     Ok(addr.ip().to_string())
 }
 
-pub fn machine_id() -> Result<String> {
+fn get_machine_id() -> Result<String> {
+    if let Some(machine_id) = smbios_machine_id() {
+        return Ok(machine_id);
+    }
     machine_uid::get().map_err(|e| anyhow!("{}", e))
+}
+
+fn smbios_machine_id() -> Option<String> {
+    let smbios_data = table_load_from_device().ok()?;
+    for undefstruct in smbios_data.iter() {
+        let DefinedStruct::SystemInformation(info) = undefstruct.defined_struct() else {
+            continue;
+        };
+        if let Some(uuid_data @ SystemUuidData::Uuid(_)) = info.uuid() {
+            return Some(uuid_data.to_string());
+        }
+    }
+    None
+}
+
+pub fn machine_id() -> Result<&'static str> {
+    MACHINE_ID.as_deref().map_err(|e| anyhow!(e))
 }
 
 pub fn kernel_name() -> String {

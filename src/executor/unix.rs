@@ -21,7 +21,7 @@ pub struct User(uzers::User);
 impl Task {
     pub async fn spawn(&mut self) -> Result<(Child, impl AsyncReadExt + Unpin)> {
         let script = self.info.script_path()?;
-        let mut cmd = init_command(script.as_os_str().to_str().unwrap(), None).await;
+        let mut cmd = init_command(script.as_os_str().to_str().unwrap(), None, true).await;
         configure_command(&mut cmd, &self.info.user, &self.info.working_directory).await;
 
         let mut child = cmd.spawn()?;
@@ -62,9 +62,13 @@ impl User {
     }
 }
 
-pub async fn init_command(script: &str, user: Option<&User>) -> Command {
+pub async fn init_command(script: &str, user: Option<&User>, is_script_file: bool) -> Command {
     let (shell, init_script) = get_available_shell(user).await;
-    let script = format!("{} {}", init_script, script);
+    let script = if is_script_file {
+        format!("{init_script} {shell} {script}")
+    } else {
+        format!("{init_script} {script}")
+    };
     let mut cmd = Command::new(shell);
     cmd.args(["-c", &script]);
     cmd

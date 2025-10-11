@@ -1,5 +1,6 @@
 use super::{execute_stream, PtyExecCallback};
 use crate::executor::unix::{configure_command, init_command, load_envs, User};
+use crate::network::Program;
 use crate::tssh::{session::PluginComp, PTY_INSPECT_READ};
 use crate::EXE_DIR;
 
@@ -9,7 +10,7 @@ use std::fs::File as StdFile;
 use std::io::{Read, Write};
 use std::os::linux::fs::MetadataExt;
 use std::os::unix::prelude::{AsRawFd, FromRawFd, RawFd};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::{env, io, ptr};
 
@@ -36,23 +37,28 @@ impl Pty {
         username: &str,
         cols: u16,
         rows: u16,
-        envs: HashMap<String, String>,
+        envs: &HashMap<String, String>,
+        prog: &Option<Program>,
     ) -> Result<Pty> {
         let user = Arc::new(User::new(username)?);
         let shell_path = user.shell();
-        let shell_name = Path::new(shell_path)
+        let shell_name: &str = &shell_path
             .file_name()
             .unwrap_or_else(|| std::ffi::OsStr::new("bash"))
-            .to_string_lossy()
-            .into_owned();
+            .to_string_lossy();
 
         let home_path = user.home_dir().to_str().unwrap_or("/tmp");
         let local_envs = load_envs(username, home_path, &shell_path.to_string_lossy()).await;
         let (master, slave) = openpty(&user, cols, rows)?;
-        let mut cmd = Command::new(&shell_name);
-        if LOGIN_SHELL_SUPPORTED.contains(&shell_name.as_str()) {
-            cmd.arg("-l");
-        }
+
+        let (program, args): (&str, &[String]) = match prog {
+            Some(p) => (&p.program, &p.args),
+            None if LOGIN_SHELL_SUPPORTED.contains(&shell_name) => (shell_name, &["-l".to_owned()]),
+            None => (shell_name, &[]),
+        };
+        let mut cmd = Command::new(program);
+        cmd.args(args);
+
         unsafe {
             let uid = user.uid();
             let gid = user.primary_group_id();
@@ -73,7 +79,7 @@ impl Pty {
             .stdin(slave.try_clone().expect(""))
             .stdout(slave.try_clone().expect(""))
             .stderr(slave.try_clone().expect(""))
-            .envs(local_envs.into_iter().chain(envs))
+            .envs(local_envs.iter().chain(envs))
             .current_dir(home_path)
             .spawn()?;
 
@@ -224,7 +230,7 @@ impl PluginComp {
     ) -> Result<()> {
         let user = self.get_user()?;
         let cwd_path = self.get_cwd(&user);
-        let mut cmd = init_command(cmd, Some(user.as_ref())).await;
+        let mut cmd = init_command(cmd, Some(user.as_ref()), false).await;
         configure_command(&mut cmd, &user, cwd_path).await;
 
         let callback = callback.unwrap_or_else(|| Box::new(|_, _, _, _| Box::pin(async {})));

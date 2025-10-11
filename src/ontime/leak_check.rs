@@ -1,9 +1,11 @@
 use crate::common::sysinfo::system;
-use crate::network::{Invoke, InvokeAdapter};
+use crate::network::InvokeAdapter;
 use crate::ontime::self_update::restart;
 
+use std::collections::VecDeque;
+use std::ops::{Deref, DerefMut};
+
 use log::info;
-use ringbuffer::{AllocRingBuffer, RingBuffer};
 use sysinfo::{get_current_pid, ProcessRefreshKind, ProcessesToUpdate};
 
 #[cfg(unix)]
@@ -17,8 +19,8 @@ pub struct LeakChecker {
     check_cnt: u64,
     mem_cnt: u64,
     fd_cnt: u64,
-    mem_res_rf: AllocRingBuffer<u64>,
-    fd_rf: AllocRingBuffer<u64>,
+    mem_res_rf: RingBuffer,
+    fd_rf: RingBuffer,
 }
 
 impl LeakChecker {
@@ -27,23 +29,23 @@ impl LeakChecker {
             check_cnt: 0,
             mem_cnt: 0,
             fd_cnt: 0,
-            mem_res_rf: AllocRingBuffer::new(64),
-            fd_rf: AllocRingBuffer::new(64),
+            mem_res_rf: RingBuffer::new(64),
+            fd_rf: RingBuffer::new(64),
         }
     }
 
     pub async fn check_resource_leak(&mut self) {
         let handle_cnt = get_handle_cnt();
         let mem_size = get_mem_size().await;
-        self.fd_rf.push(handle_cnt);
-        self.mem_res_rf.push(mem_size);
+        self.fd_rf.enqueue(handle_cnt);
+        self.mem_res_rf.enqueue(mem_size);
 
         if self.fd_rf.iter().all(|x| *x >= MAX_FD_COUNT)
             || self.mem_res_rf.iter().all(|x| *x >= MAX_MEM_RES_BYTES)
         {
             let log = format!(
                 "resource leak detected, fd:{:?}, mem:{:?}",
-                self.fd_rf, self.mem_res_rf
+                *self.fd_rf, *self.mem_res_rf
             );
             InvokeAdapter::log(&log).await;
             if let Err(e) = restart().await {
@@ -63,8 +65,7 @@ impl LeakChecker {
             self.fd_cnt = 0;
             self.mem_cnt = 0;
 
-            info!("ReportResource mem {mem_avg} handle {fd_avg} zp_cnt {zp_cnt}");
-            let _ = InvokeAdapter::report_resource(fd_avg, mem_avg, zp_cnt).await;
+            info!("current mem {mem_avg}, handle {fd_avg}, zp_cnt {zp_cnt}");
         }
         self.check_cnt += 1;
     }
@@ -120,12 +121,54 @@ async fn get_zombie_process() -> u32 {
     0
 }
 
+#[derive(Debug)]
+struct RingBuffer(VecDeque<u64>);
+
+impl Deref for RingBuffer {
+    type Target = VecDeque<u64>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for RingBuffer {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl RingBuffer {
+    fn new(capacity: usize) -> Self {
+        Self(VecDeque::with_capacity(capacity))
+    }
+
+    fn enqueue(&mut self, value: u64) {
+        if self.len() == self.capacity() {
+            self.pop_front();
+        }
+        self.push_back(value);
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ring_buffer() {
+        let mut rb = RingBuffer::new(3);
+        assert_eq!(*rb, [] as [u64; 0]);
+        rb.enqueue(1);
+        rb.enqueue(2);
+        assert_eq!(*rb, [1, 2]);
+        rb.enqueue(3);
+        rb.enqueue(4);
+        assert_eq!(*rb, [2, 3, 4]);
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn test_get_zombie_process() {
-        use super::*;
         use crate::common::logger::init_test_log;
         use std::process::Command;
         init_test_log();

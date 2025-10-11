@@ -60,11 +60,8 @@ where
         format!("{}:{}", self.request.session_id, self.request.channel_id)
     }
 
-    async fn dispatch(msg: Vec<u8>)
-    where
-        Self: Handler,
-    {
-        let doc = match Document::from_reader(&mut Cursor::new(&msg[..])) {
+    async fn dispatch(data: Vec<u8>) {
+        let doc = match Document::from_reader(&mut Cursor::new(&data)) {
             Ok(doc) => doc,
             Err(e) => return error!("BsonHandler::dispatch from_reader failed: {:#}", e),
         };
@@ -134,13 +131,11 @@ where
         format!("{}:{}", self.request.session_id, self.request.channel_id)
     }
 
-    async fn dispatch(msg: Vec<u8>)
-    where
-        Self: Handler,
-    {
-        let msg = String::from_utf8_lossy(&msg[..]);
+    async fn dispatch(data: Vec<u8>) {
+        // Safety: data was originally a String, so conversion back is safe.
+        let msg = unsafe { std::str::from_utf8_unchecked(&data) };
 
-        let Ok(json_msg) = serde_json::from_str::<Value>(&msg) else {
+        let Ok(json_msg) = serde_json::from_str::<Value>(msg) else {
             return error!("JsonHandler::dispatch parse msg failed: {}", msg);
         };
 

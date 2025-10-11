@@ -294,31 +294,6 @@ pub struct CheckUpdateResponse {
 }
 
 //==============================================================================
-// Report resource API
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "PascalCase")]
-pub struct ReportResourceRequest {
-    #[serde(default)]
-    mem_avg: u32,
-    #[serde(default)]
-    fd_avg: u32,
-    #[serde(default)]
-    zp_cnt: u32, // always 0 on winodws;
-}
-
-impl ReportResourceRequest {
-    pub fn new(fd_avg: u32, mem_avg: u32, zp_cnt: u32) -> Self {
-        ReportResourceRequest {
-            mem_avg,
-            fd_avg,
-            zp_cnt,
-        }
-    }
-}
-
-pub type ReportResourceResponse = Empty;
-
-//==============================================================================
 // registration related
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "PascalCase")]

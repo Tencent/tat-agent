@@ -127,7 +127,8 @@ impl WsContext {
         //pty message to server
         let text_handler = {
             let tx = tx.clone();
-            move |data: Vec<_>| tx.send(Ok(Text(String::from_utf8_lossy(&data).to_string())))
+            // Safety: data was originally a String, so conversion back is safe.
+            move |data| tx.send(Ok(Text(unsafe { String::from_utf8_unchecked(data) })))
         };
         let binary_handler = {
             let tx = tx.clone();

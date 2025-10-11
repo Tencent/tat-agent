@@ -222,7 +222,7 @@ impl BlockMarker {
 
     async fn work(&mut self) {
         let pre_marker = "\u{1b}]1337;PreExecMarker;\u{7}".to_string();
-        let _ = self.writef.write(pre_marker.as_bytes()).await;
+        let _ = self.writef.write_all(pre_marker.as_bytes()).await;
         let mut buffer = [0u8; BLOCK_MARKER_BUF_SIZE];
         loop {
             match self.readf.read(&mut buffer[..]).await {
@@ -239,7 +239,7 @@ impl BlockMarker {
                             _ => continue,
                         }
                     }
-                    let _ = self.writef.write(&output).await;
+                    let _ = self.writef.write_all(&output).await;
                 }
                 Err(e) => break error!("pty plain2block error: {}", e),
             }

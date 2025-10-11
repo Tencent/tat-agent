@@ -19,7 +19,7 @@ pub use self::types::http_msg::*;
 pub use self::types::ws_msg::*;
 use crate::common::config::{get_register_info, save_register_info};
 use crate::common::sysinfo::{
-    cpu_arch, hostname, kernel_name, kernel_version, local_ip, os_version, uptime_secs,
+    cpu_arch, hostname, kernel_name, kernel_version, local_ip, machine_id, os_version, uptime_secs,
 };
 use crate::common::{gen_rand_str_with, get_now_secs};
 
@@ -75,6 +75,9 @@ async fn build_extra_headers() -> HeaderMap {
     }
 
     let Some(record) = get_register_info().await else {
+        if let Ok(mid) = machine_id() {
+            headers.insert("MachineId", value(mid));
+        }
         return headers;
     };
     let Ok(private_key) = RsaPrivateKey::from_pkcs1_pem(&record.private_key) else {

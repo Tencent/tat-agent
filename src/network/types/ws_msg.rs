@@ -33,6 +33,8 @@ pub struct PtyJsonBase<T> {
 pub struct PtyStart {
     #[serde(default)]
     pub user_name: String,
+    #[serde(default, flatten)]
+    pub prog: Option<Program>,
     #[serde(default)]
     pub cols: u16,
     #[serde(default)]
@@ -43,6 +45,13 @@ pub struct PtyStart {
     pub no_shell: bool,
     #[serde(default)]
     pub envs: HashMap<String, String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct Program {
+    pub program: String,
+    pub args: Vec<String>,
 }
 
 #[derive(Default, Serialize, Deserialize, Debug)]
@@ -259,7 +268,7 @@ fn default_show_hidden() -> bool {
 #[derive(Default, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]
 pub struct ListPathResp {
-    pub index: u32,
+    pub index: usize,
     pub is_last: bool,
     pub files: Vec<FileInfoResp>,
 }

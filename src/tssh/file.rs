@@ -1,15 +1,17 @@
 use super::handler::{BsonHandler, Handler, HandlerExt};
 use crate::network::*;
 
-use std::fs::{create_dir, create_dir_all, read_dir, File, Metadata};
-use std::iter::{once, repeat};
+use std::fs::{create_dir, create_dir_all, Metadata};
+use std::sync::Arc;
 use std::{io::SeekFrom, path::Path, time::SystemTime};
 
 use anyhow::Result;
+use futures::{stream, StreamExt};
 use glob::Pattern;
 use log::info;
-use tokio::fs::{metadata, remove_dir_all, remove_file, OpenOptions};
+use tokio::fs::{metadata, read_dir, remove_dir_all, remove_file, File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tokio_stream::wrappers::ReadDirStream;
 
 cfg_if::cfg_if! {
     if #[cfg(windows)] {
@@ -57,7 +59,7 @@ impl Handler for BsonHandler<CreateFileReq> {
         } = self.request.data;
         info!(
             "=>create_file `{id}`, path: {path}, \
-            is_dir: {mode}, overwrite: {overwrite}, is_dir: {is_dir}"
+            mode: {mode:o}, overwrite: {overwrite}, is_dir: {is_dir}"
         );
 
         let path = Path::new(path);
@@ -87,7 +89,7 @@ impl Handler for BsonHandler<CreateFileReq> {
             if is_dir {
                 create_dir(path)?;
             } else {
-                File::create(path)?;
+                std::fs::File::create(path)?;
             }
             #[cfg(unix)]
             set_permissions(path, Permissions::from_mode(mode))?;
@@ -139,30 +141,66 @@ impl Handler for BsonHandler<ListPathReq> {
         } = &self.request.data;
         info!("=>list_path `{id}`, path: {path}, filter: {filter}");
 
-        let pattern = match Pattern::new(filter) {
-            Ok(pattern) => pattern,
-            Err(e) => return self.reply(PtyBinErrMsg::new(e)).await,
-        };
-
-        let files = match list_path(path, &pattern, *show_hidden) {
-            Ok(files) => files,
-            Err(e) => return self.reply(PtyBinErrMsg::new(e)).await,
-        };
-
-        let empty = Vec::new();
-        let res = files
-            .chunks(10)
-            .zip(repeat(false))
-            .chain(once((empty.as_slice(), true)))
-            .zip(0u32..);
-        for ((items, is_last), index) in res {
-            self.reply(ListPathResp {
-                index,
-                is_last,
-                files: items.to_vec(),
-            })
-            .await
+        #[cfg(windows)]
+        if path == "/" {
+            let drives = get_win32_ready_drives()
+                .into_iter()
+                .map(|name| FileInfoResp {
+                    r#type: FS_TYPE_PARTITION.to_string(),
+                    name,
+                    size: 0,
+                    modify_time: 0,
+                    access_time: 0,
+                })
+                .collect();
+            let reply = ListPathResp {
+                index: 0,
+                is_last: true,
+                files: drives,
+            };
+            return self.reply(reply).await;
         }
+        #[cfg(windows)]
+        let path = {
+            let i = if path.starts_with("/") { 1 } else { 0 };
+            &path[i..]
+        };
+
+        let pattern = match Pattern::new(filter) {
+            Ok(pattern) => Arc::new(pattern),
+            Err(e) => return self.reply(PtyBinErrMsg::new(e)).await,
+        };
+
+        let read_dir = match read_dir(path).await {
+            Ok(read_dir) => read_dir,
+            Err(e) => return self.reply(PtyBinErrMsg::new(e)).await,
+        };
+        ReadDirStream::new(read_dir)
+            .filter_map(|entry| {
+                let pattern = pattern.clone();
+                let show_hidden = *show_hidden;
+                async move {
+                    let entry = entry.ok()?;
+                    let metadata = entry.metadata().await.ok()?;
+                    let name_os_string = entry.file_name();
+                    let name = name_os_string.to_string_lossy();
+                    (show_hidden || !is_hidden(&name, &metadata)).then_some(())?;
+                    pattern.matches(&name).then_some(())?;
+                    Some(file_info_data(&name, &metadata))
+                }
+            })
+            .chunks(10)
+            .zip(stream::repeat(false))
+            .chain(stream::once(async { (Vec::new(), true) }))
+            .enumerate()
+            .for_each(|(index, (files, is_last))| {
+                self.reply(ListPathResp {
+                    index,
+                    is_last,
+                    files,
+                })
+            })
+            .await;
     }
 }
 
@@ -218,8 +256,8 @@ impl Handler for BsonHandler<WriteFileReq> {
             return self.reply(PtyBinErrMsg::new(e)).await;
         }
 
-        match file.write(data).await {
-            Ok(length) => self.reply(WriteFileResp { length }).await,
+        match file.write_all(data).await {
+            Ok(_) => self.reply(WriteFileResp { length: data.len() }).await,
             Err(e) => self.reply(PtyBinErrMsg::new(e)).await,
         };
     }
@@ -241,7 +279,7 @@ impl Handler for BsonHandler<ReadFileReq> {
         };
 
         //open file read only
-        let mut file = match tokio::fs::File::open(path).await {
+        let mut file = match File::open(path).await {
             Ok(file) => file,
             Err(e) => return self.reply(PtyBinErrMsg::new(e)).await,
         };
@@ -289,51 +327,11 @@ fn get_win32_ready_drives() -> Vec<String> {
         .collect()
 }
 
-//windows path format: /d:/work
-fn list_path(path: &str, filter: &Pattern, show_hidden: bool) -> Result<Vec<FileInfoResp>> {
-    let mut files = Vec::<FileInfoResp>::new();
-    let mut path = path.to_string();
-
-    #[cfg(windows)]
-    if path == "/" {
-        for name in get_win32_ready_drives() {
-            files.push(FileInfoResp {
-                r#type: FS_TYPE_PARTITION.to_string(),
-                name,
-                size: 0,
-                modify_time: 0,
-                access_time: 0,
-            })
-        }
-        return Ok(files);
-    }
-
-    if std::env::consts::OS == "windows" && path.starts_with("/") {
-        path = path[1..].to_string();
-    }
-
-    let items = read_dir(path)?;
-    for item in items {
-        let Ok(entry) = item else {
-            continue;
-        };
-        let Ok(metadata) = entry.metadata() else {
-            continue;
-        };
-        let name = entry.file_name().to_string_lossy().to_string();
-        if !show_hidden && is_hidden(&name, &metadata) {
-            continue;
-        }
-        if !filter.matches(&name) {
-            continue;
-        }
-        files.push(file_info_data(&name, &metadata))
-    }
-    files.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(files)
-}
-
 fn file_info_data(name: &str, metadata: &Metadata) -> FileInfoResp {
+    fn timestamp(t: SystemTime) -> Result<u64> {
+        Ok(t.duration_since(SystemTime::UNIX_EPOCH)?.as_millis() as u64)
+    }
+
     let fs_type = if metadata.is_dir() {
         FS_TYPE_DIR.to_string()
     } else if metadata.is_symlink() {
@@ -342,56 +340,57 @@ fn file_info_data(name: &str, metadata: &Metadata) -> FileInfoResp {
         FS_TYPE_FILE.to_string()
     };
 
+    let modify_time = metadata.modified().unwrap();
+    let access_time = metadata.accessed().unwrap();
+
+    #[cfg(unix)]
+    let mode = unix_mode::to_string(metadata.permissions().mode());
+    #[cfg(unix)]
+    let longname = get_long_name(name, metadata, &mode, modify_time);
+
     FileInfoResp {
         r#type: fs_type,
         name: name.to_owned(),
         size: metadata.len(),
-        modify_time: metadata
-            .modified()
-            .unwrap()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64,
-        access_time: metadata
-            .accessed()
-            .unwrap()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64,
+        modify_time: timestamp(modify_time).unwrap(),
+        access_time: timestamp(access_time).unwrap(),
+
         #[cfg(unix)]
         owner: metadata.st_uid(),
         #[cfg(unix)]
         group: metadata.st_gid(),
         #[cfg(unix)]
-        rights: unix_mode::to_string(metadata.permissions().mode()),
+        rights: mode,
         #[cfg(unix)]
-        longname: get_long_name(name, metadata),
+        longname,
     }
 }
 
 #[cfg(unix)]
-fn get_long_name(name: &str, metadata: &Metadata) -> String {
-    let rights = unix_mode::to_string(metadata.permissions().mode());
+fn get_long_name(name: &str, metadata: &Metadata, mode: &str, modify_time: SystemTime) -> String {
+    let owner = get_user_by_uid(metadata.st_uid());
+    let owner_name = owner
+        .as_ref()
+        .map(|user| user.name().to_string_lossy())
+        .unwrap_or("unknown".into());
+
+    let group = get_group_by_gid(metadata.st_gid());
+    let group_name = group
+        .as_ref()
+        .map(|group| group.name().to_string_lossy())
+        .unwrap_or("unknown".into());
+
     let link_count = metadata.st_nlink();
-
-    let owner_name = match get_user_by_uid(metadata.st_uid()) {
-        Some(user) => user.name().to_string_lossy().to_string(),
-        None => "unknown".to_string(),
-    };
-    let group_name = match get_group_by_gid(metadata.st_gid()) {
-        Some(group) => group.name().to_string_lossy().to_string(),
-        None => "unknown".to_string(),
-    };
     let size = metadata.st_size();
+    let time = {
+        let datetime: DateTime<Local> = modify_time.into();
+        format!("{}", datetime.format("%b %d %R"))
+    };
 
-    let datetime: DateTime<Local> = metadata.modified().unwrap().into();
-    let time = format!("{}", datetime.format("%b %d %R"));
-
-    let longname = format!(
+    format!(
         "{} {} {} {} {} {} {}",
-        rights, link_count, owner_name, group_name, size, time, name
-    );
-    longname
+        mode, link_count, owner_name, group_name, size, time, name
+    )
 }
 
 #[cfg(unix)]

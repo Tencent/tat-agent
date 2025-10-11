@@ -93,7 +93,7 @@ After=network.target
 
 [Service]
 Type=forking
-ExecStart=/bin/bash -c "${SCRIPT_PATH} -service &"
+ExecStart=/bin/bash -c "sh ${SCRIPT_PATH} -service &"
 WorkingDirectory=${INSTALL_DIR}
 TimeoutStartSec=0
 RemainAfterExit=no
@@ -141,7 +141,7 @@ EOF
 
 case "\$1" in
     start)
-        ${SCRIPT_PATH} -service > /dev/null 2>&1 &
+        sh ${SCRIPT_PATH} -service > /dev/null 2>&1 &
         echo "Service started in background. Check ${LOG_FILE} for installation progress."
         ;;
     *)
@@ -243,7 +243,7 @@ run_service() {
 
     if [[ -x ${INSTALL_DIR}/pkg/install.sh ]]; then
         chmod +x ${INSTALL_DIR}/pkg/install.sh
-        ${INSTALL_DIR}/pkg/install.sh >> ${LOG_FILE} 2>&1
+        sh ${INSTALL_DIR}/pkg/install.sh >> ${LOG_FILE} 2>&1
         log "Installation script executed successfully."
     else
         log "Install script not found."

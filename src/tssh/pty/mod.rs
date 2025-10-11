@@ -1,7 +1,7 @@
 use super::handler::{BsonHandler, Handler, HandlerExt, JsonHandler};
 use super::session::{Channel, Plugin, PluginComp, PluginCtrl, PluginData, Session};
 use super::Tssh;
-use crate::common::{get_current_username, utf8_truncation_check};
+use crate::common::{get_current_username, incomplete_utf8_bytes};
 use crate::executor::kill_process_group;
 use crate::network::*;
 
@@ -66,7 +66,8 @@ impl Handler for JsonHandler<PtyStart> {
         let session_id = &self.request.session_id;
         let channel_id = &self.request.channel_id;
         let mut username = req.user_name.clone();
-        info!("=>pty_start `{}`, username: {}", self.id(), username);
+        let id = self.id();
+        info!("=>pty_start `{id}`, username: {username}");
 
         if username.is_empty() {
             username = get_current_username();
@@ -85,12 +86,17 @@ impl Handler for JsonHandler<PtyStart> {
             };
 
             #[cfg(unix)]
-            let pty_res = Pty::new(&username, req.cols, req.rows, req.envs.clone()).await;
+            let pty_res = {
+                if let Some(Program { program, args }) = req.prog.as_ref() {
+                    info!("Pty `{id}` start with program: {program}, args: {args:?}");
+                }
+                Pty::new(&username, req.cols, req.rows, &req.envs, &req.prog).await
+            };
 
             let pty = match pty_res {
                 Ok(pty) => pty,
                 Err(e) => {
-                    error!("pty_start `{}` failed, open pty err: {:#}", self.id(), e);
+                    error!("pty_start `{id}` failed, open pty err: {e:#}");
                     return self.reply(PtyError::new(e)).await;
                 }
             };
@@ -177,7 +183,7 @@ impl Handler for JsonHandler<PtyInput> {
             Ok(w) => w,
             Err(e) => return error!("pty_input `{}` error: {}", self.id(), e),
         };
-        if let Err(e) = writer.write(&data[..]).await {
+        if let Err(e) = writer.write_all(&data[..]).await {
             error!("pty_input `{}` error: {}", self.id(), e);
         };
     }
@@ -320,18 +326,27 @@ impl Pty {
                 res = reader.read(&mut buffer[remnant..]) => match res.map(|l| l + remnant) {
                     Ok(0) => break info!("Pty `{id}` close: read size is 0"),
                     Ok(len) => {
-                        let (output, remnant_slice) = utf8_truncation_check(&buffer[..len], len == PTY_BUF_SIZE);
-
-                        let data = STANDARD.encode(output);
-                        let pty_output = PtyJsonBase {
-                            session_id: session_id.clone(),
-                            channel_id: channel_id.clone(),
-                            data: PtyOutput { output: data },
+                        let is_finished = len == remnant;
+                        remnant = if is_finished {
+                            0 // if output finished, append entire buffer to output
+                        } else {
+                            incomplete_utf8_bytes(&buffer[..len])
                         };
-                        Tssh::reply_json_msg(WS_MSG_TYPE_PTY_OUTPUT, pty_output).await;
 
-                        remnant = remnant_slice.len();
-                        buffer.copy_within(len-remnant..len, 0);
+                        let output = &buffer[..len - remnant];
+                        if !output.is_empty() {
+                            let data = STANDARD.encode(output);
+                            let pty_output = PtyJsonBase {
+                                session_id: session_id.clone(),
+                                channel_id: channel_id.clone(),
+                                data: PtyOutput { output: data },
+                            };
+                            Tssh::reply_json_msg(WS_MSG_TYPE_PTY_OUTPUT, pty_output).await;
+                        }
+                        if is_finished {
+                            break info!("Pty `{id}` close: read size is 0");
+                        }
+                        buffer.copy_within(len - remnant..len, 0);
                     }
                     Err(e) => {
                         match e.to_string().as_str() {
@@ -387,13 +402,22 @@ pub async fn execute_stream(
                     Ok(0) => break Ok(()),
                     Ok(len) => (&buffer[..len], len),
                 };
-                let (output, remnant_slice) = utf8_truncation_check(buf, len == PTY_EXEC_DATA_SIZE);
+                let is_finished = len == remnant;
+                remnant = if is_finished {
+                    0 // if output finished, append entire buffer to output
+                } else {
+                    incomplete_utf8_bytes(&buffer[..len])
+                };
 
-                callback(idx, false, None, output.into()).await;
-
-                remnant = remnant_slice.len();
-                buffer.copy_within(len-remnant..len, 0);
-                idx += 1;
+                let output = &buf[..len - remnant];
+                if !output.is_empty() {
+                    callback(idx, false, None, output.into()).await;
+                    idx += 1;
+                }
+                if is_finished {
+                    break Ok(());
+                }
+                buffer.copy_within(len - remnant..len, 0);
             }
             _ = &mut timeout => {
                 info!("execute_stream func timeout");
@@ -440,7 +464,9 @@ mod test {
         #[cfg(windows)]
         let pty = Pty::new(&username, 200, 100, 0).unwrap();
         #[cfg(unix)]
-        let pty = Pty::new(&username, 200, 100, HashMap::new()).await.unwrap();
+        let pty = Pty::new(&username, 200, 100, &HashMap::new(), &None)
+            .await
+            .unwrap();
         let mut reader = pty.get_reader().await.unwrap();
         let mut writer = pty.get_writer().await.unwrap();
 

@@ -25,7 +25,7 @@ pub trait Invoke {
         register_value: &str,
     ) -> impl Future<Output = Result<RegisterInfo>> + Send {
         async move {
-            let machine_id = machine_id().context("get machine_id failed")?;
+            let machine_id = machine_id().context("get machine_id failed")?.to_owned();
             let local_ip = local_ip().context("get local_ip failed")?;
             let hostname = hostname().context("get hostname failed")?;
             let (public_key, private_key) =
@@ -119,17 +119,6 @@ pub trait Invoke {
         async move {
             let req = CheckUpdateRequest::new();
             call_invoke_api("CheckUpdate", &get_invoke_url().await, req, NO_RETRY).await
-        }
-    }
-
-    fn report_resource(
-        fd_avg: u32,
-        mem_avg: u32,
-        zp_cnt: u32,
-    ) -> impl Future<Output = Result<ReportResourceResponse>> + Send {
-        async move {
-            let req = ReportResourceRequest::new(fd_avg, mem_avg, zp_cnt);
-            call_invoke_api("ReportResource", &get_invoke_url().await, req, NO_RETRY).await
         }
     }
 

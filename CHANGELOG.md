@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.9] - 2025-09-24
+
+### Changed
+
+- Enhanced PtyStart interface to support launching specified programs in pseudo-terminals.
+- Fix script execution failure due to noexec restriction by using shell interpreter explicitly.
+- Fixed duplicate machine IDs by reverting to smbios-lib with machine-uid fallback.
+- Fixed PtyListPath performance by streaming directory entries and eliminating redundant sorting.
+
 ## [1.1.8] - 2025-08-14
 
 ### Changed

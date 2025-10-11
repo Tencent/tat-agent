@@ -8,6 +8,7 @@ pub mod sysinfo;
 pub use option::Opts;
 
 use std::path::Path;
+use std::str::from_utf8;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -205,16 +206,19 @@ pub async fn set_permissions_recursively(
 }
 
 // Checks a byte buffer for potential UTF-8 character truncation at the end.
-pub fn utf8_truncation_check(buffer: &[u8], is_full: bool) -> (&[u8], &[u8]) {
-    if !is_full {
-        return (buffer, &[]); // No UTF-8 truncation check needed when buffer not full
-    }
+pub fn incomplete_utf8_bytes(buffer: &[u8]) -> usize {
+    buffer[buffer.len().saturating_sub(4)..]
+        .utf8_chunks()
+        .last()
+        .map(|c| c.invalid())
+        .filter(is_truncate_utf8)
+        .map_or(0, <[u8]>::len)
+}
 
-    let remnant = match buffer.utf8_chunks().last().map(|c| c.invalid().len()) {
-        Some(len) if len > 0 && len < 4 => len, // only check single UTF-8 char truncation
-        _ => return (buffer, &[]),
-    };
-
-    let separator = buffer.len() - remnant;
-    (&buffer[..separator], &buffer[separator..])
+fn is_truncate_utf8(invalid: &&[u8]) -> bool {
+    !invalid.is_empty()
+        // Safety: invalid is known to be invalid UTF-8, so from_utf8 will error.
+        && unsafe { from_utf8(invalid).unwrap_err_unchecked() }
+            .error_len()
+            .is_none()
 }

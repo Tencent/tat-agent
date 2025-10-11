@@ -1,5 +1,5 @@
 use super::{kill_process_group, User};
-use crate::common::{cbs_exist, create_file_with_parents, get_now_secs, utf8_truncation_check};
+use crate::common::{cbs_exist, create_file_with_parents, get_now_secs, incomplete_utf8_bytes};
 use crate::network::urls::get_meta_url;
 use crate::network::{COSAdapter, InvocationNormalTask, Invoke, MetadataAdapter};
 use crate::EXE_DIR;
@@ -116,15 +116,19 @@ impl Task {
                         Ok(0) => break info!("task `{tid}` read finished normally, pid: {pid}"),
                         Ok(len) => (&buffer[..len], len),
                     };
-                    remnant = task.on_output(buf).await.len();
-                    buffer.copy_within(len-remnant..len, 0);
+                    let is_finished = len == remnant;
+                    remnant = task.on_output(buf, is_finished).await;
+                    if is_finished {
+                        break info!("task `{tid}` read finished normally, pid: {pid}");
+                    }
+                    buffer.copy_within(len - remnant..len, 0);
 
                     if task.output.buffer.len() >= MAX_SINGLE_REPORT_BYTES {
                         report_notify.notify_one();
                     }
                 },
                 _ = &mut report_notified => {
-                    task.on_report::<T>(&mut report_js) ;
+                    task.on_report::<T>(&mut report_js);
 
                     // if the task output is dropped, it won't report until finished
                     let dropped = task.output.dropped() > 0;
@@ -152,11 +156,19 @@ impl Task {
         Ok(())
     }
 
-    async fn on_output<'a>(&mut self, buf: &'a [u8]) -> &'a [u8] {
-        let (output, remnant) = utf8_truncation_check(buf, buf.len() == BUF_SIZE);
-        self.output.append_output(output, &self.info.task_id);
-        if let Some(conf) = self.upload_conf.as_mut() {
-            conf.write_output_file(output).await;
+    async fn on_output(&mut self, buf: &[u8], is_finished: bool) -> usize {
+        let remnant = if is_finished {
+            0 // if output finished, append entire buffer to output
+        } else {
+            incomplete_utf8_bytes(buf)
+        };
+
+        let output = &buf[..buf.len() - remnant];
+        if !output.is_empty() {
+            self.output.append_output(output, &self.info.task_id);
+            if let Some(conf) = self.upload_conf.as_mut() {
+                conf.write_output_file(output).await;
+            }
         }
         remnant
     }
@@ -424,7 +436,7 @@ impl TaskUploadConf {
     }
 
     async fn write_output_file(&mut self, output: &[u8]) {
-        if let Err(e) = self.output_file.as_mut().unwrap().write(output).await {
+        if let Err(e) = self.output_file.as_mut().unwrap().write_all(output).await {
             error!("write_output_file failed: {}", e)
         }
     }
@@ -459,7 +471,7 @@ mod test {
 
     async fn init_command(script: &str) -> Command {
         #[cfg(unix)]
-        return crate::executor::unix::init_command(script, None).await;
+        return crate::executor::unix::init_command(script, None, false).await;
         #[cfg(windows)]
         return crate::executor::windows::init_powershell_command(script);
     }

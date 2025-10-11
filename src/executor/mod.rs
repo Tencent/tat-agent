@@ -15,6 +15,7 @@ use crate::network::{Invoke, InvokeAdapter, EVENT_KICK};
 use crate::STOP_COUNTER;
 
 use std::collections::{HashMap, HashSet};
+use std::str::from_utf8_unchecked;
 use std::sync::{atomic::Ordering, Arc, LazyLock};
 use std::time::Duration;
 
@@ -26,7 +27,8 @@ static EXECUTOR: LazyLock<Arc<Executor>> = LazyLock::new(Default::default);
 pub async fn run() {
     let handler = |source: Vec<_>| {
         tokio::spawn(async move {
-            Executor::process::<InvokeAdapter>(&String::from_utf8_lossy(&source)).await
+            // Safety: source was originally a String, so conversion back is safe.
+            Executor::process::<InvokeAdapter>(unsafe { from_utf8_unchecked(&source) }).await
         })
     };
     evbus::subscribe(EVENT_KICK, handler).await;

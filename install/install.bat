@@ -32,8 +32,10 @@ GOTO:MAIN
         sc.exe query tatsvc > NUL 2>&1
         IF ERRORLEVEL 1 (
             ECHO "install new service"
-            sc.exe create tatsvc binPath= "%agentPath%" start= auto
-            sc.exe failure tatsvc actions= restart/1000 reSET= -1
+            sc.exe create tatsvc binPath= "\"%agentPath%\"" start= auto
+            sc.exe failure tatsvc actions= restart/1000 reset= -1
+        ) ELSE (
+            sc.exe config tatsvc binPath= "\"%agentPath%\""
         )
     ENDLOCAL
 EXIT /B 0
