@@ -1,10 +1,14 @@
 use std::{cmp::min, num::NonZeroUsize, thread::available_parallelism};
-use std::{env::consts::OS, net::UdpSocket, sync::LazyLock};
+use std::{env::consts::OS, sync::LazyLock};
 
 use anyhow::{anyhow, Result};
 use smbioslib::{table_load_from_device, DefinedStruct, SystemUuidData};
 use sysinfo::{set_open_files_limit, System};
+use tokio::net::UdpSocket;
 use tokio::sync::{Mutex, MutexGuard};
+use url::Url;
+
+use crate::network::urls::get_ws_url;
 
 const MAX_PARALLELISM: usize = 8;
 static MACHINE_ID: LazyLock<Result<String>> = LazyLock::new(get_machine_id);
@@ -17,9 +21,12 @@ pub async fn system() -> MutexGuard<'static, System> {
     SYSTEM.lock().await
 }
 
-pub fn local_ip() -> Result<String> {
-    let socket = UdpSocket::bind("0.0.0.0:0")?;
-    socket.connect("8.8.8.8:80")?;
+pub async fn local_ip() -> Result<String> {
+    let socket = UdpSocket::bind("0.0.0.0:0").await?;
+    let url = Url::parse(&get_ws_url().await)?;
+    let host = url.host().expect("invalid ws url").to_string();
+    let port = url.port().unwrap_or(443);
+    socket.connect((host, port)).await?;
     let addr = socket.local_addr()?;
     Ok(addr.ip().to_string())
 }

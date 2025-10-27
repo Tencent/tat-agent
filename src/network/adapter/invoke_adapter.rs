@@ -26,7 +26,7 @@ pub trait Invoke {
     ) -> impl Future<Output = Result<RegisterInfo>> + Send {
         async move {
             let machine_id = machine_id().context("get machine_id failed")?.to_owned();
-            let local_ip = local_ip().context("get local_ip failed")?;
+            let local_ip = local_ip().await.context("get local_ip failed")?;
             let hostname = hostname().context("get hostname failed")?;
             let (public_key, private_key) =
                 generate_rsa_key().context("generate_rsa_key failed")?;

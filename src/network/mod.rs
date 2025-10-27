@@ -118,7 +118,7 @@ pub async fn check_register_info() {
         return;
     }
     info!("find register info, try validate");
-    let local_ip = local_ip().expect("get local_ip failed");
+    let local_ip = local_ip().await.expect("get local_ip failed");
     let hostname = hostname().expect("get hostname failed");
     match InvokeAdapter::validate_instance(&hostname, &local_ip).await {
         Ok(_) => info!("validate_instance success, work as register instance"),
