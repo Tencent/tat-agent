@@ -1,12 +1,12 @@
 use super::task::{Task, TaskInfo};
-use crate::common::set_permissions_recursively;
 use crate::EXE_DIR;
+use crate::common::set_permissions_recursively;
 
 use std::{collections::HashMap, ops::Deref, process::Stdio};
 use std::{env, io};
 use std::{fs::Permissions, os::unix::fs::PermissionsExt, path::Path};
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use tokio::fs::{read_to_string, try_exists};
 use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
@@ -19,7 +19,7 @@ pub const EXEC_MODE: u32 = 0o755;
 pub struct User(uzers::User);
 
 impl Task {
-    pub async fn spawn(&mut self) -> Result<(Child, impl AsyncReadExt + Unpin)> {
+    pub async fn spawn(&mut self) -> Result<(Child, impl AsyncReadExt + Unpin + use<>)> {
         let script = self.info.script_path()?;
         let mut cmd = init_command(script.as_os_str().to_str().unwrap(), None, true).await;
         configure_command(&mut cmd, &self.info.user, &self.info.working_directory).await;
@@ -79,9 +79,7 @@ pub async fn configure_command(cmd: &mut Command, user: &User, work_dir: impl As
     let home = user.home_dir().to_str().unwrap_or("/tmp").to_owned();
     let envs = load_envs(user.name().to_str().unwrap(), &home, shell).await;
 
-    cmd.uid(user.uid())
-        .gid(user.primary_group_id())
-        .current_dir(work_dir)
+    cmd.current_dir(work_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -89,9 +87,7 @@ pub async fn configure_command(cmd: &mut Command, user: &User, work_dir: impl As
     unsafe {
         // Redirect stderr to stdout, thus the output order will be exactly same with origin
         cmd.pre_exec(redirect_stderr_to_stdout);
-        // The command and its sub-processes will be in an independent process group,
-        // thus we can kill them cleanly by kill the whole process group when we need.
-        cmd.pre_exec(own_process_group);
+        cmd.pre_exec(exec_as_user(user));
     }
 }
 
@@ -195,17 +191,48 @@ fn redirect_stderr_to_stdout() -> Result<(), io::Error> {
     Ok(())
 }
 
-fn own_process_group() -> Result<(), io::Error> {
-    if unsafe { libc::setpgid(0, 0) } != 0 {
-        return Err(io::Error::last_os_error());
+/// Builds the pre_exec closure that runs in the child process after fork (still root at that
+/// point) in the following order:
+///   1. setgroups — set supplementary groups; must be called before setgid/setuid
+///   2. setgid    — switch primary group
+///   3. setuid    — switch user (root privileges are dropped immediately after this)
+///   4. setpgid   — place the child in its own process group for clean kill(-pgid) teardown
+///
+/// All parameters are collected in the parent process and moved into the closure so that no
+/// heap allocation occurs after fork.
+fn exec_as_user(user: &User) -> impl FnMut() -> io::Result<()> + use<> {
+    let uid = user.uid();
+    let gid = user.primary_group_id();
+    let groups: Vec<libc::gid_t> = {
+        let gs = user.groups().unwrap_or_default();
+        gs.iter().map(|g| g.gid()).collect()
+    };
+
+    move || {
+        // setgroups must come before setgid/setuid while the process is still root.
+        // Always called even when groups is empty: setgroups(0, NULL) clears all supplementary
+        // groups inherited from the parent (root daemon), which is required for a clean drop.
+        if unsafe { libc::setgroups(groups.len(), groups.as_ptr()) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if unsafe { libc::setgid(gid) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if unsafe { libc::setuid(uid) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // Independent process group so the entire group can be killed cleanly via kill(-pgid)
+        if unsafe { libc::setpgid(0, 0) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
     }
-    Ok(())
 }
 
-pub unsafe fn kill_process_group(pid: u32) {
+pub fn kill_process_group(pid: u32) {
     // send SIGKILL to the process group of pid, note the -1
     // see more details at man 2 kill
-    libc::kill(-(pid as i32), libc::SIGKILL);
+    unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
 }
 
 impl Deref for User {

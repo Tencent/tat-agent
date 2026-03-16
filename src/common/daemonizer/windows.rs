@@ -1,5 +1,5 @@
-use crate::common::{get_now_secs, str2wsz, wsz2string, Opts};
 use crate::EXE_DIR;
+use crate::common::{Opts, get_now_secs, str2wsz, wsz2string};
 
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -15,8 +15,8 @@ use winapi::um::errhandlingapi::GetLastError;
 use winapi::um::minwinbase::LPSECURITY_ATTRIBUTES;
 use winapi::um::synchapi::*;
 use winapi::um::winnt::{BOOLEAN, KEY_QUERY_VALUE, KEY_READ, LPWSTR, SERVICE_WIN32_OWN_PROCESS};
-use winapi::um::winreg::{RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY_LOCAL_MACHINE};
-use winapi::um::winsock2::{WSAStartup, WSADATA};
+use winapi::um::winreg::{HKEY_LOCAL_MACHINE, RegCloseKey, RegOpenKeyExW, RegQueryValueExW};
+use winapi::um::winsock2::{WSADATA, WSAStartup};
 use winapi::um::winsvc::*;
 
 const IMAGE_STATE_COMPLETE: &str = "IMAGE_STATE_COMPLETE";
@@ -41,18 +41,20 @@ unsafe extern "system" fn service_main(
     _: DWORD,       // dw_num_services_args
     _: *mut LPWSTR, // lp_service_arg_vectors
 ) {
-    let service_name = str2wsz("TAT_AGENT");
-    HANDLE = RegisterServiceCtrlHandlerExW(
-        service_name.as_ptr(),
-        Some(service_handler),
-        ptr::null_mut(),
-    );
-    let service_status = &mut create_service_status(SERVICE_RUNNING);
-    SetServiceStatus(HANDLE, service_status);
-    std::thread::spawn(|| {
-        wait_image_state_complete(WAIT_STATE_COMPLETE_MAX_TIME);
-        TAT_ENTRY();
-    });
+    unsafe {
+        let service_name = str2wsz("TAT_AGENT");
+        HANDLE = RegisterServiceCtrlHandlerExW(
+            service_name.as_ptr(),
+            Some(service_handler),
+            ptr::null_mut(),
+        );
+        let service_status = &mut create_service_status(SERVICE_RUNNING);
+        SetServiceStatus(HANDLE, service_status);
+        std::thread::spawn(|| {
+            wait_image_state_complete(WAIT_STATE_COMPLETE_MAX_TIME);
+            TAT_ENTRY();
+        });
+    }
 }
 
 unsafe extern "system" fn service_handler(
@@ -61,15 +63,17 @@ unsafe extern "system" fn service_handler(
     _: LPVOID,
     _: LPVOID,
 ) -> DWORD {
-    if matches!(dw_control, SERVICE_CONTROL_STOP | SERVICE_CONTROL_SHUTDOWN) {
-        SetServiceStatus(HANDLE, &mut create_service_status(SERVICE_STOPPED));
-        // exit after this function return, avoid sc report err
-        std::thread::spawn(|| {
-            std::thread::sleep(std::time::Duration::from_millis(10));
-            std::process::exit(0);
-        });
-    };
-    0
+    unsafe {
+        if matches!(dw_control, SERVICE_CONTROL_STOP | SERVICE_CONTROL_SHUTDOWN) {
+            SetServiceStatus(HANDLE, &mut create_service_status(SERVICE_STOPPED));
+            // exit after this function return, avoid sc report err
+            std::thread::spawn(|| {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                std::process::exit(0);
+            });
+        };
+        0
+    }
 }
 
 fn try_start_service(entry: fn()) {
@@ -107,31 +111,35 @@ fn clean_update_files() {
         .inspect_err(|_| error!("clean_update_files failed"));
 }
 
-unsafe fn already_start() -> bool {
-    let event_name = str2wsz("Global\\tatsvc");
-    CreateEventW(
-        NULL as LPSECURITY_ATTRIBUTES,
-        FALSE,
-        FALSE,
-        event_name.as_ptr(),
-    );
-    let err = GetLastError();
-    err == ERROR_ALREADY_EXISTS || err == ERROR_ACCESS_DENIED
+fn already_start() -> bool {
+    unsafe {
+        let event_name = str2wsz("Global\\tatsvc");
+        CreateEventW(
+            NULL as LPSECURITY_ATTRIBUTES,
+            FALSE,
+            FALSE,
+            event_name.as_ptr(),
+        );
+        let err = GetLastError();
+        err == ERROR_ALREADY_EXISTS || err == ERROR_ACCESS_DENIED
+    }
 }
 
-unsafe fn adjust_privileges() {
-    let mut enabled: BOOLEAN = FALSE as u8;
-    RtlAdjustPrivilege(
-        SE_ASSIGNPRIMARYTOKEN_PRIVILEGE as u32,
-        TRUE,
-        FALSE as u8,
-        &mut enabled,
-    );
-    RtlAdjustPrivilege(SE_TCB_PRIVILEGE as u32, TRUE, FALSE as u8, &mut enabled);
+fn adjust_privileges() {
+    unsafe {
+        let mut enabled: BOOLEAN = FALSE as u8;
+        RtlAdjustPrivilege(
+            SE_ASSIGNPRIMARYTOKEN_PRIVILEGE as u32,
+            TRUE,
+            FALSE as u8,
+            &mut enabled,
+        );
+        RtlAdjustPrivilege(SE_TCB_PRIVILEGE as u32, TRUE, FALSE as u8, &mut enabled);
+    }
 }
 
 pub fn daemonize(entry: fn()) {
-    if unsafe { already_start() } {
+    if already_start() {
         std::process::exit(183);
     }
 
@@ -143,36 +151,38 @@ pub fn daemonize(entry: fn()) {
     }
 
     clean_update_files();
-    unsafe { adjust_privileges() };
+    adjust_privileges();
     try_start_service(entry);
 }
 
 // https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/windows-setup-states
-unsafe fn read_image_state() -> Option<String> {
-    let mut h_key = ptr::null_mut();
-    let mut buffer = [0u16; 256];
-    let mut buffer_size = (buffer.len() * mem::size_of::<u16>()) as u32;
+fn read_image_state() -> Option<String> {
+    unsafe {
+        let mut h_key = ptr::null_mut();
+        let mut buffer = [0u16; 256];
+        let mut buffer_size = (buffer.len() * mem::size_of::<u16>()) as u32;
 
-    RegOpenKeyExW(
-        HKEY_LOCAL_MACHINE,
-        str2wsz("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Setup\\State").as_ptr(),
-        0,
-        KEY_READ | KEY_QUERY_VALUE,
-        &mut h_key,
-    );
+        RegOpenKeyExW(
+            HKEY_LOCAL_MACHINE,
+            str2wsz("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Setup\\State").as_ptr(),
+            0,
+            KEY_READ | KEY_QUERY_VALUE,
+            &mut h_key,
+        );
 
-    RegQueryValueExW(
-        h_key,
-        str2wsz("ImageState").as_ptr(),
-        ptr::null_mut(),
-        ptr::null_mut(),
-        buffer.as_mut_ptr() as *mut u8,
-        &mut buffer_size,
-    );
-    RegCloseKey(h_key);
+        RegQueryValueExW(
+            h_key,
+            str2wsz("ImageState").as_ptr(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            buffer.as_mut_ptr() as *mut u8,
+            &mut buffer_size,
+        );
+        RegCloseKey(h_key);
 
-    let image_state = wsz2string(buffer.as_ptr());
-    Some(image_state)
+        let image_state = wsz2string(buffer.as_ptr());
+        Some(image_state)
+    }
 }
 
 fn wait_image_state_complete(timeout: u64) {
@@ -180,8 +190,8 @@ fn wait_image_state_complete(timeout: u64) {
     let start_time = get_now_secs();
     loop {
         let elapsed = get_now_secs() - start_time;
-        if let Some(state) = unsafe { read_image_state() } {
-            if elapsed % 10 == 0 {
+        if let Some(state) = read_image_state() {
+            if elapsed.is_multiple_of(10) {
                 info!("current state: {}", state);
             }
             if state == IMAGE_STATE_COMPLETE {
@@ -203,7 +213,7 @@ mod test {
     use super::read_image_state;
     #[test]
     fn test_read_image_state() {
-        let opt_state = unsafe { read_image_state() };
+        let opt_state = read_image_state();
         assert!(opt_state.is_some());
         let state = opt_state.unwrap();
         assert_eq!(state, IMAGE_STATE_COMPLETE)

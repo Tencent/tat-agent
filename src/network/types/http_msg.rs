@@ -5,8 +5,8 @@ use crate::network::AGENT_VERSION;
 
 use std::fmt;
 
-use anyhow::{bail, Context, Result};
-use base64::{engine::general_purpose::STANDARD, Engine};
+use anyhow::{Context, Result, bail};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 
 //==============================================================================
@@ -297,6 +297,13 @@ pub struct CheckUpdateResponse {
 // registration related
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "PascalCase")]
+pub struct Tag {
+    pub key: String,
+    pub value: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "PascalCase")]
 pub struct RegisterInstanceRequest {
     #[serde(default)]
     machine_id: String,
@@ -312,6 +319,8 @@ pub struct RegisterInstanceRequest {
     local_ip: String,
     #[serde(default)]
     system_name: String,
+    #[serde(default)]
+    tags: Vec<Tag>,
 }
 
 impl RegisterInstanceRequest {
@@ -322,6 +331,7 @@ impl RegisterInstanceRequest {
         public_key: String,
         hostname: String,
         local_ip: String,
+        tags: Vec<Tag>,
     ) -> Self {
         RegisterInstanceRequest {
             machine_id,
@@ -334,6 +344,7 @@ impl RegisterInstanceRequest {
             system_name: "Windows".to_string(),
             #[cfg(unix)]
             system_name: "Linux".to_string(),
+            tags,
         }
     }
 }
@@ -344,6 +355,9 @@ pub struct RegisterInstanceResponse {
     #[serde(default)]
     pub instance_id: String,
 }
+
+pub type UnregisterInstanceRequest = Empty;
+pub type UnregisterInstanceResponse = Empty;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "PascalCase")]
@@ -589,7 +603,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn test_encode_log() {
-        use std::fs::{remove_file, File};
+        use std::fs::{File, remove_file};
         use std::{io::Read, process::Command};
 
         use crate::network::UploadTaskLogRequest;

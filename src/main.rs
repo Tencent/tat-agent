@@ -4,28 +4,28 @@ mod network;
 mod ontime;
 mod tssh;
 
-use crate::common::{daemonizer::daemonize, logger, Opts};
-use crate::common::{option::EnumCommands::Register, sysinfo::parallelism};
+use crate::common::option::{check_execute_args, check_register_args, check_unregister_args};
+use crate::common::sysinfo::parallelism;
+use crate::common::{daemonizer::daemonize, logger};
 use crate::network::AGENT_VERSION;
 
 use std::env::{current_exe, set_current_dir};
-use std::sync::{atomic::AtomicU64, LazyLock};
+use std::sync::LazyLock;
 use std::{path::PathBuf, process::exit};
 
 use log::{error, info};
-use network::register;
 use tokio::runtime::Builder;
 
 static EXE_DIR: LazyLock<PathBuf> =
     LazyLock::new(|| current_exe().unwrap().parent().unwrap().to_owned());
-
-static STOP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn main() {
     set_work_dir();
     logger::init();
     info!("tat_agent start:[{}]", AGENT_VERSION);
     check_register_args();
+    check_unregister_args();
+    check_execute_args();
 
     daemonize(move || {
         set_panic_handler();
@@ -50,21 +50,9 @@ fn set_work_dir() {
     set_current_dir(&*EXE_DIR).expect("set_current_dir failed");
 }
 
-fn check_register_args() {
-    let Some(Register { region, id, value }) = Opts::get_opts().command.as_ref() else {
-        return;
-    };
-    if let Err(err) = register(region, id, value) {
-        println!("register failed: {:#}", err);
-        exit(-1)
-    }
-    println!("register success");
-    exit(0)
-}
-
 fn set_panic_handler() {
     std::panic::set_hook(Box::new(|pi| {
-        error!("panic {}", pi.to_string());
+        error!("panic {}", pi);
         exit(-1);
     }));
 }

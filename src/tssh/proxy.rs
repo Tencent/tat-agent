@@ -1,6 +1,6 @@
+use super::Tssh;
 use super::handler::{BsonHandler, Handler, HandlerExt};
 use super::session::{Channel, Plugin, PluginComp, PluginCtrl, PluginData, Session};
-use super::Tssh;
 use crate::network::{ProxyClose, ProxyData, ProxyNew, ProxyReady, PtyBinBase, PtyBinErrMsg};
 
 use std::{sync::Arc, time::Duration};
@@ -8,7 +8,7 @@ use std::{sync::Arc, time::Duration};
 use log::{error, info};
 use serde::Serialize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::{net::TcpStream, sync::Mutex};
 
 const WS_MSG_TYPE_PTY_PROXY_READY: &str = "PtyProxyReady";
@@ -73,7 +73,7 @@ impl Handler for BsonHandler<ProxyNew> {
         let session = match Tssh::get_session(&session_id).await {
             Some(s) => s,
             None => {
-                let s = Arc::new(Session::new(&session_id));
+                let s = Arc::new(Session::new(&session_id).await);
                 let _ = Tssh::add_session(&session_id, s.clone()).await;
                 s
             }
@@ -105,12 +105,11 @@ impl Handler for BsonHandler<ProxyData> {
         let mut ch = self.channel.unwrap().clone();
         // Compatible with legacy front-end code
         // If no channel_id is provided, use proxy_id as channel_id.
-        if req.channel_id.is_empty() {
-            if let Some(session) = Tssh::get_session(&req.session_id).await {
-                if let Some(channel) = session.get_channel(&proxy_id).await {
-                    ch = channel.clone();
-                }
-            }
+        if req.channel_id.is_empty()
+            && let Some(session) = Tssh::get_session(&req.session_id).await
+            && let Some(channel) = session.get_channel(&proxy_id).await
+        {
+            ch = channel.clone();
         }
         let Some(proxy) = ch.plugin.try_get_proxy() else {
             return error!("proxy `{}` not found", proxy_id);

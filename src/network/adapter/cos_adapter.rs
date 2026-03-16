@@ -1,12 +1,12 @@
 use std::{collections::HashMap, convert::TryInto};
 use std::{fmt::Write, iter::IntoIterator, str};
 
-use anyhow::{bail, Result};
+use anyhow::{Context, Result, bail};
 use chrono::{Local, Utc};
 use hmac::{Hmac, Mac};
 use log::info;
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::header::{AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, DATE, HOST};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::{Body, Client};
 use sha1::{Digest, Sha1};
 use tokio::{fs::File, io::AsyncSeekExt};
@@ -23,17 +23,22 @@ pub struct COSAdapter<'a> {
 }
 
 impl<'a> COSAdapter<'a> {
-    pub fn new(secret_id: &'a str, secret_key: &'a str, token: &'a str, endpoint: &'a str) -> Self {
-        let host = Url::parse(endpoint).unwrap();
-        let host = host.host().unwrap().to_string();
-        Self {
+    pub fn new(
+        secret_id: &'a str,
+        secret_key: &'a str,
+        token: &'a str,
+        endpoint: &'a str,
+    ) -> Result<Self> {
+        let url = Url::parse(endpoint).context("parse cos url")?;
+        let host = url.host().context("parse host")?.to_string();
+        Ok(Self {
             secret_id,
             secret_key,
             token,
             endpoint,
             host,
             client: Client::new(),
-        }
+        })
     }
 
     pub async fn put_object_from_file(
@@ -154,7 +159,9 @@ fn cos_sign(
         .encode_hex();
 
     // Step 8: Concatenate the Signature String
-    format!("q-sign-algorithm=sha1&q-ak={secret_id}&q-sign-time={key_time}&q-key-time={key_time}&q-header-list={header_list}&q-url-param-list={url_param_list}&q-signature={signature}")
+    format!(
+        "q-sign-algorithm=sha1&q-ak={secret_id}&q-sign-time={key_time}&q-key-time={key_time}&q-header-list={header_list}&q-url-param-list={url_param_list}&q-signature={signature}"
+    )
 }
 
 fn date() -> String {

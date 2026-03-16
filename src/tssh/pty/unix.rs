@@ -1,8 +1,8 @@
-use super::{execute_stream, PtyExecCallback};
-use crate::executor::unix::{configure_command, init_command, load_envs, User};
-use crate::network::Program;
-use crate::tssh::{session::PluginComp, PTY_INSPECT_READ};
+use super::{PtyExecCallback, execute_stream};
 use crate::EXE_DIR;
+use crate::executor::unix::{User, configure_command, init_command, load_envs};
+use crate::network::Program;
+use crate::tssh::{PTY_INSPECT_READ, session::PluginComp};
 
 use std::collections::HashMap;
 use std::ffi::CStr;
@@ -14,13 +14,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::{env, io, ptr};
 
-use anyhow::{bail, Result};
-use libc::{self, getsid, pid_t, ttyname, uid_t, winsize, STDIN_FILENO, TIOCSCTTY};
+use anyhow::{Result, bail};
+use libc::{self, STDIN_FILENO, TIOCSCTTY, getsid, pid_t, ttyname, uid_t, winsize};
 use log::{error, info};
-use tokio::fs::{metadata, File};
+use tokio::fs::{File, metadata};
 use tokio::process::Command;
-use tokio::sync::oneshot::{channel, Sender};
-use unix_mode::{is_allowed, Access, Accessor};
+use tokio::sync::oneshot::{Sender, channel};
+use unix_mode::{Access, Accessor, is_allowed};
 use uzers::os::unix::UserExt;
 
 const LOGIN_SHELL_SUPPORTED: [&str; 4] = ["bash", "zsh", "fish", "tcsh"];
@@ -62,8 +62,13 @@ impl Pty {
         unsafe {
             let uid = user.uid();
             let gid = user.primary_group_id();
+            let groups: Vec<libc::gid_t> = {
+                let gs = user.groups().unwrap_or_default();
+                gs.iter().map(|g| g.gid()).collect()
+            };
             cmd.pre_exec(move || {
                 audit_setloginuid(uid)?;
+                libc::setgroups(groups.len(), groups.as_ptr());
                 libc::setgid(gid);
                 libc::setuid(uid);
                 libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGHUP);

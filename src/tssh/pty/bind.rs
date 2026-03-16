@@ -34,7 +34,7 @@ pub struct winpty_spawn_config_s {
 }
 pub type winpty_spawn_config_t = winpty_spawn_config_s;
 
-extern "C" {
+unsafe extern "C" {
 
     pub fn winpty_error_code(err: *mut winpty_error_ptr_t) -> u32;
     pub fn winpty_error_msg(err: *mut winpty_error_ptr_t) -> *const u16;

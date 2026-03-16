@@ -1,14 +1,14 @@
+use super::Tssh;
 use super::handler::{BsonHandler, Handler, HandlerExt, JsonHandler};
 use super::session::{Channel, Plugin, PluginComp, PluginCtrl, PluginData, Session};
-use super::Tssh;
 use crate::common::{get_current_username, incomplete_utf8_bytes};
 use crate::executor::kill_process_group;
 use crate::network::*;
 
 use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 
-use anyhow::{anyhow, Context, Result};
-use base64::{engine::general_purpose::STANDARD, Engine};
+use anyhow::{Context, Result, anyhow};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use log::{error, info};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::{process::Command, time::sleep};
@@ -112,7 +112,7 @@ impl Handler for JsonHandler<PtyStart> {
         let session = match Tssh::get_session(session_id).await {
             Some(s) => s,
             None => {
-                let s = Arc::new(Session::new(session_id));
+                let s = Arc::new(Session::new(session_id).await);
                 let _ = Tssh::add_session(session_id, s.clone()).await;
                 s
             }
@@ -386,7 +386,7 @@ pub async fn execute_stream(
     #[cfg(windows)]
     let mut reader = {
         drop(cmd); // move pipe sender
-        unsafe { resume_as_user(pid, user) };
+        resume_as_user(pid, user);
         pipe
     };
     #[cfg(unix)]
@@ -421,7 +421,7 @@ pub async fn execute_stream(
             }
             _ = &mut timeout => {
                 info!("execute_stream func timeout");
-                unsafe { kill_process_group(pid) };
+                  kill_process_group(pid) ;
                 break Err(anyhow!("command timeout, process killed"));
             }
         };

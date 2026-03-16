@@ -4,7 +4,7 @@ pub mod self_update;
 use self::leak_check::LeakChecker;
 use self::self_update::{check_update, remove_update_file, restart};
 use crate::common::evbus;
-use crate::network::{InvokeAdapter, EVENT_CHECK_UPDATE, EVENT_FORCE_RESTART};
+use crate::network::{EVENT_CHECK_UPDATE, EVENT_FORCE_RESTART, InvokeAdapter};
 
 use std::sync::Arc;
 use std::{thread, time::Duration};
@@ -13,7 +13,6 @@ use tokio::sync::Notify;
 use tokio::time::{sleep, timeout};
 
 const UPDATE_CHECK_INVL: Duration = Duration::from_secs(2 * 60 * 60); // 2 hours
-const RESTART_CHECK_INVL: Duration = Duration::from_secs(10);
 const LEAK_CHECK_INVL: Duration = Duration::from_secs(10);
 
 pub async fn run() {

@@ -1,24 +1,26 @@
 use super::{build_extra_headers, urls::get_ws_url};
-use crate::common::{evbus, Opts};
+use crate::common::{Opts, evbus};
 
 use std::cmp::min;
+use std::convert::TryFrom;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use bson::Document;
-use futures::{stream_select, Stream, StreamExt};
+use futures::{Stream, StreamExt, stream_select};
 use log::{error, info};
-use rand::{thread_rng, Rng};
+use rand::{Rng, thread_rng};
 use serde_json::Value;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio::time::{interval, sleep};
 use tokio_stream::wrappers::{IntervalStream, UnboundedReceiverStream};
-use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::tungstenite::handshake::client::Request;
-use tokio_tungstenite::tungstenite::protocol::{frame::coding::CloseCode, CloseFrame};
 use tokio_tungstenite::tungstenite::Error;
 use tokio_tungstenite::tungstenite::Message::{self, *};
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::handshake::client::Request;
+use tokio_tungstenite::tungstenite::protocol::{CloseFrame, frame::coding::CloseCode};
+use tokio_tungstenite::tungstenite::{Bytes, Utf8Bytes};
 use tokio_tungstenite::{accept_async, connect_async};
 
 use super::{EVENT_CHECK_UPDATE, EVENT_FORCE_RESTART, EVENT_KICK};
@@ -116,7 +118,7 @@ async fn exponential_backoff_with_jitter(retry_count: u32) {
 }
 
 async fn handshake_request() -> Result<Request, Error> {
-    let mut rq = get_ws_url().await.into_client_request()?;
+    let mut rq = get_ws_url(None).await.into_client_request()?;
     rq.headers_mut().extend(build_extra_headers().await);
     Ok(rq)
 }
@@ -128,11 +130,11 @@ impl WsContext {
         let text_handler = {
             let tx = tx.clone();
             // Safety: data was originally a String, so conversion back is safe.
-            move |data| tx.send(Ok(Text(unsafe { String::from_utf8_unchecked(data) })))
+            move |data| tx.send(Ok(Text(Utf8Bytes::try_from(data).unwrap())))
         };
         let binary_handler = {
             let tx = tx.clone();
-            move |data| tx.send(Ok(Binary(data)))
+            move |data| tx.send(Ok(Binary(Bytes::from_owner(data))))
         };
         evbus::subscribe(WS_TXT_MSG, text_handler).await;
         evbus::subscribe(WS_BIN_MSG, binary_handler).await;
@@ -220,7 +222,7 @@ impl WsContext {
                     code: CloseCode::Away,
                 })));
             }
-            Ok(Ping(Vec::new()))
+            Ok(Ping(Bytes::new()))
         })
     }
 }

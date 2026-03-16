@@ -7,7 +7,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let target_dir = temp_dir().join("tat_agent_install");
 
     let buf = include_bytes!(r"..\..\install\win-bin.zip");
-    zip_extract::extract(Cursor::new(buf), &target_dir, true)?;
+    let mut zip = zip::ZipArchive::new(Cursor::new(buf))?;
+    zip.extract_unwrapped_root_dir(&target_dir, zip::read::root_dir_common_filter)?;
 
     // Run install command
     Command::new("sc.exe").args(["stop", "tatsvc"]).output()?;

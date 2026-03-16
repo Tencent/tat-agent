@@ -8,7 +8,7 @@
 
 ## 环境与工具
 
-- **Rust 工具链版本 ≥ 1.82** ([安装指引](https://www.rust-lang.org/tools/install))
+- **Rust 工具链版本 ≥ 1.93** ([安装指引](https://www.rust-lang.org/tools/install))
 - **平台特定的依赖工具**:
 
   | 平台 | 依赖工具 |

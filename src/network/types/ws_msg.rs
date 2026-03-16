@@ -280,6 +280,7 @@ pub struct ExecCmdReq {
     pub cmd: String,
 }
 
+#[cfg(unix)]
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]
 pub struct ExecCmdResp {

@@ -6,7 +6,7 @@ use std::collections::VecDeque;
 use std::ops::{Deref, DerefMut};
 
 use log::info;
-use sysinfo::{get_current_pid, ProcessRefreshKind, ProcessesToUpdate};
+use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, get_current_pid};
 
 #[cfg(unix)]
 const MAX_FD_COUNT: u64 = 1000;
@@ -57,7 +57,7 @@ impl LeakChecker {
 
         self.fd_cnt += handle_cnt;
         self.mem_cnt += mem_size;
-        if self.check_cnt != 0 && self.check_cnt % LEAK_REPORT_FREQUENCY == 0 {
+        if self.check_cnt != 0 && self.check_cnt.is_multiple_of(LEAK_REPORT_FREQUENCY) {
             let fd_avg = (self.fd_cnt / LEAK_REPORT_FREQUENCY) as u32;
             let mem_avg = (self.mem_cnt / LEAK_REPORT_FREQUENCY) as u32;
             let zp_cnt = get_zombie_process().await;

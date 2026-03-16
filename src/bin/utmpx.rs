@@ -17,7 +17,7 @@ mod unix {
     pub const DEAD_PROCESS: c_short = 8;
     const _PATH_WTMP: &str = "/var/log/wtmp";
 
-    extern "C" {
+    unsafe extern "C" {
         fn updwtmp(wtmp_file: *const libc::c_char, ut: *const libc::utmpx);
         fn pututxline(ut: *const libc::utmpx) -> *mut libc::utmpx;
         fn setutxent();
@@ -39,7 +39,7 @@ mod unix {
     pub(crate) fn record_login() {
         let args: Vec<String> = env::args().collect();
         if args.len() != 6 {
-            print!("invalid args count");
+            eprintln!("invalid args count");
             unsafe { exit(-1) };
         }
 
@@ -51,7 +51,7 @@ mod unix {
             "LOGIN" => USER_PROCESS,
             "EXIT" => DEAD_PROCESS,
             _ => {
-                print!("invalid login type");
+                eprintln!("invalid login type");
                 unsafe { exit(-1) };
             }
         };

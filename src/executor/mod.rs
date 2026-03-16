@@ -4,22 +4,26 @@ pub mod unix;
 #[cfg(windows)]
 pub mod windows;
 
-use self::task::{Task, EXIT_CODE_ERROR, TASK_RESULT_START_FAILED};
+use self::task::{EXIT_CODE_ERROR, TASK_RESULT_START_FAILED, Task};
 #[cfg(unix)]
-pub use self::unix::{kill_process_group, User};
+pub use self::unix::{User, kill_process_group};
 #[cfg(windows)]
-pub use self::windows::{kill_process_group, User};
-use crate::common::{evbus, get_now_secs, Stopper};
+pub use self::windows::{User, kill_process_group};
+use crate::common::guard::prevent_restart;
+use crate::common::{Stopper, evbus, get_now_secs};
+use crate::network::{EVENT_KICK, Invoke, InvokeAdapter};
 use crate::network::{InvocationCancelTask, InvocationNormalTask};
-use crate::network::{Invoke, InvokeAdapter, EVENT_KICK};
-use crate::STOP_COUNTER;
+use crate::network::{ReportTaskFinishResponse, ReportTaskStartResponse, UploadTaskLogResponse};
 
 use std::collections::{HashMap, HashSet};
+use std::process::exit;
 use std::str::from_utf8_unchecked;
-use std::sync::{atomic::Ordering, Arc, LazyLock};
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
+use anyhow::Result;
 use log::{error, info};
+use tokio::task::JoinHandle;
 use tokio::{sync::Mutex, time::sleep};
 
 static EXECUTOR: LazyLock<Arc<Executor>> = LazyLock::new(Default::default);
@@ -43,6 +47,7 @@ struct Executor {
 impl Executor {
     async fn process<T: Invoke>(source: &str) {
         info!("executor start processing dispatch from: {}", source);
+        let _prevent_restart_guard = prevent_restart().await;
         let resp = match T::describe_tasks().await {
             Ok(resp) => resp,
             Err(e) => return error!("describe task failed: {e:#}"),
@@ -57,21 +62,24 @@ impl Executor {
         }
     }
 
-    async fn execute<T: Invoke>(self: Arc<Self>, task: InvocationNormalTask) -> bool {
+    async fn execute<T: Invoke>(
+        self: Arc<Self>,
+        task: InvocationNormalTask,
+    ) -> Option<JoinHandle<()>> {
         let id = task.invocation_task_id.clone();
         if self.cache.lock().await.replace(id.clone()).is_some() {
-            return false;
+            return None;
         }
 
-        STOP_COUNTER.fetch_add(1, Ordering::Relaxed);
-        tokio::spawn(async move {
+        let prevent_restart_guard = prevent_restart().await;
+        let handle = tokio::spawn(async move {
             info!("task `{id}` execute begin");
+            let _guard = prevent_restart_guard; // Hold the restart lock for the entire duration of this task
             let stopper = Stopper::new();
             let rx = stopper.get_receiver().await.unwrap();
             self.running.lock().await.insert(id.clone(), stopper);
             if let Err(e) = T::report_task_start(&id, get_now_secs()).await {
                 error!("task `{id}` report_task_start error: {e:#}");
-                STOP_COUNTER.fetch_sub(1, Ordering::Relaxed);
                 self.running.lock().await.remove(&id);
                 self.cache.lock().await.remove(&id); // id is not cached if report_task_start fails
                 return;
@@ -86,14 +94,13 @@ impl Executor {
                     error!("task `{id}` report_task_finish error: {e:#}")
                 }
             };
-            STOP_COUNTER.fetch_sub(1, Ordering::Relaxed);
             self.running.lock().await.remove(&id);
             tokio::spawn(async move {
                 sleep(Duration::from_secs(120)).await; // cache the id
                 self.cache.lock().await.remove(&id);
             });
         });
-        true
+        Some(handle)
     }
 
     async fn cancel(&self, cancel: InvocationCancelTask) -> bool {
@@ -106,15 +113,58 @@ impl Executor {
     }
 }
 
+macro_rules! impl_invoke {
+    ($type:ty, $closure:expr) => {
+        impl Invoke for $type {
+            async fn report_task_start(_: &str, _: u64) -> Result<ReportTaskStartResponse> {
+                Ok(ReportTaskStartResponse {})
+            }
+            async fn report_task_finish(
+                _: &str,
+                result: &str,
+                _: &str,
+                exit_code: i32,
+                final_log_index: Option<u32>,
+                _: u64,
+                _: &str,
+                _: &str,
+                dropped: u64,
+            ) -> Result<ReportTaskFinishResponse> {
+                let closure = $closure;
+                closure(result, exit_code, final_log_index, dropped)
+            }
+            async fn upload_task_log(
+                _: &str,
+                _: u32,
+                _: Vec<u8>,
+                _: u64,
+            ) -> Result<UploadTaskLogResponse> {
+                Ok(UploadTaskLogResponse {})
+            }
+        }
+    };
+}
+
+#[tokio::main(flavor = "current_thread")]
+pub async fn execute_arg_command(task: InvocationNormalTask) {
+    struct DoNothing;
+    impl_invoke!(DoNothing, |_, _, _, _| Ok(ReportTaskFinishResponse {}));
+
+    info!("=>execute_arg_command: {task:?}");
+    let handle = EXECUTOR.clone().execute::<DoNothing>(task).await;
+    let _ = handle.expect("Executor cache should not conflict").await;
+    exit(0);
+}
+
 #[cfg(test)]
 pub mod test {
     use super::{task::*, *};
-    use crate::{common::*, network::*, EXE_DIR};
+    use crate::{EXE_DIR, common::*, network::*};
 
     use std::{future::pending, iter::repeat_n, sync::Arc};
 
-    use anyhow::{bail, Result};
-    use base64::{engine::general_purpose::STANDARD, Engine};
+    use anyhow::{Result, bail};
+    use base64::{Engine, engine::general_purpose::STANDARD};
 
     #[cfg(unix)]
     const SLEEP: &str = "sleep";
@@ -142,38 +192,6 @@ pub mod test {
         }
     }
 
-    macro_rules! impl_invoke {
-        ($type:ty, $closure:expr) => {
-            impl Invoke for $type {
-                async fn report_task_start(_: &str, _: u64) -> Result<ReportTaskStartResponse> {
-                    Ok(ReportTaskStartResponse {})
-                }
-                async fn report_task_finish(
-                    _: &str,
-                    result: &str,
-                    _: &str,
-                    exit_code: i32,
-                    final_log_index: Option<u32>,
-                    _: u64,
-                    _: &str,
-                    _: &str,
-                    dropped: u64,
-                ) -> Result<ReportTaskFinishResponse> {
-                    let closure = $closure;
-                    closure(result, exit_code, final_log_index, dropped)
-                }
-                async fn upload_task_log(
-                    _: &str,
-                    _: u32,
-                    _: Vec<u8>,
-                    _: u64,
-                ) -> Result<UploadTaskLogResponse> {
-                    Ok(UploadTaskLogResponse {})
-                }
-            }
-        };
-    }
-
     #[tokio::test]
     async fn test_report_task_start_error() {
         struct ReportTaskStartError;
@@ -186,7 +204,8 @@ pub mod test {
         let exc = Arc::<Executor>::default();
         let task = new_task("");
         let found_new = exc.clone().execute::<ReportTaskStartError>(task).await;
-        assert!(found_new);
+        assert!(found_new.is_some());
+        let _ = found_new.unwrap().await;
         sleep(Duration::from_secs(1)).await;
         assert_eq!(exc.cache.lock().await.len(), 0); // id is not cached if report_task_start fails
     }
@@ -199,7 +218,8 @@ pub mod test {
         let exc = Arc::<Executor>::default();
         let task = new_task("");
         let found_new = exc.clone().execute::<ReportTaskFinishError>(task).await;
-        assert!(found_new);
+        assert!(found_new.is_some());
+        let _ = found_new.unwrap().await;
         sleep(Duration::from_secs(1)).await;
         assert_eq!(exc.cache.lock().await.len(), 1); // id is cached if report_task_start success
     }

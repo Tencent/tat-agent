@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.10] - 2026-03-13
+
+### Changed
+
+- Add unregister subcommand to remove instance from TAT server.
+- Add --tag option to register subcommand.
+- Upload COS add retry and backup.
+- Fix TOCTOU issue between self-update check restart and other task.
+- Fix setgroups when exec command and login.
+- Fix PtyListPath output message size too large.
+
 ## [1.1.9] - 2025-09-24
 
 ### Changed

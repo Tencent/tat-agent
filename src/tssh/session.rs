@@ -1,11 +1,12 @@
-use super::{proxy::Proxy, pty::Pty, Tssh};
+use super::{Tssh, proxy::Proxy, pty::Pty};
+use crate::common::guard::{PreventRestartGuard, prevent_restart};
 use crate::common::{Stopper, Timer};
 use crate::executor::User;
 use crate::network::{PtyBinBase, PtyJsonBase};
 
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use log::{error, info};
 use tokio::sync::RwLock;
 
@@ -18,11 +19,13 @@ pub struct Session {
     pub channels: ChannelMap,
     timer: Timer,
     stopper: Stopper,
+    _guard: PreventRestartGuard, // Hold the restart lock for the entire duration of session
 }
 
 impl Session {
-    pub fn new(session_id: &str) -> Self {
+    pub async fn new(session_id: &str) -> Self {
         Self {
+            _guard: prevent_restart().await,
             session_id: session_id.to_owned(),
             channels: Default::default(),
             timer: Timer::new(SESSION_TTL),
@@ -81,9 +84,9 @@ impl Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
-        let channels = std::mem::take(&mut self.channels);
+        let mut channels = std::mem::take(&mut self.channels);
         tokio::spawn(async move {
-            for ch in channels.read().await.values() {
+            for ch in channels.get_mut().values() {
                 ch.stop().await;
             }
         });

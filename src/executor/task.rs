@@ -1,17 +1,17 @@
-use super::{kill_process_group, User};
+use super::{User, kill_process_group};
+use crate::EXE_DIR;
 use crate::common::{cbs_exist, create_file_with_parents, get_now_secs, incomplete_utf8_bytes};
 use crate::network::urls::get_meta_url;
 use crate::network::{COSAdapter, InvocationNormalTask, Invoke, MetadataAdapter};
-use crate::EXE_DIR;
 
 use std::fmt::{self, Display, Write};
 use std::mem::{swap, take};
 use std::{cmp::min, future::Future, time::Duration};
 use std::{path::PathBuf, process::ExitStatus};
 
-use anyhow::{bail, Context, Result};
-use log::{error, info};
-use tokio::fs::{File, OpenOptions};
+use anyhow::{Context, Result, bail};
+use log::{error, info, warn};
+use tokio::fs::{File, OpenOptions, rename};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::{sleep, timeout};
 use tokio::{sync::Notify, task::JoinSet};
@@ -25,9 +25,11 @@ const TASK_RESULT_TERMINATED: &str = "TERMINATED";
 const TASK_RESULT_FAILED: &str = "FAILED";
 const TASK_RESULT_SUCCESS: &str = "SUCCESS";
 const EXTENSION_LOG: &str = "log";
+const EXTENSION_BAK: &str = "log.bak";
 const BUF_SIZE: usize = 1024;
 const REPORT_INTERVAL: Duration = Duration::from_secs(1);
 const DELAY_AFTER_CHILD_FINISH: Duration = Duration::from_secs(1);
+const UPLOAD_COS_ATTEMPTS: u8 = 3;
 
 pub struct Task {
     pub info: TaskInfo,
@@ -67,7 +69,7 @@ impl Task {
             upload_conf = Some(TaskUploadConf {
                 cos_bucket_url: t.cos_bucket_url,
                 cos_bucket_prefix: cos_bucket_prefix.to_owned(),
-                output_file: Some(output_file),
+                output_file,
             });
         };
 
@@ -199,7 +201,7 @@ impl Task {
         let pid = self.status.pid.unwrap();
         info!("=>on_timeout: task:{tid}, pid:{pid}");
 
-        unsafe { kill_process_group(pid) };
+        kill_process_group(pid);
         self.status.set_result(TaskResult::Timeout);
 
         let timeout = &self.info.timeout;
@@ -211,7 +213,7 @@ impl Task {
         let pid = self.status.pid.unwrap();
         info!("=>on_cancel: task:{tid}, pid:{pid}");
 
-        unsafe { kill_process_group(pid) };
+        kill_process_group(pid);
         self.status.set_result(TaskResult::Terminate);
         info!("task `{tid}` killed because of cancel, pid: {pid}");
     }
@@ -229,10 +231,22 @@ impl Task {
         let time = get_now_secs();
 
         let (mut url, mut err) = Default::default();
-        if let Some(ref mut conf) = self.upload_conf {
-            match conf.upload_cos::<T>(tid).await {
+        if let Some(conf) = self.upload_conf.as_ref() {
+            match conf.upload_cos_retry::<T>(tid, UPLOAD_COS_ATTEMPTS).await {
                 Ok(output_url) => url = output_url,
-                Err(output_err_info) => err = format!("{output_err_info:#}"),
+                Err(output_err_info) => {
+                    err = format!("{output_err_info:#}");
+
+                    // Fallback: back up output file if upload_cos fails
+                    let output_file = self.info.output_file_path().unwrap();
+                    let bak_file = output_file.with_extension(EXTENSION_BAK);
+                    let _ = conf.output_file.sync_data().await;
+                    let bak = bak_file.to_string_lossy();
+                    match rename(output_file, &bak_file).await {
+                        Ok(_) => err = format!("{err}, output backed up to {bak}"),
+                        Err(e) => error!("output backed up to {bak} failed: {e:#}"),
+                    }
+                }
             }
         }
 
@@ -389,11 +403,26 @@ impl TaskOutput {
 struct TaskUploadConf {
     cos_bucket_url: String,
     cos_bucket_prefix: String,
-    output_file: Option<File>,
+    output_file: File,
 }
 
 impl TaskUploadConf {
-    async fn upload_cos<T: Invoke>(&mut self, task_id: &str) -> Result<String> {
+    async fn upload_cos_retry<T: Invoke>(&self, task_id: &str, attempts: u8) -> Result<String> {
+        for i in 1..=attempts {
+            let r = self.upload_cos::<T>(task_id).await;
+            match r.inspect_err(|e| warn!("upload_cos failed {i}/{attempts}: {e:#}")) {
+                r if r.is_ok() || i == attempts => return r,
+                _ => sleep(Duration::from_secs(1)).await,
+            }
+        }
+        unreachable!("The loop is guaranteed to return on or before the final attempt")
+    }
+
+    async fn upload_cos<T: Invoke>(&self, task_id: &str) -> Result<String> {
+        let file = {
+            let r = self.output_file.try_clone().await;
+            r.context("try clone output file failed")?
+        };
         let metadata_adapter = MetadataAdapter::build(&get_meta_url());
         let resp = match T::get_cos_credential(task_id).await {
             Ok(resp) => Ok(resp),
@@ -405,14 +434,16 @@ impl TaskUploadConf {
             &credential.secret_key,
             &credential.token,
             &self.cos_bucket_url,
-        );
+        )
+        .context("new cos adapter failed")?;
         let instance_id = metadata_adapter.instance_id().await;
         let invocation_id = credential.invocation_id;
         let object_name = self.object_name(&invocation_id, task_id);
-        let file = self.output_file.take().unwrap();
         if let Err(e) = cli.put_object_from_file(file, &object_name, None).await {
             error!("pub object to cos failed: {e:#}");
-            bail!("Upload output to cos failed, please check if {instance_id} has permission to put file to COS");
+            bail!(
+                "Upload output to cos failed, please check if {instance_id} has permission to put file to COS"
+            );
         }
         Ok(self.output_url(&invocation_id, task_id))
     }
@@ -436,7 +467,7 @@ impl TaskUploadConf {
     }
 
     async fn write_output_file(&mut self, output: &[u8]) {
-        if let Err(e) = self.output_file.as_mut().unwrap().write_all(output).await {
+        if let Err(e) = self.output_file.write_all(output).await {
             error!("write_output_file failed: {}", e)
         }
     }
@@ -465,7 +496,10 @@ impl Display for TaskResult {
 mod test {
     use super::*;
     use crate::common::get_current_username;
-    use std::{env::set_current_dir, fs::exists};
+    use std::{
+        env::{set_current_dir, temp_dir},
+        fs::exists,
+    };
     use tokio::process::Command;
     const FAKE_COS_URL: &str = "https://fake-cos-url.com";
 
@@ -483,11 +517,11 @@ mod test {
         }
     }
 
-    fn task_upload_conf_with_prefix(prefix: &str) -> TaskUploadConf {
+    async fn task_upload_conf_with_prefix(prefix: &str) -> TaskUploadConf {
         TaskUploadConf {
             cos_bucket_url: FAKE_COS_URL.to_string(),
             cos_bucket_prefix: prefix.to_string(),
-            output_file: None,
+            output_file: File::create(temp_dir().join("test")).await.unwrap(),
         }
     }
 
@@ -637,24 +671,24 @@ mod test {
         assert_eq!(op.dropped(), MAX_REPORT_BYTES / 4);
     }
 
-    #[test]
-    fn test_object_name() {
-        let uc = task_upload_conf_with_prefix("");
+    #[tokio::test]
+    async fn test_object_name() {
+        let uc = task_upload_conf_with_prefix("").await;
         let obj = uc.object_name("", "invt-xxx");
         assert_eq!(obj, format!("/invt-xxx.log"));
 
-        let uc = task_upload_conf_with_prefix("");
+        let uc = task_upload_conf_with_prefix("").await;
         let obj = uc.object_name("ins-xxx", "invt-xxx");
         assert_eq!(obj, format!("/ins-xxx/invt-xxx.log"));
 
-        let uc = task_upload_conf_with_prefix("aa/bb/cc");
+        let uc = task_upload_conf_with_prefix("aa/bb/cc").await;
         let obj = uc.object_name("ins-xxx", "invt-xxx");
         assert_eq!(obj, format!("/aa/bb/cc/ins-xxx/invt-xxx.log"));
     }
 
-    #[test]
-    fn test_output_url() {
-        let uc = task_upload_conf_with_prefix("aa/bb/cc");
+    #[tokio::test]
+    async fn test_output_url() {
+        let uc = task_upload_conf_with_prefix("aa/bb/cc").await;
         let obj = uc.output_url("ins-xxx", "invt-xxx");
         assert_eq!(obj, format!("{FAKE_COS_URL}/aa/bb/cc/ins-xxx/invt-xxx.log"));
     }

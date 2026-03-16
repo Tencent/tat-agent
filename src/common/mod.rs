@@ -1,6 +1,7 @@
 pub mod config;
 pub mod daemonizer;
 pub mod evbus;
+pub mod guard;
 pub mod logger;
 pub mod option;
 pub mod sysinfo;
@@ -13,10 +14,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, UNIX_EPOCH};
 
 use anyhow::Result;
-use rand::{distributions::Alphanumeric, thread_rng, Rng};
+use rand::{Rng, distributions::Alphanumeric, thread_rng};
 use rsa::pkcs1::{EncodeRsaPrivateKey, EncodeRsaPublicKey};
-use rsa::{pkcs8::LineEnding, RsaPrivateKey, RsaPublicKey};
-use tokio::fs::{create_dir_all, File};
+use rsa::{RsaPrivateKey, RsaPublicKey, pkcs8::LineEnding};
+use tokio::fs::{File, create_dir_all};
 use tokio::sync::oneshot::{self, Receiver, Sender};
 use tokio::sync::{Mutex, Notify};
 use tokio::time::sleep;
@@ -96,11 +97,13 @@ pub fn gen_rand_str_with(len: usize) -> String {
 }
 
 #[cfg(windows)]
-pub unsafe fn wsz2string(ptr: *const u16) -> String {
-    use std::{ffi::OsString, os::windows::ffi::OsStringExt};
-    let len = (0..isize::MAX).position(|i| *ptr.offset(i) == 0).unwrap();
-    let slice = std::slice::from_raw_parts(ptr, len);
-    OsString::from_wide(slice).to_string_lossy().into_owned()
+pub fn wsz2string(ptr: *const u16) -> String {
+    unsafe {
+        use std::{ffi::OsString, os::windows::ffi::OsStringExt};
+        let len = (0..isize::MAX).position(|i| *ptr.offset(i) == 0).unwrap();
+        let slice = std::slice::from_raw_parts(ptr, len);
+        OsString::from_wide(slice).to_string_lossy().into_owned()
+    }
 }
 
 #[cfg(windows)]
@@ -161,7 +164,7 @@ pub fn cbs_exist() -> bool {
 #[cfg(unix)]
 pub fn update_file_permission(path: &str) {
     use std::ffi::c_char;
-    use std::fs::{set_permissions, Permissions};
+    use std::fs::{Permissions, set_permissions};
     use std::os::unix::fs::PermissionsExt;
 
     let uid = unsafe { libc::getuid() };

@@ -8,7 +8,7 @@ use std::{fmt::Debug, future::Future, time::Duration};
 use anyhow::{Context, Result};
 use log::info;
 use reqwest::Response;
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use serde_json::from_str;
 
 const RETRIES: u64 = 2;
@@ -23,10 +23,11 @@ pub trait Invoke {
         region: &str,
         register_id: &str,
         register_value: &str,
+        tags: Vec<Tag>,
     ) -> impl Future<Output = Result<RegisterInfo>> + Send {
         async move {
             let machine_id = machine_id().context("get machine_id failed")?.to_owned();
-            let local_ip = local_ip().await.context("get local_ip failed")?;
+            let local_ip = local_ip(region).await.context("get local_ip failed")?;
             let hostname = hostname().context("get hostname failed")?;
             let (public_key, private_key) =
                 generate_rsa_key().context("generate_rsa_key failed")?;
@@ -38,6 +39,7 @@ pub trait Invoke {
                 public_key,
                 hostname,
                 local_ip,
+                tags,
             );
 
             let url = get_register_url(region).await;
@@ -129,6 +131,13 @@ pub trait Invoke {
         async move {
             let req = ValidateInstanceRequest::new(hostname, local_ip);
             call_invoke_api("ValidateInstance", &get_invoke_url().await, req, RETRIES).await
+        }
+    }
+
+    fn unregister_instance() -> impl Future<Output = Result<UnregisterInstanceResponse>> + Send {
+        async {
+            let req = UnregisterInstanceRequest {};
+            call_invoke_api("UnregisterInstance", &get_invoke_url().await, req, RETRIES).await
         }
     }
 

@@ -34,11 +34,11 @@ enum UrlType {
 }
 
 impl UrlType {
-    async fn get_available_url(&self, register_region: Option<String>) -> Cow<'static, str> {
+    async fn get_available_url(&self, register_region: Option<&str>) -> Cow<'static, str> {
         if let Some(url) = self.config_url().await.or_else(|| self.mock_url()) {
             return url.into();
         }
-        let rins_rg = match register_region.as_deref() {
+        let rins_rg = match register_region {
             Some(rg) => rg,
             None => get_register_region().await.unwrap_or_default(),
         };
@@ -79,8 +79,8 @@ impl UrlType {
     }
 }
 
-pub async fn get_ws_url() -> Cow<'static, str> {
-    let url = Ws.get_available_url(None).await;
+pub async fn get_ws_url(region: Option<&str>) -> Cow<'static, str> {
+    let url = Ws.get_available_url(region).await;
     info!("get_ws_url: {}", url);
     url
 }
@@ -92,7 +92,7 @@ pub async fn get_invoke_url() -> Cow<'static, str> {
 }
 
 pub async fn get_register_url(region: &str) -> Cow<'static, str> {
-    let url = Invoke.get_available_url(Some(region.to_owned())).await;
+    let url = Invoke.get_available_url(Some(region)).await;
     info!("get_register_url: {}", url);
     url
 }
@@ -143,9 +143,9 @@ async fn get_current_region() -> &'static str {
 mod test {
     use super::{INVOKE_URLS, WS_URLS};
     use crate::network::urls::find_available;
+    use std::sync::Arc;
     use std::sync::atomic::AtomicU8;
     use std::sync::atomic::Ordering::Relaxed;
-    use std::sync::Arc;
 
     #[test]
     fn test_find_available_url() {

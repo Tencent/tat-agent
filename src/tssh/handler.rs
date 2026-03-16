@@ -1,4 +1,4 @@
-use super::{session::Channel, Tssh};
+use super::{Tssh, session::Channel};
 use crate::common::evbus;
 use crate::network::{PtyBinBase, PtyBinErrMsg, PtyError, PtyJsonBase, WsMsg};
 
@@ -6,7 +6,7 @@ use std::{future::Future, io::Cursor, sync::Arc};
 
 use bson::Document;
 use log::error;
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
 /// use for handling specific request messages
@@ -92,10 +92,10 @@ where
         let session_id = &handler.request.session_id;
         let channel_id = &handler.request.channel_id;
 
-        if let Some(session) = Tssh::get_session(session_id).await {
-            if let Some(channel) = session.get_channel(channel_id).await {
-                handler.channel = Some(channel);
-            }
+        if let Some(session) = Tssh::get_session(session_id).await
+            && let Some(channel) = session.get_channel(channel_id).await
+        {
+            handler.channel = Some(channel);
         }
 
         if Self::NEED_CHANNEL && handler.channel.is_none() {
@@ -165,10 +165,10 @@ where
             request,
         };
 
-        if let Some(session) = Tssh::get_session(&session_id).await {
-            if let Some(channel) = session.get_channel(&channel_id).await {
-                handler.channel = Some(channel);
-            }
+        if let Some(session) = Tssh::get_session(&session_id).await
+            && let Some(channel) = session.get_channel(&channel_id).await
+        {
+            handler.channel = Some(channel);
         }
 
         if Self::NEED_CHANNEL && handler.channel.is_none() {

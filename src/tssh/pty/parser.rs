@@ -1,9 +1,9 @@
+use AnsiItem::{Escape, Text};
+use nom::IResult;
 use nom::bytes::streaming::tag;
 use nom::combinator::map;
 use nom::sequence::tuple;
-use nom::IResult;
 use nom::{branch::alt, character::streaming::digit1};
-use AnsiItem::{Escape, Text};
 
 //https://gist.github.com/fnky/458719343aabd01cfb17a3a4f7296797
 #[derive(Debug, PartialEq, Clone)]

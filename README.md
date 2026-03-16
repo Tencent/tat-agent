@@ -8,7 +8,7 @@ For more information, please visit <https://cloud.tencent.com/product/tat> .
 
 ## Environment & Tools
 
-- **Rust toolchain ≥ 1.82** ([Installation Guide](https://www.rust-lang.org/tools/install))
+- **Rust toolchain ≥ 1.93** ([Installation Guide](https://www.rust-lang.org/tools/install))
 - **Platform-specific requirements**:
 
   | Platform | Requirements |

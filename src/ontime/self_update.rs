@@ -1,14 +1,13 @@
-use super::RESTART_CHECK_INVL;
+use crate::common::guard::acquire_restart_lock;
 use crate::network::{HttpRequester, Invoke, InvokeAdapter};
-use crate::{common::create_file_with_parents, EXE_DIR, STOP_COUNTER};
+use crate::{EXE_DIR, common::create_file_with_parents};
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use futures::StreamExt;
 use log::{debug, info};
-use tokio::{fs::remove_dir_all, io::AsyncWriteExt, process::Command, time::sleep};
+use tokio::{fs::remove_dir_all, io::AsyncWriteExt, process::Command};
 use zip::ZipArchive;
 
 const SELF_UPDATE_DIR: &str = "self_update";
@@ -39,9 +38,7 @@ pub async fn check_update() {
 }
 
 async fn wait_and_restart() -> ! {
-    while STOP_COUNTER.load(Ordering::Relaxed) != 0 {
-        sleep(RESTART_CHECK_INVL).await;
-    }
+    let _guard = acquire_restart_lock().await;
 
     info!("restart needed, no tasks running, restart program");
     if let Err(e) = restart().await {
@@ -113,7 +110,7 @@ async fn download_file(from: &str, to: impl AsRef<Path>) -> Result<String> {
     }
     file.sync_all().await.context("sync_all failed")?;
 
-    let md5 = format!("{:x}", md5.compute());
+    let md5 = format!("{:x}", md5.finalize());
     info!("download_file success, save to: {path:?}, md5: {md5}");
     Ok(md5)
 }

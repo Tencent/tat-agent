@@ -1,15 +1,15 @@
-use crate::common::{update_file_permission, Opts};
+use crate::common::{Opts, update_file_permission};
 
-use std::fs::{create_dir_all, OpenOptions};
+use std::fs::{OpenOptions, create_dir_all};
 
 use anyhow::Result;
-use log::{debug, Record};
+use log::{Record, debug};
 use log4rs::append::console::{ConsoleAppender, Target};
-use log4rs::append::rolling_file::policy::compound::roll::fixed_window::FixedWindowRoller;
+use log4rs::append::rolling_file::policy::Policy;
 use log4rs::append::rolling_file::policy::compound::roll::Roll;
+use log4rs::append::rolling_file::policy::compound::roll::fixed_window::FixedWindowRoller;
 use log4rs::append::rolling_file::policy::compound::trigger;
 use log4rs::append::rolling_file::policy::compound::trigger::size::SizeTrigger;
-use log4rs::append::rolling_file::policy::Policy;
 use log4rs::append::rolling_file::{LogFile, RollingFileAppender};
 use log4rs::config::{Appender, Config, Root};
 use log4rs::encode::pattern::PatternEncoder;

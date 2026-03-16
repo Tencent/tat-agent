@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::sync::LazyLock;
 
-use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 use tokio::sync::RwLock;
+use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
 static EVENT_BUS: LazyLock<EventBus> = LazyLock::new(Default::default);
 

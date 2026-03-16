@@ -3,11 +3,22 @@ use crate::common::update_file_permission;
 use anyhow::{Context, Result};
 use log::warn;
 use serde::{Deserialize, Serialize};
-use tokio::fs::{read_to_string, File};
+use tokio::fs::{File, read_to_string};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::OnceCell;
 
 const CONFIG_DAT: &str = "config.dat";
+
+#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+struct Config {
+    // Run as register instance
+    #[serde(default)]
+    register: Option<RegisterInfo>,
+
+    // Set server URLs
+    #[serde(default)]
+    url: Option<Url>,
+}
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 pub struct RegisterInfo {
@@ -31,17 +42,6 @@ struct Url {
     pub invoke_url: Option<String>,
     #[serde(default)]
     pub ws_url: Option<String>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Default, Clone)]
-struct Config {
-    // Run as register instance
-    #[serde(default)]
-    register: Option<RegisterInfo>,
-
-    // Set server URLs
-    #[serde(default)]
-    url: Option<Url>,
 }
 
 async fn load_config() -> &'static Config {
@@ -77,6 +77,12 @@ pub async fn save_register_info(info: RegisterInfo) -> Result<()> {
     save_config(&config).await
 }
 
+pub async fn clear_register_info() -> Result<()> {
+    let mut config = load_config().await.clone();
+    config.register = None;
+    save_config(&config).await
+}
+
 async fn save_config(config: &Config) -> Result<()> {
     let json_str = serde_json::to_string(config)?;
     let mut file = File::create(CONFIG_DAT).await?;
@@ -87,7 +93,7 @@ async fn save_config(config: &Config) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{save_register_info, RegisterInfo};
+    use super::{RegisterInfo, save_register_info};
     #[tokio::test]
     async fn test_save_config() {
         let config = RegisterInfo {

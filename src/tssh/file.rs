@@ -1,15 +1,15 @@
 use super::handler::{BsonHandler, Handler, HandlerExt};
 use crate::network::*;
 
-use std::fs::{create_dir, create_dir_all, Metadata};
+use std::fs::{Metadata, create_dir, create_dir_all};
 use std::sync::Arc;
 use std::{io::SeekFrom, path::Path, time::SystemTime};
 
 use anyhow::Result;
-use futures::{stream, StreamExt};
+use futures::{StreamExt, stream};
 use glob::Pattern;
 use log::info;
-use tokio::fs::{metadata, read_dir, remove_dir_all, remove_file, File, OpenOptions};
+use tokio::fs::{File, OpenOptions, metadata, read_dir, remove_dir_all, remove_file};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio_stream::wrappers::ReadDirStream;
 
@@ -189,7 +189,7 @@ impl Handler for BsonHandler<ListPathReq> {
                     Some(file_info_data(&name, &metadata))
                 }
             })
-            .chunks(10)
+            .chunks(5)
             .zip(stream::repeat(false))
             .chain(stream::once(async { (Vec::new(), true) }))
             .enumerate()
@@ -322,7 +322,8 @@ fn get_win32_ready_drives() -> Vec<String> {
     ('A'..='Z')
         .enumerate()
         // construct label if the corresponding bit is set
-        .filter_map(|(n, lable)| ((driver_bit >> n) & 1 == 1).then(|| format!("{lable}:/")))
+        .filter(|&(n, _)| (driver_bit >> n) & 1 == 1)
+        .map(|(_, lable)| format!("{lable}:/"))
         .filter(|l| unsafe { GetDriveTypeW(str2wsz(l).as_ptr()) } == DRIVE_FIXED)
         .collect()
 }

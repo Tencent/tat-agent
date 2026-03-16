@@ -1,7 +1,7 @@
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use log::{error, info, warn};
 use reqwest::header::{self, HeaderMap, HeaderValue};
 use reqwest::{Client, ClientBuilder, RequestBuilder, Response};

@@ -4,14 +4,14 @@ use super::bind::{
     winpty_free, winpty_open, winpty_set_size, winpty_spawn, winpty_spawn_config_free,
     winpty_spawn_config_new, winpty_t,
 };
-use super::parser::{do_parse, AnsiItem, EscapeItem};
-use super::{execute_stream, PtyExecCallback};
+use super::parser::{AnsiItem, EscapeItem, do_parse};
+use super::{PtyExecCallback, execute_stream};
+use crate::EXE_DIR;
 use crate::common::{str2wsz, wsz2string};
 use crate::executor::windows::{
-    anon_pipe, configure_command, init_powershell_command, kill_process_group, load_envs, User,
+    User, anon_pipe, configure_command, init_powershell_command, kill_process_group, load_envs,
 };
-use crate::tssh::{session::PluginComp, PTY_FLAG_ENABLE_BLOCK, PTY_INSPECT_WRITE};
-use crate::EXE_DIR;
+use crate::tssh::{PTY_FLAG_ENABLE_BLOCK, PTY_INSPECT_WRITE, session::PluginComp};
 
 use std::ffi::OsStr;
 use std::fs::File as StdFile;
@@ -24,10 +24,10 @@ use std::ptr::null_mut;
 use std::sync::Arc;
 use std::{mem, ptr};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use log::{error, info};
 use ntapi::ntpsapi::{
-    NtResumeProcess, NtSetInformationProcess, ProcessAccessToken, PROCESS_ACCESS_TOKEN,
+    NtResumeProcess, NtSetInformationProcess, PROCESS_ACCESS_TOKEN, ProcessAccessToken,
 };
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -185,11 +185,11 @@ impl PluginComp {
         timeout: Option<u64>,
     ) -> Result<()> {
         let user = self.get_user()?;
-        let mut work_dir = unsafe { wsz2string(get_cwd(user.token.as_raw_handle()).as_ptr()) };
+        let mut work_dir = wsz2string(get_cwd(user.token.as_raw_handle()).as_ptr());
         if work_dir.trim().is_empty() {
             work_dir = EXE_DIR.to_string_lossy().into_owned();
         }
-        let (receiver, sender) = unsafe { anon_pipe(true)? };
+        let (receiver, sender) = anon_pipe(true)?;
         let mut cmd = init_powershell_command(cmd);
         configure_command(&mut cmd, &user, &work_dir, sender).await?;
 
@@ -232,7 +232,7 @@ impl BlockMarker {
                     let sequences = do_parse(&read_data);
                     let mut output: Vec<u8> = Vec::new();
                     for it in sequences {
-                        info!("item: {}", it.to_string());
+                        info!("item: {}", it);
                         match self.state.as_str() {
                             PS_STATE_INPUT => self.input_handler(it, &mut output).await,
                             PS_STATE_EXEC => self.exec_handler(it, &mut output).await,
@@ -266,13 +266,14 @@ impl BlockMarker {
     }
 
     async fn exec_handler(&mut self, item: AnsiItem, output: &mut Vec<u8>) {
-        if let AnsiItem::Text(data) = &item {
-            if (data.starts_with("\r\nPS ") || data.starts_with("PS ")) && data.ends_with(">") {
-                let pwd = &data[3..data.len() - 2].to_string();
-                let post_marker = format!("\u{1b}]1337;PostExecMarker;CurrentDir={}\u{7}", pwd);
-                let _ = Write::write(output, post_marker.as_bytes());
-                self.state = PS_STATE_INPUT.to_owned();
-            }
+        if let AnsiItem::Text(data) = &item
+            && (data.starts_with("\r\nPS ") || data.starts_with("PS "))
+            && data.ends_with(">")
+        {
+            let pwd = &data[3..data.len() - 2].to_string();
+            let post_marker = format!("\u{1b}]1337;PostExecMarker;CurrentDir={}\u{7}", pwd);
+            let _ = Write::write(output, post_marker.as_bytes());
+            self.state = PS_STATE_INPUT.to_owned();
         }
         let _ = Write::write(output, item.to_string().as_bytes());
         self.save_history(item);
@@ -288,7 +289,7 @@ impl BlockMarker {
 
 fn build_envp(token: HANDLE) -> Vec<u16> {
     let mut envp = Vec::new();
-    let env_map = unsafe { load_envs(token) };
+    let env_map = load_envs(token);
     if env_map.is_empty() {
         envp.push(0);
     }

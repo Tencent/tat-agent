@@ -8,14 +8,14 @@ use self::file::register_file_handlers;
 use self::proxy::register_proxy_handlers;
 use self::pty::register_pty_handlers;
 use self::session::Session;
+use crate::common::evbus;
 use crate::network::{PtyBinBase, PtyJsonBase, WsMsg};
-use crate::{common::evbus, STOP_COUNTER};
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use leaky_bucket::RateLimiter;
 use log::{error, info};
 use serde::Serialize;
@@ -76,7 +76,6 @@ impl Tssh {
 
         sessions.insert(session_id.to_owned(), session.clone());
         info!("add_session: {}", session_id);
-        STOP_COUNTER.fetch_add(1, Ordering::Relaxed);
         tokio::spawn(async move { session.process_output().await });
         Ok(())
     }
@@ -84,7 +83,6 @@ impl Tssh {
     pub async fn remove_session(session_id: &str) {
         let op = Tssh::instance().sessions.write().await.remove(session_id);
         if let Some(s) = op {
-            STOP_COUNTER.fetch_sub(1, Ordering::Relaxed);
             s.stop().await;
             info!("remove_session: {}", session_id);
         }

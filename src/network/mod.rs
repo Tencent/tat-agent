@@ -17,7 +17,7 @@ pub use self::adapter::metadata_adapter::MetadataAdapter;
 pub use self::requester::HttpRequester;
 pub use self::types::http_msg::*;
 pub use self::types::ws_msg::*;
-use crate::common::config::{get_register_info, save_register_info};
+use crate::common::config::{clear_register_info, get_register_info, save_register_info};
 use crate::common::sysinfo::{
     cpu_arch, hostname, kernel_name, kernel_version, local_ip, machine_id, os_version, uptime_secs,
 };
@@ -26,10 +26,10 @@ use crate::common::{gen_rand_str_with, get_now_secs};
 use std::{env, process};
 
 use anyhow::{Context, Result};
-use base64::{engine::general_purpose::STANDARD, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use log::{error, info};
 use reqwest::header::{HeaderMap, HeaderValue};
-use rsa::{pkcs1::DecodeRsaPrivateKey, pkcs1v15::Pkcs1v15Sign, RsaPrivateKey};
+use rsa::{RsaPrivateKey, pkcs1::DecodeRsaPrivateKey, pkcs1v15::Pkcs1v15Sign};
 use sha1::{Digest, Sha1};
 
 const VPCID_HEADER: &str = "Tat-Vpcid";
@@ -106,19 +106,33 @@ async fn build_extra_headers() -> HeaderMap {
 }
 
 #[tokio::main(flavor = "current_thread")]
-pub async fn register(region: &str, register_id: &str, register_value: &str) -> Result<()> {
-    let record = InvokeAdapter::register_instance(region, register_id, register_value).await?;
+pub async fn register(
+    region: &str,
+    register_id: &str,
+    register_value: &str,
+    tags: Vec<Tag>,
+) -> Result<()> {
+    let record =
+        InvokeAdapter::register_instance(region, register_id, register_value, tags).await?;
     save_register_info(record)
         .await
         .context("save_register_info failed")
 }
 
+#[tokio::main(flavor = "current_thread")]
+pub async fn unregister() -> Result<()> {
+    InvokeAdapter::unregister_instance().await?;
+    clear_register_info()
+        .await
+        .context("clear_register_info failed")
+}
+
 pub async fn check_register_info() {
-    if get_register_info().await.is_none() {
+    let Some(ri) = get_register_info().await else {
         return;
-    }
+    };
     info!("find register info, try validate");
-    let local_ip = local_ip().await.expect("get local_ip failed");
+    let local_ip = local_ip(&ri.region).await.expect("get local_ip failed");
     let hostname = hostname().expect("get hostname failed");
     match InvokeAdapter::validate_instance(&hostname, &local_ip).await {
         Ok(_) => info!("validate_instance success, work as register instance"),
