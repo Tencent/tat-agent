@@ -160,11 +160,11 @@ EOF
 uninstall_service() {
     case $(detect_init_system) in
         systemd)
-            systemctl stop ${SERVICE_NAME}.service || true
             systemctl disable ${SERVICE_NAME}.service || true
             rm -f /etc/systemd/system/${SERVICE_NAME}.service
             systemctl daemon-reload
             log "Uninstalled service from systemd."
+            systemctl stop ${SERVICE_NAME}.service || true   
             ;;
         upstart)
             rm -f /etc/init/${SERVICE_NAME}.conf
