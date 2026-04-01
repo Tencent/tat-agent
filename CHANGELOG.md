@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.11] - 2026-03-31
+
+### Changed
+
+- Fix permanent deadlock on low-entropy guests caused by aws-lc-rs entropy check.
+- Fix tat_install stop service order to avoid self-kill on uninstall.
+
 ## [1.1.10] - 2026-03-13
 
 ### Changed
