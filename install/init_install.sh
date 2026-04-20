@@ -93,7 +93,7 @@ After=network.target
 
 [Service]
 Type=forking
-ExecStart=/bin/bash -c "sh ${SCRIPT_PATH} -service &"
+ExecStart=/bin/bash -c "${SCRIPT_PATH} -service &"
 WorkingDirectory=${INSTALL_DIR}
 TimeoutStartSec=0
 RemainAfterExit=no
@@ -141,7 +141,7 @@ EOF
 
 case "\$1" in
     start)
-        sh ${SCRIPT_PATH} -service > /dev/null 2>&1 &
+        ${SCRIPT_PATH} -service > /dev/null 2>&1 &
         echo "Service started in background. Check ${LOG_FILE} for installation progress."
         ;;
     *)
@@ -185,12 +185,12 @@ download_file() {
 
     if command -v wget &>/dev/null; then
         log "Using wget for download"
-        if wget -q --no-check-certificate "${url}" -O "${output_file}"; then
+        if wget -q "${url}" -O "${output_file}"; then
             success=true
         fi
     elif command -v curl &>/dev/null; then
         log "Using curl for download"
-        if curl -s -L --insecure "${url}" -o "${output_file}"; then
+        if curl -s -L "${url}" -o "${output_file}"; then
             success=true
         fi
     else
@@ -243,7 +243,7 @@ run_service() {
 
     if [[ -x ${INSTALL_DIR}/pkg/install.sh ]]; then
         chmod +x ${INSTALL_DIR}/pkg/install.sh
-        sh ${INSTALL_DIR}/pkg/install.sh >> ${LOG_FILE} 2>&1
+        ${INSTALL_DIR}/pkg/install.sh >> ${LOG_FILE} 2>&1
         log "Installation script executed successfully."
     else
         log "Install script not found."

@@ -60,9 +60,6 @@ function Download-File {
         [string]$OutputPath
     )
     
-    # Disable certificate validation
-    [System.Net.ServicePointManager]::ServerCertificateValidationCallback = {$true}
-    
     $downloadSuccess = $false
     $primaryUrl = Get-DownloadUrl -Domain $PrimaryDomain
     $backupUrl = Get-DownloadUrl -Domain $BackupDomain
@@ -116,9 +113,6 @@ function Download-File {
         Write-Log "Download failed after all attempts"
         throw "Download failed after all attempts"
     }
-    
-    # Reset certificate validation to default
-    [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $null
     
     return $downloadSuccess
 }
