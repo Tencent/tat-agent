@@ -345,3 +345,10 @@ pub struct ProxyClose {
     #[serde(default)]
     pub proxy_id: String,
 }
+
+#[derive(Default, Serialize, Deserialize, Debug)]
+#[serde(rename_all = "PascalCase")]
+pub struct ConnectForwardData {
+    #[serde(default)]
+    pub session_id: String
+}

@@ -9,10 +9,6 @@ use clap::{Args, Parser, Subcommand};
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 pub struct Opts {
-    /// Work as pty server (for debug)
-    #[clap(short, long)]
-    pub server_mode: bool,
-
     /// Use console as log appender
     #[clap(short, long)]
     pub console_log: bool,

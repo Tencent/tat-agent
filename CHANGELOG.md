@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.0] - 2026-05-06
+
+### Changed
+- Fix tat_install scripts: stop service order and TLS certificate validation.
+- Add ConnectForward WebSocket support for direct forward connections.
+
 ## [1.1.11] - 2026-03-31
 
 ### Changed

@@ -1,4 +1,4 @@
-use self::UrlType::{Invoke, Ws};
+use self::UrlType::{Forward, Invoke, Ws};
 use super::MetadataAdapter;
 use crate::common::config;
 use crate::network::mock_enabled;
@@ -25,12 +25,20 @@ const INVOKE_URLS: [&str; 4] = [
     "https://invoke.tat-tc.tencentyun.com",
     "https://invoke.tat.tencent-cloud.com",
 ];
+const FORWARD_URL_MOCK: &str = "ws://forward:8900/wsa";
+const FORWARD_URLS: [&str; 4] = [
+    "wss://forward.tat-tc.tencent.cn:8943/wsa",
+    "wss://forward.tat-tc.tencent.com.cn:8943/wsa",
+    "wss://forward.tat-tc.tencentyun.com:8943/wsa",
+    "wss://forward.tat.tencent-cloud.com:8943/wsa",
+];
 const METADATA_URL_MOCK: &str = "http://mock-server:8000";
 const METADATA_URL: &str = "http://metadata.tencentyun.com";
 
 enum UrlType {
     Ws,
     Invoke,
+    Forward,
 }
 
 impl UrlType {
@@ -53,6 +61,7 @@ impl UrlType {
         match self {
             Ws => &WS_URLS,
             Invoke => &INVOKE_URLS,
+            Forward => &FORWARD_URLS,
         }
     }
 
@@ -60,6 +69,7 @@ impl UrlType {
         match self {
             Ws => format!("wss://{}.notify.tat-tc.tencent.cn:8186/ws", region),
             Invoke => format!("https://{}.invoke.tat-tc.tencent.cn", region),
+            Forward => format!("wss://{}.forward.tat-tc.tencent.cn:443/wsa", region),
         }
     }
 
@@ -68,6 +78,7 @@ impl UrlType {
             _ if !mock_enabled() => None,
             Ws => Some(WS_URL_MOCK),
             Invoke => Some(INVOKE_URL_MOCK),
+            Forward => Some(FORWARD_URL_MOCK),
         }
     }
 
@@ -75,6 +86,7 @@ impl UrlType {
         match self {
             Ws => config::get_ws_url().await,
             Invoke => config::get_invoke_url().await,
+            Forward => config::get_forward_url().await,
         }
     }
 }
@@ -94,6 +106,12 @@ pub async fn get_invoke_url() -> Cow<'static, str> {
 pub async fn get_register_url(region: &str) -> Cow<'static, str> {
     let url = Invoke.get_available_url(Some(region)).await;
     info!("get_register_url: {}", url);
+    url
+}
+
+pub async fn get_forward_url(region: Option<&str>) -> Cow<'static, str> {
+    let url = Forward.get_available_url(region).await;
+    info!("get_forward_url: {}", url);
     url
 }
 

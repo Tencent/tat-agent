@@ -306,7 +306,6 @@ async fn call_utmpx(ttyname: &str, username: &str, pid: pid_t, sid: pid_t, ut_ty
 }
 
 fn audit_setloginuid(uid: uid_t) -> io::Result<()> {
-    info!("=>audit_setloginuid {}", uid);
     let loginuid = format!("{}", uid);
     let path = "/proc/self/loginuid";
 

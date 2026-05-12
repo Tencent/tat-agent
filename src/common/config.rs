@@ -42,6 +42,8 @@ struct Url {
     pub invoke_url: Option<String>,
     #[serde(default)]
     pub ws_url: Option<String>,
+    #[serde(default)]
+    pub forward_url: Option<String>,
 }
 
 async fn load_config() -> &'static Config {
@@ -65,6 +67,11 @@ pub async fn get_invoke_url() -> Option<&'static str> {
 pub async fn get_ws_url() -> Option<&'static str> {
     let url = load_config().await.url.as_ref()?;
     url.ws_url.as_deref()
+}
+
+pub async fn get_forward_url() -> Option<&'static str> {
+    let url = load_config().await.url.as_ref()?;
+    url.forward_url.as_deref()
 }
 
 pub async fn get_register_info() -> Option<&'static RegisterInfo> {
