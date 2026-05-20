@@ -91,9 +91,10 @@ pub async fn clear_register_info() -> Result<()> {
 }
 
 async fn save_config(config: &Config) -> Result<()> {
-    let json_str = serde_json::to_string(config)?;
-    let mut file = File::create(CONFIG_DAT).await?;
-    file.write_all(json_str.as_bytes()).await?;
+    let json_str = serde_json::to_string(config).context("serde")?;
+    let mut file = File::create(CONFIG_DAT).await.context("create")?;
+    file.write_all(json_str.as_bytes()).await.context("write")?;
+    file.sync_data().await.context("sync")?;
     update_file_permission(CONFIG_DAT);
     Ok(())
 }

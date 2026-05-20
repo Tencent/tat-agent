@@ -11,21 +11,18 @@ use log::info;
 use tokio::sync::OnceCell;
 use url::Url;
 
-const WS_URL_MOCK: &str = "ws://notify:8086/ws";
 const WS_URLS: [&str; 4] = [
     "wss://notify.tat-tc.tencent.cn:8186/ws",
     "wss://notify.tat-tc.tencent.com.cn:8186/ws",
     "wss://notify.tat-tc.tencentyun.com:8186/ws",
     "wss://notify.tat.tencent-cloud.com:8186/ws",
 ];
-const INVOKE_URL_MOCK: &str = "http://invoke";
 const INVOKE_URLS: [&str; 4] = [
     "https://invoke.tat-tc.tencent.cn",
     "https://invoke.tat-tc.tencent.com.cn",
     "https://invoke.tat-tc.tencentyun.com",
     "https://invoke.tat.tencent-cloud.com",
 ];
-const FORWARD_URL_MOCK: &str = "ws://forward:8900/wsa";
 const FORWARD_URLS: [&str; 4] = [
     "wss://forward.tat-tc.tencent.cn:8943/wsa",
     "wss://forward.tat-tc.tencent.com.cn:8943/wsa",
@@ -43,7 +40,7 @@ enum UrlType {
 
 impl UrlType {
     async fn get_available_url(&self, register_region: Option<&str>) -> Cow<'static, str> {
-        if let Some(url) = self.config_url().await.or_else(|| self.mock_url()) {
+        if let Some(url) = self.config_url().await {
             return url.into();
         }
         let rins_rg = match register_region {
@@ -70,15 +67,6 @@ impl UrlType {
             Ws => format!("wss://{}.notify.tat-tc.tencent.cn:8186/ws", region),
             Invoke => format!("https://{}.invoke.tat-tc.tencent.cn", region),
             Forward => format!("wss://{}.forward.tat-tc.tencent.cn:443/wsa", region),
-        }
-    }
-
-    fn mock_url(&self) -> Option<&'static str> {
-        match self {
-            _ if !mock_enabled() => None,
-            Ws => Some(WS_URL_MOCK),
-            Invoke => Some(INVOKE_URL_MOCK),
-            Forward => Some(FORWARD_URL_MOCK),
         }
     }
 

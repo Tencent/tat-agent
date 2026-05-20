@@ -282,7 +282,8 @@ impl TaskInfo {
     async fn create_script(&self, content: &[u8]) -> Result<()> {
         let path = self.script_path()?;
         let mut script = create_file_with_parents(path).await?;
-        script.write_all(content).await?;
+        script.write_all(content).await.context("write")?;
+        script.sync_data().await.context("sync")?;
 
         #[cfg(unix)]
         self.set_permissions_recursively().await?;

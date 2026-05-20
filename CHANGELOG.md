@@ -2,9 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.1] - 2026-05-18
+
+### Changed
+
+- Add sync_data after file writes to prevent silent data loss.
+- Remove mock backend url logic.
+
 ## [1.2.0] - 2026-05-06
 
 ### Changed
+
 - Fix tat_install scripts: stop service order and TLS certificate validation.
 - Add ConnectForward WebSocket support for direct forward connections.
 

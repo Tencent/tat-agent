@@ -116,29 +116,62 @@ impl Executor {
 macro_rules! impl_invoke {
     ($type:ty, $closure:expr) => {
         impl Invoke for $type {
-            async fn report_task_start(_: &str, _: u64) -> Result<ReportTaskStartResponse> {
+            async fn report_task_start(
+                invocation_task_id: &str,
+                start_timestamp: u64,
+            ) -> Result<ReportTaskStartResponse> {
+                log::info!(
+                    "[{}] =>report_task_start: invocation_task_id={}, start_timestamp={}",
+                    stringify!($type),
+                    invocation_task_id,
+                    start_timestamp,
+                );
                 Ok(ReportTaskStartResponse {})
             }
             async fn report_task_finish(
-                _: &str,
+                invocation_task_id: &str,
                 result: &str,
-                _: &str,
+                err_info: &str,
                 exit_code: i32,
                 final_log_index: Option<u32>,
-                _: u64,
-                _: &str,
-                _: &str,
+                finish_timestamp: u64,
+                output_url: &str,
+                output_err_info: &str,
                 dropped: u64,
             ) -> Result<ReportTaskFinishResponse> {
+                log::info!(
+                    "[{}] =>report_task_finish: invocation_task_id={}, result={}, err_info={}, \
+                    exit_code={}, final_log_index={:?}, finish_timestamp={}, \
+                    output_url={}, output_err_info={}, dropped={}",
+                    stringify!($type),
+                    invocation_task_id,
+                    result,
+                    err_info,
+                    exit_code,
+                    final_log_index,
+                    finish_timestamp,
+                    output_url,
+                    output_err_info,
+                    dropped,
+                );
                 let closure = $closure;
                 closure(result, exit_code, final_log_index, dropped)
             }
             async fn upload_task_log(
-                _: &str,
-                _: u32,
-                _: Vec<u8>,
-                _: u64,
+                task_id: &str,
+                idx: u32,
+                output: Vec<u8>,
+                dropped: u64,
             ) -> Result<UploadTaskLogResponse> {
+                use base64::{Engine, engine::general_purpose::STANDARD};
+                log::info!(
+                    "[{}] =>upload_task_log: task_id={}, idx={}, output={}, dropped={}",
+                    stringify!($type),
+                    task_id,
+                    idx,
+                    STANDARD.encode(&output),
+                    dropped,
+                );
                 Ok(UploadTaskLogResponse {})
             }
         }
@@ -147,11 +180,11 @@ macro_rules! impl_invoke {
 
 #[tokio::main(flavor = "current_thread")]
 pub async fn execute_arg_command(task: InvocationNormalTask) {
-    struct DoNothing;
-    impl_invoke!(DoNothing, |_, _, _, _| Ok(ReportTaskFinishResponse {}));
+    struct ExecuteArgCmd;
+    impl_invoke!(ExecuteArgCmd, |_, _, _, _| Ok(ReportTaskFinishResponse {}));
 
     info!("=>execute_arg_command: {task:?}");
-    let handle = EXECUTOR.clone().execute::<DoNothing>(task).await;
+    let handle = EXECUTOR.clone().execute::<ExecuteArgCmd>(task).await;
     let _ = handle.expect("Executor cache should not conflict").await;
     exit(0);
 }
@@ -194,8 +227,8 @@ pub mod test {
 
     #[tokio::test]
     async fn test_report_task_start_error() {
-        struct ReportTaskStartError;
-        impl Invoke for ReportTaskStartError {
+        struct TestReportTaskStartError;
+        impl Invoke for TestReportTaskStartError {
             async fn report_task_start(_: &str, _: u64) -> Result<ReportTaskStartResponse> {
                 bail!("mock report_task_start error")
             }
@@ -203,7 +236,7 @@ pub mod test {
 
         let exc = Arc::<Executor>::default();
         let task = new_task("");
-        let found_new = exc.clone().execute::<ReportTaskStartError>(task).await;
+        let found_new = exc.clone().execute::<TestReportTaskStartError>(task).await;
         assert!(found_new.is_some());
         let _ = found_new.unwrap().await;
         sleep(Duration::from_secs(1)).await;
@@ -212,12 +245,12 @@ pub mod test {
 
     #[tokio::test]
     async fn test_report_task_finish_error() {
-        struct ReportTaskFinishError;
-        impl_invoke!(ReportTaskFinishError, |_, _, _, _| bail!(""));
+        struct TestReportTaskFinishError;
+        impl_invoke!(TestReportTaskFinishError, |_, _, _, _| bail!(""));
 
         let exc = Arc::<Executor>::default();
         let task = new_task("");
-        let found_new = exc.clone().execute::<ReportTaskFinishError>(task).await;
+        let found_new = exc.clone().execute::<TestReportTaskFinishError>(task).await;
         assert!(found_new.is_some());
         let _ = found_new.unwrap().await;
         sleep(Duration::from_secs(1)).await;
@@ -226,74 +259,74 @@ pub mod test {
 
     #[tokio::test]
     async fn test_start_failed() {
-        struct DoNothing;
-        impl_invoke!(DoNothing, |_, _, _, _| Ok(ReportTaskFinishResponse {}));
+        struct TestDoNothing;
+        impl_invoke!(TestDoNothing, |_, _, _, _| Ok(ReportTaskFinishResponse {}));
 
         let mut task = new_task("");
         task.command_type = "NOT_EXIST_TYPE".to_string();
-        let res = Task::start::<DoNothing>(task, pending::<()>()).await;
+        let res = Task::start::<TestDoNothing>(task, pending::<()>()).await;
         assert!(res.is_err());
 
         let mut task = new_task("");
         task.username = "NOT_EXIST_USERNAME".to_string();
-        let res = Task::start::<DoNothing>(task, pending::<()>()).await;
+        let res = Task::start::<TestDoNothing>(task, pending::<()>()).await;
         assert!(res.is_err());
 
         let mut task = new_task("");
         task.working_directory = "NOT_EXIST_WORKDIR".to_string();
-        let res = Task::start::<DoNothing>(task, pending::<()>()).await;
+        let res = Task::start::<TestDoNothing>(task, pending::<()>()).await;
         assert!(res.is_err());
 
         let mut task = new_task("");
         task.command = "NOT_BASE64_CMD".to_string();
-        let res = Task::start::<DoNothing>(task, pending::<()>()).await;
+        let res = Task::start::<TestDoNothing>(task, pending::<()>()).await;
         assert!(res.is_err());
     }
 
     #[tokio::test]
     async fn test_success() {
-        struct Success;
-        impl_invoke!(Success, |result, exit_code, _, _| {
+        struct TestSuccess;
+        impl_invoke!(TestSuccess, |result, exit_code, _, _| {
             assert_eq!(result, "SUCCESS");
             assert_eq!(exit_code, 0);
             Ok(ReportTaskFinishResponse {})
         });
         let task = new_task("exit 0");
-        let res = Task::start::<Success>(task, pending::<()>()).await;
+        let res = Task::start::<TestSuccess>(task, pending::<()>()).await;
         assert!(res.is_ok());
     }
 
     #[tokio::test]
     async fn test_failed() {
-        struct Failed;
-        impl_invoke!(Failed, |result, exit_code, _, _| {
+        struct TestFailed;
+        impl_invoke!(TestFailed, |result, exit_code, _, _| {
             assert_eq!(result, "FAILED");
             assert_eq!(exit_code, 1);
             Ok(ReportTaskFinishResponse {})
         });
         let task = new_task("exit 1");
-        let res = Task::start::<Failed>(task, pending::<()>()).await;
+        let res = Task::start::<TestFailed>(task, pending::<()>()).await;
         assert!(res.is_ok());
     }
 
     #[tokio::test]
     async fn test_timeout() {
-        struct Timeout;
-        impl_invoke!(Timeout, |result, exit_code, _, _| {
+        struct TestTimeout;
+        impl_invoke!(TestTimeout, |result, exit_code, _, _| {
             assert_eq!(result, "TIMEOUT");
             assert_eq!(exit_code, -1);
             Ok(ReportTaskFinishResponse {})
         });
         let mut task = new_task(&format!("{SLEEP} 10"));
         task.time_out = 1;
-        let res = Task::start::<Timeout>(task, pending::<()>()).await;
+        let res = Task::start::<TestTimeout>(task, pending::<()>()).await;
         assert!(res.is_ok());
     }
 
     #[tokio::test]
     async fn test_cancel() {
-        struct Cancel;
-        impl_invoke!(Cancel, |result, exit_code, _, _| {
+        struct TestCancel;
+        impl_invoke!(TestCancel, |result, exit_code, _, _| {
             assert_eq!(result, "TERMINATED");
             assert_eq!(exit_code, -1);
             Ok(ReportTaskFinishResponse {})
@@ -307,7 +340,7 @@ pub mod test {
         let stopper = Stopper::new();
         let rx = stopper.get_receiver().await.unwrap();
         exc.running.lock().await.insert(task_id, stopper);
-        let jh = tokio::spawn(async move { Task::start::<Cancel>(task, rx).await });
+        let jh = tokio::spawn(async move { Task::start::<TestCancel>(task, rx).await });
         sleep(Duration::from_secs(1)).await;
         exc.cancel(cancel).await;
         let res = jh.await;
@@ -317,44 +350,44 @@ pub mod test {
 
     #[tokio::test]
     async fn test_output() {
-        struct Output;
-        impl_invoke!(Output, |_, _, idx, dropped| {
+        struct TestOutput;
+        impl_invoke!(TestOutput, |_, _, idx, dropped| {
             assert_eq!(idx, Some(1));
             assert_eq!(dropped, 0);
             Ok(ReportTaskFinishResponse {})
         });
 
         let task = new_task(&format!("{ECHO} 1\n{SLEEP} 2\n{ECHO} 2"));
-        let res = Task::start::<Output>(task, pending::<()>()).await;
+        let res = Task::start::<TestOutput>(task, pending::<()>()).await;
         assert!(res.is_ok());
 
         let long_output = repeat_n('x', MAX_SINGLE_REPORT_BYTES).collect::<String>();
         let script = format!("{ECHO} {long_output}\n{SLEEP} 2\n{ECHO} {long_output}");
         let task = new_task(&script);
-        let res = Task::start::<Output>(task, pending::<()>()).await;
+        let res = Task::start::<TestOutput>(task, pending::<()>()).await;
         assert!(res.is_ok());
     }
 
     #[tokio::test]
     async fn test_full_and_dropped() {
-        struct Full;
-        impl_invoke!(Full, |_, _, _, dropped| {
+        struct TestFull;
+        impl_invoke!(TestFull, |_, _, _, dropped| {
             assert_eq!(dropped, 0);
             Ok(ReportTaskFinishResponse {})
         });
         let long_output = repeat_n('x', MAX_REPORT_BYTES as usize).collect::<String>();
         let task = new_task(&format!("{ECHO} {long_output}"));
-        let res = Task::start::<Full>(task, pending::<()>()).await;
+        let res = Task::start::<TestFull>(task, pending::<()>()).await;
         assert!(res.is_ok());
 
-        struct Dropped;
-        impl_invoke!(Dropped, |_, _, _, dropped| {
+        struct TestDropped;
+        impl_invoke!(TestDropped, |_, _, _, dropped| {
             assert_eq!(dropped, 1);
             Ok(ReportTaskFinishResponse {})
         });
         let long_output = repeat_n('x', MAX_REPORT_BYTES as usize + 1).collect::<String>();
         let task = new_task(&format!("{ECHO} {long_output}"));
-        let res = Task::start::<Dropped>(task, pending::<()>()).await;
+        let res = Task::start::<TestDropped>(task, pending::<()>()).await;
         assert!(res.is_ok());
     }
 }

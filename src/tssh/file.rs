@@ -256,7 +256,11 @@ impl Handler for BsonHandler<WriteFileReq> {
             return self.reply(PtyBinErrMsg::new(e)).await;
         }
 
-        match file.write_all(data).await {
+        if let Err(e) = file.write_all(data).await {
+            return self.reply(PtyBinErrMsg::new(e)).await;
+        }
+
+        match file.sync_data().await {
             Ok(_) => self.reply(WriteFileResp { length: data.len() }).await,
             Err(e) => self.reply(PtyBinErrMsg::new(e)).await,
         };

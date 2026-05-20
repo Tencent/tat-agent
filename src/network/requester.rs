@@ -1,7 +1,7 @@
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use log::{error, info, warn};
 use reqwest::header::{self, HeaderMap, HeaderValue};
 use reqwest::{Client, ClientBuilder, RequestBuilder, Response};
@@ -55,26 +55,24 @@ impl HttpRequester {
 
     pub async fn send(self) -> Result<Response> {
         let rb = self.rb.header(header::CONNECTION, "close");
-        if self.retries == 0 || rb.try_clone().is_none() {
-            if self.retries != 0 {
-                warn!("request body try_clone failed, only 1 attempt made")
-            }
-            let resp = rb
-                .send()
-                .await
-                .inspect_err(|e| error!("request error: {e:#}"))?;
-            return Ok(resp);
-        }
+        let total = self.retries + 1;
 
-        for i in 1..=self.retries {
-            let rst = rb.try_clone().unwrap().send().await;
-            match rst {
+        for i in 1..total {
+            let Some(cloned) = rb.try_clone() else {
+                warn!("request body try_clone failed, only 1 attempt made");
+                break;
+            };
+            match cloned.send().await.map_err(anyhow::Error::from) {
                 Ok(resp) => return Ok(resp),
-                Err(e) => warn!("request error: {:#}, attempt {} of {}", e, i, self.retries),
+                Err(e) => warn!("request error: {e:#}, attempt {} of {}", i, total),
             }
             tokio::time::sleep(self.interval).await;
         }
-        bail!("request error reached {} times", self.retries);
+
+        rb.send()
+            .await
+            .map_err(anyhow::Error::from)
+            .inspect_err(|e| error!("request error: {e:#}, attempt {total} of {total}"))
     }
 
     fn new(rb: RequestBuilder) -> Self {
