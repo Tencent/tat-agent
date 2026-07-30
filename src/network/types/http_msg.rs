@@ -449,9 +449,9 @@ pub type ReportAgentLogResponse = Empty;
 
 #[cfg(test)]
 mod tests {
+    use super::{InvocationNormalTask, ServerRawResponse};
     #[cfg(windows)]
     use crate::executor::windows::UTF8_BOM_HEADER;
-    use crate::network::{InvocationNormalTask, ServerRawResponse};
 
     #[test]
     fn serialize_agent_request() {
@@ -606,7 +606,7 @@ mod tests {
         use std::fs::{File, remove_file};
         use std::{io::Read, process::Command};
 
-        use crate::network::UploadTaskLogRequest;
+        use super::UploadTaskLogRequest;
         let _ = Command::new("time")
             .arg("dd")
             .arg("if=/dev/urandom")

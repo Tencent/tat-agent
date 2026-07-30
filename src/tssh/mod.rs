@@ -9,7 +9,8 @@ use self::proxy::register_proxy_handlers;
 use self::pty::register_pty_handlers;
 use self::session::Session;
 use crate::common::evbus;
-use crate::network::{PtyBinBase, PtyJsonBase, WsMsg};
+use crate::network::types::ws_msg::MsgFormat;
+use crate::network::types::ws_msg::{MsgBase, MsgId, MsgSpec};
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -21,10 +22,6 @@ use log::{error, info};
 use serde::Serialize;
 use tokio::{sync::OnceCell, sync::RwLock};
 
-const WS_MSG_TYPE_PTY_ERROR: &str = "PtyError";
-const WS_MSG_TYPE_PTY_OUTPUT: &str = "PtyOutput";
-#[allow(unused)]
-const WS_MSG_TYPE_PTY_READY: &str = "PtyReady";
 pub const WS_TXT_MSG: &str = "pty_cmd_msg";
 pub const WS_BIN_MSG: &str = "pty_file_msg";
 pub const PTY_INSPECT_READ: u8 = 0x0;
@@ -102,41 +99,20 @@ impl Tssh {
         *l = build_limiter(rate);
     }
 
-    pub async fn reply_json_msg<T: Serialize>(msg_type: &str, data: PtyJsonBase<T>) {
-        let serialize = |ws_msg| {
-            serde_json::to_string(&ws_msg)
-                .expect("json serialize failed")
-                .into_bytes()
-        };
-        Self::reply(msg_type, data, WS_TXT_MSG, serialize).await;
-    }
-
-    pub async fn reply_bson_msg<T: Serialize>(msg_type: &str, data: PtyBinBase<T>) {
-        let serialize = |ws_msg| {
-            let mut msg = Vec::new();
-            let _ = bson::to_bson(&ws_msg)
-                .expect("to_bson failed")
-                .as_document()
-                .expect("as_document failed")
-                .to_writer(&mut msg);
-            msg
-        };
-        Self::reply(msg_type, data, WS_BIN_MSG, serialize).await;
-    }
-
-    async fn reply<T, F>(msg_type: &str, data: T, event: &str, serialize: F)
+    async fn reply<F, T>(data: MsgId<F, T>)
     where
-        T: Serialize,
-        F: Fn(WsMsg<T>) -> Vec<u8>,
+        F: MsgFormat,
+        T: MsgSpec + Serialize,
     {
         let gather = Tssh::instance();
-        let msg = serialize(WsMsg {
-            r#type: msg_type.to_string(),
+        let msg = MsgBase {
+            r#type: T::MSG_TYPE.to_string(),
             seq: gather.ws_seq_num.fetch_add(1, Ordering::Relaxed),
-            data: Some(data),
-        });
-        gather.limiter.read().await.acquire(msg.len()).await;
-        evbus::emit(event, msg).await;
+            data,
+        };
+        let bytes = F::to_bytes(&msg);
+        gather.limiter.read().await.acquire(bytes.len()).await;
+        evbus::emit(F::msg_event(), bytes).await;
     }
 }
 

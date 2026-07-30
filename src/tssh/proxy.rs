@@ -1,51 +1,46 @@
 use super::Tssh;
-use super::handler::{BsonHandler, Handler, HandlerExt};
-use super::session::{Channel, Plugin, PluginComp, PluginCtrl, PluginData, Session};
-use crate::network::{ProxyClose, ProxyData, ProxyNew, ProxyReady, PtyBinBase, PtyBinErrMsg};
+use super::handler::Handler;
+use super::session::{Channel, Plugin, PluginComp, PluginCtrl, Session};
+use crate::network::types::ws_msg::*;
+use crate::tssh::handler::{DispatchMsg, HandleMsg};
 
 use std::{sync::Arc, time::Duration};
 
 use log::{error, info};
-use serde::Serialize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::{net::TcpStream, sync::Mutex};
 
-const WS_MSG_TYPE_PTY_PROXY_READY: &str = "PtyProxyReady";
 const PROXY_TTL: Duration = Duration::from_secs(60 * 5); // 5 min
 const PROXY_BUF_SIZE: usize = 2048;
 
 pub async fn register_proxy_handlers() {
-    BsonHandler::<ProxyNew>::register().await;
-    BsonHandler::<ProxyData>::register().await;
-    BsonHandler::<ProxyClose>::register().await;
+    Handler::<Bson, ProxyNew>::register().await;
+    Handler::<Bson, ProxyData>::register().await;
+    Handler::<Bson, ProxyClose>::register().await;
 }
 
-impl Handler for BsonHandler<ProxyNew> {
-    const MSG_TYPE: &str = "PtyProxyNew";
-    const NEED_CHANNEL: bool = false;
-
-    async fn process(self) {
+impl HandleMsg for Handler<Bson, ProxyNew> {
+    async fn process(&mut self) {
         let req = &self.request;
-        let proxy_id = req.data.proxy_id.clone();
-        let addr = format!("{}:{}", req.data.ip, req.data.port);
-        let id = self.id();
-        info!("=>proxy_new `{proxy_id}`, channel `{id}`, addr `{addr}`",);
+        let proxy_id = req.inner.data.proxy_id.clone();
+        let addr = format!("{}:{}", req.inner.data.ip, req.inner.data.port);
+        info!("=>proxy_new `{proxy_id}`, channel `{req}`, addr `{addr}`",);
 
         let session_id = req.session_id.clone();
         let channel_id = match self.channel.as_ref() {
             Some(ch) if ch.plugin.try_get_proxy().is_some() => {
                 error!("duplicate proxy_new `{proxy_id}`");
                 let e = "proxy already start";
-                return self.reply(PtyBinErrMsg::new(e)).await;
+                return self.reply_err(e).await;
             }
             // Compatible with legacy front-end code
             // If no channel_id is provided, use proxy_id as channel_id.
             _ if req.channel_id.is_empty() => proxy_id.clone(),
             Some(_) => {
-                error!("channel `{}` already start", id);
+                error!("channel `{}` already start", req);
                 let e = "channel already start";
-                return self.reply(PtyBinErrMsg::new(e)).await;
+                return self.reply_err(e).await;
             }
             None => req.channel_id.clone(),
         };
@@ -54,7 +49,7 @@ impl Handler for BsonHandler<ProxyNew> {
             Ok(s) => Mutex::new(s),
             Err(e) => {
                 info!("proxy `{proxy_id}` connect failed: {e}");
-                return self.reply(PtyBinErrMsg::new(e)).await;
+                return self.reply_err(e).await;
             }
         };
         let (tx, rx) = unbounded_channel();
@@ -65,8 +60,7 @@ impl Handler for BsonHandler<ProxyNew> {
             tx,
         };
         let plugin = Plugin {
-            component: PluginComp::Proxy(proxy),
-            data: req.into(),
+            component: PluginComp::proxy(proxy, &self.request).await,
             controller: PluginCtrl::new(PROXY_TTL),
         };
         let channel = Arc::new(Channel::new(&session_id, &channel_id, plugin));
@@ -80,29 +74,21 @@ impl Handler for BsonHandler<ProxyNew> {
         };
 
         if let Err(e) = session.add_channel(&channel_id, channel).await {
-            return self.reply(PtyBinErrMsg::new(e)).await;
+            return self.reply_err(e).await;
         }
 
-        let data = PtyBinBase {
-            session_id,
-            channel_id,
-            custom_data: "".to_owned(),
-            data: ProxyReady { proxy_id },
-        };
-        Tssh::reply_bson_msg(WS_MSG_TYPE_PTY_PROXY_READY, data).await
+        let resp = (ProxyReady { proxy_id }, req).into();
+        Tssh::reply(resp).await
     }
 }
 
-impl Handler for BsonHandler<ProxyData> {
-    const MSG_TYPE: &str = "PtyProxyData";
-    const NEED_SYNC_DISPATCH: bool = true;
-
-    async fn process(self) {
-        let req = self.request;
-        let proxy_id = req.data.proxy_id.clone();
+impl HandleMsg for Handler<Bson, ProxyData> {
+    async fn process(&mut self) {
+        let req = &mut self.request;
+        let proxy_id = req.inner.data.proxy_id.clone();
         // info!("=>proxy_data `{}`, channel `{}`", proxy_id, self.id());
 
-        let mut ch = self.channel.unwrap().clone();
+        let mut ch = self.channel.as_ref().unwrap().clone();
         // Compatible with legacy front-end code
         // If no channel_id is provided, use proxy_id as channel_id.
         if req.channel_id.is_empty()
@@ -117,28 +103,26 @@ impl Handler for BsonHandler<ProxyData> {
 
         let _ = proxy
             .tx
-            .send(req.data.data)
+            .send(std::mem::take(&mut req.inner.data.data))
             .inspect_err(|err| error!("proxy_data `{}` send failed: {}", proxy_id, err));
     }
 }
 
-impl Handler for BsonHandler<ProxyClose> {
-    const MSG_TYPE: &str = "PtyProxyClose";
-    const NEED_CHANNEL: bool = false;
-
-    async fn process(self) {
-        let req = &self.request;
+impl HandleMsg for Handler<Bson, ProxyClose> {
+    async fn process(&mut self) {
+        let id = &self.request;
+        let req = &self.request.inner;
         let proxy_id = &req.data.proxy_id;
-        info!("=>proxy_closed `{}`, channel `{}`", proxy_id, self.id());
-        let Some(session) = Tssh::get_session(&req.session_id).await else {
+        info!("=>proxy_closed `{}`, channel `{}`", proxy_id, self.request);
+        let Some(session) = Tssh::get_session(&id.session_id).await else {
             return;
         };
-        if req.channel_id.is_empty() {
+        if id.channel_id.is_empty() {
             // Compatible with legacy front-end code
             // If no channel_id is provided, use proxy_id as channel_id.
             session.remove_channel(proxy_id).await;
         } else if self.channel.is_some() {
-            session.remove_channel(&req.channel_id).await;
+            session.remove_channel(&id.channel_id).await;
         }
     }
 }
@@ -151,7 +135,7 @@ pub struct Proxy {
 }
 
 impl Proxy {
-    pub async fn process(&self, id: &str, data: &PluginData, ctrl: &PluginCtrl) {
+    pub async fn process(&self, id: &MsgId<Bson, Empty>, ctrl: &PluginCtrl) {
         let mut buffer = [0u8; PROXY_BUF_SIZE];
         let mut size = 0;
         let mut count = 0;
@@ -170,7 +154,7 @@ impl Proxy {
                             proxy_id: self.proxy_id.clone(),
                             data: buffer[..i].to_vec(),
                         };
-                        self.post(data, msg_data).await;
+                        Tssh::reply((msg_data, id).into()).await;
                         size += i;
                         count += 1;
                     }
@@ -190,21 +174,7 @@ impl Proxy {
         let msg_data = ProxyClose {
             proxy_id: self.proxy_id.clone(),
         };
-        self.post(data, msg_data).await;
+        Tssh::reply((msg_data, id).into()).await;
         info!("Proxy `{}` send total size: {}, count: {}", id, size, count);
-    }
-
-    async fn post<T>(&self, ids: &PluginData, data: T)
-    where
-        T: Serialize,
-        BsonHandler<T>: Handler,
-    {
-        let data = PtyBinBase {
-            session_id: ids.session_id.clone(),
-            channel_id: ids.channel_id.clone(),
-            custom_data: "".to_owned(),
-            data,
-        };
-        Tssh::reply_bson_msg(BsonHandler::<T>::MSG_TYPE, data).await
     }
 }

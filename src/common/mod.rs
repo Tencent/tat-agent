@@ -8,6 +8,7 @@ pub mod sysinfo;
 
 pub use option::Opts;
 
+use std::fmt;
 use std::path::Path;
 use std::str::from_utf8;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -224,4 +225,30 @@ fn is_truncate_utf8(invalid: &&[u8]) -> bool {
         && unsafe { from_utf8(invalid).unwrap_err_unchecked() }
             .error_len()
             .is_none()
+}
+
+pub trait Omit: AsRef<str> {
+    fn omit(&self, n: usize) -> Omitted<'_> {
+        let s = self.as_ref();
+        Omitted { s, n }
+    }
+}
+
+impl<T: AsRef<str>> Omit for T {}
+
+pub struct Omitted<'a> {
+    s: &'a str,
+    n: usize,
+}
+
+impl fmt::Display for Omitted<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut chars = self.s.char_indices();
+        let boundary = chars.nth(self.n).map(|(i, _)| i);
+        let Some(boundary) = boundary else {
+            return write!(f, "{}", self.s.escape_debug());
+        };
+        write!(f, "{}", self.s[..boundary].escape_debug())?;
+        write!(f, "... (total len: {})", self.s.len())
+    }
 }

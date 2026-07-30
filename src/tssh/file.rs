@@ -1,5 +1,6 @@
-use super::handler::{BsonHandler, Handler, HandlerExt};
-use crate::network::*;
+use super::handler::Handler;
+use crate::network::types::ws_msg::*;
+use crate::tssh::handler::{DispatchMsg, HandleMsg};
 
 use std::fs::{Metadata, create_dir, create_dir_all};
 use std::sync::Arc;
@@ -37,26 +38,24 @@ const FS_TYPE_DIR: &str = "d";
 const FS_TYPE_LINK: &str = "l";
 
 pub async fn register_file_handlers() {
-    BsonHandler::<CreateFileReq>::register().await;
-    BsonHandler::<DeleteFileReq>::register().await;
-    BsonHandler::<ListPathReq>::register().await;
-    BsonHandler::<FileExistsReq>::register().await;
-    BsonHandler::<FileInfoReq>::register().await;
-    BsonHandler::<WriteFileReq>::register().await;
-    BsonHandler::<ReadFileReq>::register().await;
+    Handler::<Bson, CreateFileReq>::register().await;
+    Handler::<Bson, DeleteFileReq>::register().await;
+    Handler::<Bson, ListPathReq>::register().await;
+    Handler::<Bson, FileExistReq>::register().await;
+    Handler::<Bson, FileInfoReq>::register().await;
+    Handler::<Bson, WriteFileReq>::register().await;
+    Handler::<Bson, ReadFileReq>::register().await;
 }
 
-impl Handler for BsonHandler<CreateFileReq> {
-    const MSG_TYPE: &str = "PtyCreateFile";
-
-    async fn process(self) {
-        let id = self.id();
+impl HandleMsg for Handler<Bson, CreateFileReq> {
+    async fn process(&mut self) {
+        let id = &self.request;
         let CreateFileReq {
             ref path,
             mode,
             overwrite,
             is_dir,
-        } = self.request.data;
+        } = self.request.inner.data;
         info!(
             "=>create_file `{id}`, path: {path}, \
             mode: {mode:o}, overwrite: {overwrite}, is_dir: {is_dir}"
@@ -70,7 +69,7 @@ impl Handler for BsonHandler<CreateFileReq> {
             let is_different_type = (is_dir && path.is_file()) || (!is_dir && path.is_dir());
 
             if !overwrite || is_different_type || is_symlink {
-                return self.reply(PtyBinErrMsg::new("file exists")).await;
+                return self.reply_err("file exists").await;
             }
             if is_dir && path.is_dir() {
                 // If the directory already exists, do nothing and return created.
@@ -79,7 +78,7 @@ impl Handler for BsonHandler<CreateFileReq> {
         }
 
         let Some(parent_path) = path.parent() else {
-            return self.reply(PtyBinErrMsg::new("invalid path")).await;
+            return self.reply_err("invalid path").await;
         };
 
         // create file as user
@@ -98,22 +97,20 @@ impl Handler for BsonHandler<CreateFileReq> {
 
         match create_result {
             Ok(_) => self.reply(CreateFileResp { created: true }).await,
-            Err(e) => self.reply(PtyBinErrMsg::new(e)).await,
+            Err(e) => self.reply_err(e).await,
         }
     }
 }
 
-impl Handler for BsonHandler<DeleteFileReq> {
-    const MSG_TYPE: &str = "PtyDeleteFile";
-
-    async fn process(self) {
-        let id = self.id();
-        let DeleteFileReq { path, is_dir } = &self.request.data;
+impl HandleMsg for Handler<Bson, DeleteFileReq> {
+    async fn process(&mut self) {
+        let id = &self.request;
+        let DeleteFileReq { path, is_dir } = &self.request.inner.data;
         info!("=>delete_file `{id}`, path: {path}, is_dir: {is_dir}");
 
         let plugin = &self.channel.as_ref().unwrap().plugin.component;
         if let Err(e) = plugin.inspect_access(path, PTY_INSPECT_WRITE).await {
-            return self.reply(PtyBinErrMsg::new(e)).await;
+            return self.reply_err(e).await;
         }
 
         let res = if *is_dir {
@@ -124,21 +121,19 @@ impl Handler for BsonHandler<DeleteFileReq> {
 
         match res {
             Ok(_) => self.reply(DeleteFileResp { deleted: true }).await,
-            Err(e) => self.reply(PtyBinErrMsg::new(e)).await,
+            Err(e) => self.reply_err(e).await,
         };
     }
 }
 
-impl Handler for BsonHandler<ListPathReq> {
-    const MSG_TYPE: &str = "PtyListPath";
-
-    async fn process(self) {
-        let id = self.id();
+impl HandleMsg for Handler<Bson, ListPathReq> {
+    async fn process(&mut self) {
+        let id = &self.request;
         let ListPathReq {
             path,
             filter,
             show_hidden,
-        } = &self.request.data;
+        } = &self.request.inner.data;
         info!("=>list_path `{id}`, path: {path}, filter: {filter}");
 
         #[cfg(windows)]
@@ -168,12 +163,12 @@ impl Handler for BsonHandler<ListPathReq> {
 
         let pattern = match Pattern::new(filter) {
             Ok(pattern) => Arc::new(pattern),
-            Err(e) => return self.reply(PtyBinErrMsg::new(e)).await,
+            Err(e) => return self.reply_err(e).await,
         };
 
         let read_dir = match read_dir(path).await {
             Ok(read_dir) => read_dir,
-            Err(e) => return self.reply(PtyBinErrMsg::new(e)).await,
+            Err(e) => return self.reply_err(e).await,
         };
         ReadDirStream::new(read_dir)
             .filter_map(|entry| {
@@ -204,46 +199,42 @@ impl Handler for BsonHandler<ListPathReq> {
     }
 }
 
-impl Handler for BsonHandler<FileExistsReq> {
-    const MSG_TYPE: &str = "PtyFileExist";
-
-    async fn process(self) {
-        let path = &self.request.data.path;
-        info!("=>file_exists `{}`, path: {}", self.id(), path);
+impl HandleMsg for Handler<Bson, FileExistReq> {
+    async fn process(&mut self) {
+        let id = &self.request;
+        let path = &self.request.inner.data.path;
+        info!("=>file_exists `{}`, path: {}", id, path);
         let exists = Path::new(path).exists();
         self.reply(FileExistResp { exists }).await
     }
 }
 
-impl Handler for BsonHandler<FileInfoReq> {
-    const MSG_TYPE: &str = "PtyFileInfo";
-
-    async fn process(self) {
-        let path = &self.request.data.path;
-        info!("=>file_info `{}`, path: {}", self.id(), path);
+impl HandleMsg for Handler<Bson, FileInfoReq> {
+    async fn process(&mut self) {
+        let id = &self.request;
+        let path = &self.request.inner.data.path;
+        info!("=>file_info `{}`, path: {}", id, path);
         match metadata(path).await {
             Ok(metadata) => self.reply(file_info_data(path, &metadata)).await,
-            Err(e) => self.reply(PtyBinErrMsg::new(e)).await,
+            Err(e) => self.reply_err(e).await,
         };
     }
 }
 
-impl Handler for BsonHandler<WriteFileReq> {
-    const MSG_TYPE: &str = "PtyWriteFile";
-
-    async fn process(self) {
-        let id = self.id();
-        let WriteFileReq { data, path, offset } = &self.request.data;
+impl HandleMsg for Handler<Bson, WriteFileReq> {
+    async fn process(&mut self) {
+        let id = &self.request;
+        let WriteFileReq { data, path, offset } = &self.request.inner.data;
         info!("=>write_file `{id}`, path: {path}, offset: {offset:?}");
         //check permission
         let plugin = &self.channel.as_ref().unwrap().plugin.component;
         if let Err(e) = plugin.inspect_access(path, PTY_INSPECT_WRITE).await {
-            return self.reply(PtyBinErrMsg::new(e)).await;
+            return self.reply_err(e).await;
         };
 
         let mut file = match OpenOptions::new().write(true).open(path).await {
             Ok(file) => file,
-            Err(e) => return self.reply(PtyBinErrMsg::new(e)).await,
+            Err(e) => return self.reply_err(e).await,
         };
 
         // Write at the file's end by default if 'offset' is not provided.
@@ -253,43 +244,41 @@ impl Handler for BsonHandler<WriteFileReq> {
         };
 
         if let Err(e) = file.seek(pos).await {
-            return self.reply(PtyBinErrMsg::new(e)).await;
+            return self.reply_err(e).await;
         }
 
         if let Err(e) = file.write_all(data).await {
-            return self.reply(PtyBinErrMsg::new(e)).await;
+            return self.reply_err(e).await;
         }
 
         match file.sync_data().await {
             Ok(_) => self.reply(WriteFileResp { length: data.len() }).await,
-            Err(e) => self.reply(PtyBinErrMsg::new(e)).await,
+            Err(e) => self.reply_err(e).await,
         };
     }
 }
 
-impl Handler for BsonHandler<ReadFileReq> {
-    const MSG_TYPE: &str = "PtyReadFile";
-
-    async fn process(self) {
-        let id = self.id();
-        let ReadFileReq { path, offset, size } = &self.request.data;
+impl HandleMsg for Handler<Bson, ReadFileReq> {
+    async fn process(&mut self) {
+        let id = &self.request;
+        let ReadFileReq { path, offset, size } = &self.request.inner.data;
         info!("=>read_file `{id}`, path: {path}, offset: {offset}, size: {size}");
 
         //check permission
         let plugin = &self.channel.as_ref().unwrap().plugin.component;
         if let Err(e) = plugin.inspect_access(path, PTY_INSPECT_READ).await {
-            info!("read_file `{}` inspect_access failed", self.id());
-            return self.reply(PtyBinErrMsg::new(e)).await;
+            info!("read_file `{}` inspect_access failed", id);
+            return self.reply_err(e).await;
         };
 
         //open file read only
         let mut file = match File::open(path).await {
             Ok(file) => file,
-            Err(e) => return self.reply(PtyBinErrMsg::new(e)).await,
+            Err(e) => return self.reply_err(e).await,
         };
 
         if let Err(e) = file.seek(SeekFrom::Start(*offset as u64)).await {
-            return self.reply(PtyBinErrMsg::new(e)).await;
+            return self.reply_err(e).await;
         };
 
         //use async file
@@ -314,7 +303,7 @@ impl Handler for BsonHandler<ReadFileReq> {
                     }
                     offset += size;
                 }
-                Err(e) => break self.reply(PtyBinErrMsg::new(e)).await,
+                Err(e) => break self.reply_err(e).await,
             };
         }
     }

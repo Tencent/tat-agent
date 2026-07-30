@@ -1,5 +1,5 @@
 mod requester;
-mod types {
+pub mod types {
     pub mod http_msg;
     pub mod ws_msg;
 }
@@ -15,13 +15,12 @@ pub use self::adapter::cos_adapter::COSAdapter;
 pub use self::adapter::invoke_adapter::{Invoke, InvokeAdapter};
 pub use self::adapter::metadata_adapter::MetadataAdapter;
 pub use self::requester::HttpRequester;
-pub use self::types::http_msg::*;
-pub use self::types::ws_msg::*;
 use crate::common::config::{clear_register_info, get_register_info, save_register_info};
 use crate::common::sysinfo::{
     cpu_arch, hostname, kernel_name, kernel_version, local_ip, machine_id, os_version, uptime_secs,
 };
 use crate::common::{gen_rand_str_with, get_now_secs};
+use crate::network::types::http_msg::Tag;
 
 use std::{env, process};
 

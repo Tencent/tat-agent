@@ -53,8 +53,8 @@ pub struct Pty {
 }
 
 impl Pty {
-    pub fn new(username: &str, cols: u16, rows: u16, flag: u32) -> Result<Pty> {
-        let (mut pty_ptr, user) = openpty(username, cols, rows)?;
+    pub fn new(username: &str, cols: u16, rows: u16, flag: u32, cwd: Option<&str>) -> Result<Pty> {
+        let (mut pty_ptr, user) = openpty(username, cols, rows, cwd)?;
         let writer = unsafe {
             let conin_name = winpty_conin_name(pty_ptr.as_mut());
             let empty_handle = 0 as HANDLE;
@@ -315,7 +315,12 @@ fn get_cwd(token: HANDLE) -> Vec<u16> {
     cwd
 }
 
-fn openpty(username: &str, cols: u16, rows: u16) -> Result<(Box<winpty_t>, User)> {
+fn openpty(
+    username: &str,
+    cols: u16,
+    rows: u16,
+    cwd: Option<&str>,
+) -> Result<(Box<winpty_t>, User)> {
     unsafe {
         let user = User::new(username)?;
         let mut err_ptr: *mut winpty_error_ptr_t = ptr::null_mut();
@@ -338,7 +343,10 @@ fn openpty(username: &str, cols: u16, rows: u16) -> Result<(Box<winpty_t>, User)
 
         let cmdline = str2wsz("powershell.exe");
         let envp = build_envp(user.token.as_raw_handle());
-        let cwdp = get_cwd(user.token.as_raw_handle());
+        let cwdp = match cwd {
+            Some(cwd) => str2wsz(cwd),
+            None => get_cwd(user.token.as_raw_handle()),
+        };
 
         let spawn_config = winpty_spawn_config_new(
             3u64,

@@ -1,19 +1,22 @@
 use super::Tssh;
-use super::handler::{BsonHandler, Handler, HandlerExt, JsonHandler};
-use super::session::{Channel, Plugin, PluginComp, PluginCtrl, PluginData, Session};
-use crate::common::{get_current_username, incomplete_utf8_bytes};
+use super::handler::{DispatchMsg, Handler};
+use super::session::{Channel, Plugin, PluginComp, PluginCtrl, Session};
+use crate::common::{Omit, get_current_username, incomplete_utf8_bytes};
 use crate::executor::kill_process_group;
-use crate::network::*;
+use crate::network::types::ws_msg::*;
+use crate::tssh::handler::HandleMsg;
 
 use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, anyhow};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use log::{error, info};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncReadExt;
+#[cfg(windows)]
+use tokio::io::AsyncWriteExt;
 use tokio::{process::Command, time::sleep};
 
-use super::{PTY_EXEC_DATA_SIZE, WS_MSG_TYPE_PTY_ERROR, WS_MSG_TYPE_PTY_OUTPUT};
+use super::PTY_EXEC_DATA_SIZE;
 const PTY_TTL: Duration = Duration::from_secs(60 * 3); // 3 min
 const PTY_BUF_SIZE: usize = 1024;
 const PTY_LOGOUT_MSG: &str = "logout"; // Required by OrcaTerm. DO NOT modify.
@@ -24,7 +27,6 @@ cfg_if::cfg_if! {
         mod unix;
         pub use unix::Pty;
 
-        use crate::network::ExecCmdResp;
         use std::os::unix::process::CommandExt;
         use std::process::{Command as StdCommand, Stdio};
     } else if #[cfg(windows)] {
@@ -46,27 +48,24 @@ type PtyExecCallback = Box<
 >;
 
 pub async fn register_pty_handlers() {
-    JsonHandler::<PtyStart>::register().await;
-    JsonHandler::<PtyStop>::register().await;
-    JsonHandler::<PtyResize>::register().await;
-    JsonHandler::<PtyInput>::register().await;
-    JsonHandler::<PtyMaxRate>::register().await;
-    JsonHandler::<PtyPing>::register().await;
+    Handler::<Json, PtyStart>::register().await;
+    Handler::<Json, PtyStop>::register().await;
+    Handler::<Json, PtyResize>::register().await;
+    Handler::<Json, PtyInput>::register().await;
+    Handler::<Json, PtyMaxRate>::register().await;
+    Handler::<Json, PtyPing>::register().await;
 
-    BsonHandler::<ExecCmdReq>::register().await;
-    BsonHandler::<ExecCmdStreamReq>::register().await;
+    Handler::<Bson, ExecCmdReq>::register().await;
+    Handler::<Bson, ExecCmdStreamReq>::register().await;
 }
 
-impl Handler for JsonHandler<PtyStart> {
-    const MSG_TYPE: &str = "PtyStart";
-    const NEED_CHANNEL: bool = false;
-
-    async fn process(self) {
-        let req = &self.request.data;
+impl HandleMsg for Handler<Json, PtyStart> {
+    async fn process(&mut self) {
+        let req = &self.request.inner.0;
         let session_id = &self.request.session_id;
         let channel_id = &self.request.channel_id;
         let mut username = req.user_name.clone();
-        let id = self.id();
+        let id = &self.request;
         info!("=>pty_start `{id}`, username: {username}");
 
         if username.is_empty() {
@@ -74,7 +73,8 @@ impl Handler for JsonHandler<PtyStart> {
         }
 
         let comp = if req.no_shell {
-            PluginComp::Nil { username }
+            let id = self.request.empty();
+            PluginComp::Nil { username, id }
         } else {
             #[cfg(windows)]
             let pty_res = {
@@ -82,15 +82,26 @@ impl Handler for JsonHandler<PtyStart> {
                 if req.init_block {
                     flag |= PTY_FLAG_ENABLE_BLOCK
                 }
-                Pty::new(&username, req.cols, req.rows, flag)
+                Pty::new(&username, req.cols, req.rows, flag, req.cwd.as_deref())
             };
 
             #[cfg(unix)]
             let pty_res = {
                 if let Some(Program { program, args }) = req.prog.as_ref() {
-                    info!("Pty `{id}` start with program: {program}, args: {args:?}");
+                    info!(
+                        "Pty `{id}` start with program: {}, args: {args:?}",
+                        program.omit(15)
+                    );
                 }
-                Pty::new(&username, req.cols, req.rows, &req.envs, &req.prog).await
+                Pty::new(
+                    &username,
+                    req.cols,
+                    req.rows,
+                    &req.envs,
+                    &req.prog,
+                    req.cwd.as_deref(),
+                )
+                .await
             };
 
             let pty = match pty_res {
@@ -100,11 +111,10 @@ impl Handler for JsonHandler<PtyStart> {
                     return self.reply(PtyError::new(e)).await;
                 }
             };
-            PluginComp::Pty(pty)
+            PluginComp::pty(pty, &self.request).await
         };
         let plugin = Plugin {
             component: comp,
-            data: (&self.request).into(),
             controller: PluginCtrl::new(PTY_TTL),
         };
 
@@ -122,19 +132,17 @@ impl Handler for JsonHandler<PtyStart> {
             return self.reply(PtyError::new(e)).await;
         }
 
-        info!("pty_start `{}` success", self.id());
+        info!("pty_start `{}` success", id);
         self.reply(PtyReady {}).await
     }
 }
 
-impl Handler for JsonHandler<PtyStop> {
-    const MSG_TYPE: &str = "PtyStop";
-    const NEED_CHANNEL: bool = false;
-
-    async fn process(self) {
+impl HandleMsg for Handler<Json, PtyStop> {
+    async fn process(&mut self) {
+        let id = &self.request;
         let session_id = &self.request.session_id;
         let channel_id = &self.request.channel_id;
-        info!("=>pty_stop `{}`", self.id());
+        info!("=>pty_stop `{}`", id);
 
         let Some(session) = Tssh::get_session(session_id).await else {
             return;
@@ -147,69 +155,58 @@ impl Handler for JsonHandler<PtyStop> {
     }
 }
 
-impl Handler for JsonHandler<PtyResize> {
-    const MSG_TYPE: &str = "PtyResize";
-
-    async fn process(self) {
-        info!("=>pty_resize `{}`", self.id());
+impl HandleMsg for Handler<Json, PtyResize> {
+    async fn process(&mut self) {
+        let id = &self.request;
+        info!("=>pty_resize `{}`", id);
         let channel = &self.channel;
         let Some(pty) = channel.as_ref().unwrap().plugin.try_get_pty() else {
-            error!("channel `{}` pty not found", self.id());
+            error!("channel `{}` pty not found", id);
             return self.reply(PtyError::new("pty not found")).await;
         };
-        let d = &self.request.data;
+        let d = &self.request.inner.0;
         if let Err(e) = pty.resize(d.cols, d.rows).await {
-            error!("pty_resize `{}` error: {}", self.id(), e);
+            error!("pty_resize `{}` error: {}", id, e);
         };
     }
 }
 
-impl Handler for JsonHandler<PtyInput> {
-    const MSG_TYPE: &str = "PtyInput";
-    const NEED_SYNC_DISPATCH: bool = true;
-
-    async fn process(self) {
+impl HandleMsg for Handler<Json, PtyInput> {
+    async fn process(&mut self) {
+        let id = &self.request;
         // info!("=>pty_input `{}`", self.id());
-        let data = match STANDARD.decode(&self.request.data.input) {
+        let data = match STANDARD.decode(&self.request.inner.0.input) {
             Ok(data) => data,
             Err(e) => return self.reply(PtyError::new(e)).await,
         };
         let channel = &self.channel;
         let Some(pty) = channel.as_ref().unwrap().plugin.try_get_pty() else {
-            error!("channel `{}` pty not found", self.id());
+            error!("channel `{}` pty not found", id);
             return self.reply(PtyError::new("pty not found")).await;
         };
         let mut writer = match pty.get_writer().await {
             Ok(w) => w,
-            Err(e) => return error!("pty_input `{}` error: {}", self.id(), e),
+            Err(e) => return error!("pty_input `{}` error: {}", id, e),
         };
         if let Err(e) = writer.write_all(&data[..]).await {
-            error!("pty_input `{}` error: {}", self.id(), e);
+            error!("pty_input `{}` error: {}", id, e);
         };
     }
 }
 
 #[cfg(windows)]
-impl Handler for BsonHandler<ExecCmdReq> {
-    const MSG_TYPE: &str = "PtyExecCmd";
-
-    async fn process(self) {
-        self.reply(PtyBinErrMsg::new("not support on windows"))
-            .await
+impl HandleMsg for Handler<Bson, ExecCmdReq> {
+    async fn process(&mut self) {
+        self.reply_err("not support on windows").await
     }
 }
 
 #[cfg(unix)]
-impl Handler for BsonHandler<ExecCmdReq> {
-    const MSG_TYPE: &str = "PtyExecCmd";
-
-    async fn process(self) {
-        let data = &self.request.data;
-        info!(
-            "=>exec_cmd `{}`, command: {}",
-            self.id(),
-            data.cmd.escape_debug()
-        );
+impl HandleMsg for Handler<Bson, ExecCmdReq> {
+    async fn process(&mut self) {
+        let id = &self.request;
+        let data = &self.request.inner.data;
+        info!("=>exec_cmd `{id}`, command: {}", data.cmd.omit(15));
 
         let plugin = &self.channel.as_ref().unwrap().plugin.component;
         let result = plugin.execute(&|| unsafe {
@@ -227,50 +224,33 @@ impl Handler for BsonHandler<ExecCmdReq> {
         match result {
             Ok(output) => {
                 let output = String::from_utf8_lossy(&output).to_string();
-                info!(
-                    "exec_cmd `{}` success, output: {}",
-                    self.id(),
-                    output.escape_debug()
-                );
+                info!("exec_cmd `{id}` success, output: {}", output.omit(15));
                 self.reply(ExecCmdResp { output }).await
             }
             Err(err) => {
-                error!("exec_cmd `{}` failed: {}", self.id(), err);
-                self.reply(PtyBinErrMsg::new(err)).await
+                error!("exec_cmd `{}` failed: {}", id, err);
+                self.reply_err(err).await
             }
         }
     }
 }
 
-impl Handler for BsonHandler<ExecCmdStreamReq> {
-    const MSG_TYPE: &str = "PtyExecCmdStream";
+impl HandleMsg for Handler<Bson, ExecCmdStreamReq> {
+    async fn process(&mut self) {
+        let id = &self.request;
+        let data = &self.request.inner.data;
+        info!("=>exec_cmd_stream `{id}`, command: {}", data.cmd.omit(15));
 
-    async fn process(self) {
-        let data = &self.request.data;
-        info!(
-            "=>exec_cmd_stream `{}`, command: {}",
-            self.id(),
-            data.cmd.escape_debug()
-        );
-
-        let sid = self.request.session_id.clone();
-        let cid = self.request.channel_id.clone();
-        let cdata = self.request.custom_data.clone();
-        let op = self.op_type.clone();
+        let msg_id = self.request.empty();
         let cb: PtyExecCallback = Box::new(move |index, is_last, exit_code, data| {
-            let msg = PtyBinBase {
-                session_id: sid.clone(),
-                channel_id: cid.clone(),
-                custom_data: cdata.clone(),
-                data: ExecCmdStreamResp {
-                    index,
-                    is_last,
-                    exit_code,
-                    data,
-                },
+            let data = ExecCmdStreamResp {
+                index,
+                is_last,
+                exit_code,
+                data,
             };
-            let op = op.clone();
-            Box::pin(async move { Tssh::reply_bson_msg(&op, msg).await })
+            let resp = (data, &msg_id).into();
+            Box::pin(async move { Tssh::reply(resp).await })
         });
 
         let plugin = &self.channel.as_ref().unwrap().plugin;
@@ -281,37 +261,28 @@ impl Handler for BsonHandler<ExecCmdStreamReq> {
             .await;
         plugin.controller.timer.unfreeze();
         if let Err(e) = result {
-            error!("exec_cmd_stream `{}` failed: {:#}", self.id(), e);
-            self.reply(PtyBinErrMsg::new(e)).await
+            error!("exec_cmd_stream `{}` failed: {:#}", id, e);
+            self.reply_err(e).await
         }
     }
 }
 
-impl Handler for JsonHandler<PtyMaxRate> {
-    const MSG_TYPE: &str = "PtyMaxRate";
-    const NEED_CHANNEL: bool = false;
-
-    async fn process(self) {
-        let rate = self.request.data.rate;
+impl HandleMsg for Handler<Json, PtyMaxRate> {
+    async fn process(&mut self) {
+        let rate = self.request.inner.0.rate;
         info!("=>pty_max_rate: {} B/s", rate);
         Tssh::set_limiter(rate).await
     }
 }
 
-impl Handler for JsonHandler<PtyPing> {
-    const MSG_TYPE: &str = "PtyPing";
-
-    async fn process(self) {
+impl HandleMsg for Handler<Json, PtyPing> {
+    async fn process(&mut self) {
         self.reply(PtyPong {}).await
     }
 }
 
 impl Pty {
-    pub async fn process(&self, id: &str, data: &PluginData, ctrl: &PluginCtrl) {
-        let PluginData {
-            session_id,
-            channel_id,
-        } = data;
+    pub async fn process(&self, id: &MsgId<Json, Empty>, ctrl: &PluginCtrl) {
         let mut stopper_rx = ctrl
             .stopper
             .get_receiver()
@@ -335,13 +306,8 @@ impl Pty {
 
                         let output = &buffer[..len - remnant];
                         if !output.is_empty() {
-                            let data = STANDARD.encode(output);
-                            let pty_output = PtyJsonBase {
-                                session_id: session_id.clone(),
-                                channel_id: channel_id.clone(),
-                                data: PtyOutput { output: data },
-                            };
-                            Tssh::reply_json_msg(WS_MSG_TYPE_PTY_OUTPUT, pty_output).await;
+                            let resp = PtyOutput { output: STANDARD.encode(output) };
+                            Tssh::reply((resp, id).into()).await;
                         }
                         if is_finished {
                             break info!("Pty `{id}` close: read size is 0");
@@ -353,12 +319,8 @@ impl Pty {
                             PTY_SHELL_EXIT_ERR => info!("Pty `{id}` shell exited"),
                             _ => error!("Pty `{id}` err: {}", e),
                         }
-                        let pty_logout = PtyJsonBase {
-                            session_id: session_id.clone(),
-                            channel_id: channel_id.clone(),
-                            data: PtyError::new(PTY_LOGOUT_MSG),
-                        };
-                        break Tssh::reply_json_msg(WS_MSG_TYPE_PTY_ERROR, pty_logout).await;
+                        let resp = PtyError::new(PTY_LOGOUT_MSG);
+                        break Tssh::reply((resp, id).into()).await;
                     }
                 },
                 _ = &mut stopper_rx => break info!("Pty `{id}` stopped"),
@@ -447,6 +409,7 @@ mod test {
     use super::Pty;
     use crate::common::get_current_username;
     use crate::common::logger::init_test_log;
+    use crate::network::types::ws_msg::{Empty, JsonData, MsgId};
     use crate::tssh::pty::PtyExecCallback;
     use crate::tssh::session::PluginComp;
 
@@ -454,6 +417,7 @@ mod test {
     use std::time::Duration;
 
     use log::info;
+    #[cfg(windows)]
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::time::{sleep, timeout};
 
@@ -462,9 +426,9 @@ mod test {
         init_test_log();
         let username = get_current_username();
         #[cfg(windows)]
-        let pty = Pty::new(&username, 200, 100, 0).unwrap();
+        let pty = Pty::new(&username, 200, 100, 0, None).unwrap();
         #[cfg(unix)]
-        let pty = Pty::new(&username, 200, 100, &HashMap::new(), &None)
+        let pty = Pty::new(&username, 200, 100, &HashMap::new(), &None, None)
             .await
             .unwrap();
         let mut reader = pty.get_reader().await.unwrap();
@@ -520,7 +484,12 @@ mod test {
         expect_result: Result<(), String>,
     ) {
         let username = get_current_username();
-        let plugin = PluginComp::Nil { username };
+        let id = MsgId::<_, _> {
+            session_id: "session".to_owned(),
+            channel_id: "channel".to_owned(),
+            inner: JsonData(Empty),
+        };
+        let plugin = PluginComp::Nil { username, id };
 
         let cb: PtyExecCallback = Box::new(move |idx, is_last, exit_code, data| {
             let (expect_is_last, expect_exit_code, expect_data) = data_map

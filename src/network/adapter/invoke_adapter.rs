@@ -1,12 +1,13 @@
 use crate::common::sysinfo::{hostname, local_ip, machine_id};
 use crate::common::{config::RegisterInfo, generate_rsa_key};
+use crate::network::types::http_msg::*;
 use crate::network::urls::{get_invoke_url, get_register_url};
-use crate::network::*;
+use crate::network::{HttpRequester, build_extra_headers};
 
 use std::{fmt::Debug, future::Future, time::Duration};
 
 use anyhow::{Context, Result};
-use log::info;
+use log::{error, info};
 use reqwest::Response;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::from_str;

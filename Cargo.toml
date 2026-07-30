@@ -1,6 +1,6 @@
 [package]
 name = "tat_agent"
-version = "1.2.1"
+version = "1.2.2"
 edition = "2024"
 
 [dependencies]
@@ -9,6 +9,7 @@ tokio = { version = "1.49.0", features = [
   "rt-multi-thread",
   "process",
   "macros",
+  "net",
 ] }
 # WARNING: Do NOT use the default rustls crypto backend (aws-lc-rs).
 # aws-lc-rs calls RNDGETENTCNT to check /dev/urandom entropy and enters an

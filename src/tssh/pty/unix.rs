@@ -1,7 +1,7 @@
 use super::{PtyExecCallback, execute_stream};
 use crate::EXE_DIR;
 use crate::executor::unix::{User, configure_command, init_command, load_envs};
-use crate::network::Program;
+use crate::network::types::ws_msg::Program;
 use crate::tssh::{PTY_INSPECT_READ, session::PluginComp};
 
 use std::collections::HashMap;
@@ -9,7 +9,7 @@ use std::ffi::CStr;
 use std::fs::File as StdFile;
 use std::io::{Read, Write};
 use std::os::linux::fs::MetadataExt;
-use std::os::unix::prelude::{AsRawFd, FromRawFd, RawFd};
+use std::os::unix::prelude::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::{env, io, ptr};
@@ -17,7 +17,9 @@ use std::{env, io, ptr};
 use anyhow::{Result, bail};
 use libc::{self, STDIN_FILENO, TIOCSCTTY, getsid, pid_t, ttyname, uid_t, winsize};
 use log::{error, info};
-use tokio::fs::{File, metadata};
+use tokio::fs::metadata;
+use tokio::io::Interest;
+use tokio::io::unix::AsyncFd;
 use tokio::process::Command;
 use tokio::sync::oneshot::{Sender, channel};
 use unix_mode::{Access, Accessor, is_allowed};
@@ -27,7 +29,7 @@ const LOGIN_SHELL_SUPPORTED: [&str; 4] = ["bash", "zsh", "fish", "tcsh"];
 
 pub struct Pty {
     _kill_on_drop: Sender<()>,
-    master: File,
+    master: Arc<AsyncFd<OwnedFd>>,
     pid: i32,
     pub user: Arc<User>,
 }
@@ -39,6 +41,7 @@ impl Pty {
         rows: u16,
         envs: &HashMap<String, String>,
         prog: &Option<Program>,
+        cwd: Option<&str>,
     ) -> Result<Pty> {
         let user = Arc::new(User::new(username)?);
         let shell_path = user.shell();
@@ -48,6 +51,7 @@ impl Pty {
             .to_string_lossy();
 
         let home_path = user.home_dir().to_str().unwrap_or("/tmp");
+        let work_dir = cwd.unwrap_or(home_path);
         let local_envs = load_envs(username, home_path, &shell_path.to_string_lossy()).await;
         let (master, slave) = openpty(&user, cols, rows)?;
 
@@ -85,7 +89,7 @@ impl Pty {
             .stdout(slave.try_clone().expect(""))
             .stderr(slave.try_clone().expect(""))
             .envs(local_envs.iter().chain(envs))
-            .current_dir(home_path)
+            .current_dir(work_dir)
             .spawn()?;
 
         let pid = child.id().unwrap() as pid_t;
@@ -132,12 +136,12 @@ impl Pty {
         Err(io::Error::last_os_error())?
     }
 
-    pub async fn get_reader(&self) -> Result<File> {
+    pub async fn get_reader(&self) -> Result<PtyIo> {
         self.get_writer().await
     }
 
-    pub async fn get_writer(&self) -> Result<File> {
-        Ok(self.master.try_clone().await?)
+    pub async fn get_writer(&self) -> Result<PtyIo> {
+        Ok(PtyIo(self.master.clone()))
     }
 
     pub fn get_cwd(&self) -> PathBuf {
@@ -150,10 +154,81 @@ impl Pty {
     }
 }
 
+/// Async, non-blocking, cancel-safe I/O over the pty master fd, built on
+/// `AsyncFd::async_io` instead of `tokio::fs::File` (which offloads every
+/// read/write to the blocking-thread pool and never registers with the
+/// reactor). Cloning is cheap: it just bumps the `Arc` refcount, no fd dup.
+#[derive(Clone)]
+pub struct PtyIo(Arc<AsyncFd<OwnedFd>>);
+
+impl PtyIo {
+    pub async fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.0
+            .async_io(Interest::READABLE, |fd| read_raw(fd.as_raw_fd(), buf))
+            .await
+    }
+
+    pub async fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
+        let mut off = 0;
+        while off < buf.len() {
+            let n = self
+                .0
+                .async_io(Interest::WRITABLE, |fd| {
+                    write_raw(fd.as_raw_fd(), &buf[off..])
+                })
+                .await?;
+            if n == 0 {
+                return Err(io::Error::new(io::ErrorKind::WriteZero, "write returned 0"));
+            }
+            off += n;
+        }
+        Ok(())
+    }
+}
+
+/// Retry `libc::read` on EINTR, return the result (WouldBlock is handled by
+/// `AsyncFd::async_io`'s outer retry loop).
+fn read_raw(fd: RawFd, buf: &mut [u8]) -> io::Result<usize> {
+    loop {
+        // SAFETY: `fd` is a valid, open fd for the duration of this call;
+        // `buf`'s pointer and length describe a valid, writable byte range.
+        let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut _, buf.len()) };
+        if n >= 0 {
+            return Ok(n as usize);
+        }
+        let e = io::Error::last_os_error();
+        if e.kind() != io::ErrorKind::Interrupted {
+            return Err(e);
+        }
+    }
+}
+
+/// Retry `libc::write` on EINTR, return the number of bytes written.
+fn write_raw(fd: RawFd, buf: &[u8]) -> io::Result<usize> {
+    loop {
+        // SAFETY: `fd` is a valid, open fd for the duration of this call;
+        // `buf`'s pointer and length describe a valid, readable byte range.
+        let n = unsafe { libc::write(fd, buf.as_ptr() as *const _, buf.len()) };
+        if n >= 0 {
+            return Ok(n as usize);
+        }
+        let e = io::Error::last_os_error();
+        if e.kind() != io::ErrorKind::Interrupted {
+            return Err(e);
+        }
+    }
+}
+
 impl PluginComp {
     pub async fn inspect_access(&self, path: &str, access: u8) -> Result<()> {
         let metadata = metadata(path).await?;
         let user = self.get_user()?;
+
+        // check root
+        if user.uid() == 0 {
+            return Ok(());
+        }
+
         let access = match access {
             PTY_INSPECT_READ => Access::Read,
             _ => Access::Write,
@@ -245,13 +320,13 @@ impl PluginComp {
 
     fn get_cwd(&self, user: &User) -> PathBuf {
         match self {
-            Self::Pty(pty) => pty.get_cwd(),
+            Self::Pty(pty, ..) => pty.get_cwd(),
             _ => user.home_dir().to_owned(),
         }
     }
 }
 
-fn openpty(user: &User, cols: u16, rows: u16) -> Result<(File, StdFile)> {
+fn openpty(user: &User, cols: u16, rows: u16) -> Result<(Arc<AsyncFd<OwnedFd>>, StdFile)> {
     let mut master: RawFd = -1;
     let mut slave: RawFd = -1;
 
@@ -274,9 +349,23 @@ fn openpty(user: &User, cols: u16, rows: u16) -> Result<(File, StdFile)> {
         };
 
         libc::fchown(slave, user.uid(), user.primary_group_id());
+
+        // The master must be non-blocking before it's wrapped in AsyncFd, or the
+        // raw read()/write() calls inside AsyncFd::async_io's closure would block
+        // the executor thread instead of returning EWOULDBLOCK.
+        let flags = libc::fcntl(master, libc::F_GETFL);
+        if flags == -1 || libc::fcntl(master, libc::F_SETFL, flags | libc::O_NONBLOCK) == -1 {
+            bail!(
+                "failed to set O_NONBLOCK on pty master: {}",
+                io::Error::last_os_error()
+            );
+        }
     }
 
-    let master = unsafe { File::from_raw_fd(master) };
+    // SAFETY: `master` is a just-opened, valid, unique fd returned by openpty() above.
+    let master = unsafe { OwnedFd::from_raw_fd(master) };
+    let master = Arc::new(AsyncFd::new(master)?);
+
     let slave = unsafe { StdFile::from_raw_fd(slave) };
     Ok((master, slave))
 }
@@ -319,12 +408,21 @@ fn audit_setloginuid(uid: uid_t) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{common::get_current_username, tssh::session::PluginComp};
+    use crate::{
+        common::get_current_username,
+        network::types::ws_msg::{Empty, JsonData, MsgId},
+        tssh::session::PluginComp,
+    };
 
     #[tokio::test]
     async fn test_work_as_user() {
         let username = get_current_username();
-        let plugin = PluginComp::Nil { username };
+        let id = MsgId::<_, _> {
+            session_id: "session".to_owned(),
+            channel_id: "channel".to_owned(),
+            inner: JsonData(Empty),
+        };
+        let plugin = PluginComp::Nil { username, id };
 
         let result = plugin.execute(&|| Ok("foo".to_string().into_bytes()));
         let foo = String::from_utf8_lossy(&result.unwrap()).to_string();

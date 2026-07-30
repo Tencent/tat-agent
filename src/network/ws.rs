@@ -20,9 +20,9 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::protocol::{CloseFrame, frame::coding::CloseCode};
 use tokio_tungstenite::tungstenite::{Bytes, Utf8Bytes};
 
-use super::{EVENT_CHECK_UPDATE, EVENT_FORCE_RESTART, EVENT_KICK};
-use crate::network::urls::get_forward_url;
-use crate::network::{ConnectForwardData, WsMsg};
+use super::types::ws_msg::{ConnectForwardData, MsgBase};
+use super::types::ws_msg::{EVENT_CHECK_UPDATE, EVENT_FORCE_RESTART, EVENT_KICK};
+use super::urls::get_forward_url;
 use crate::tssh::{WS_BIN_MSG, WS_TXT_MSG};
 
 const EVENT_CONNECT_FORWARD: &str = "ConnectForward";
@@ -172,7 +172,12 @@ impl NotifyWs {
     }
 
     fn ping_check(&self) -> impl Stream<Item = WsRes> + '_ {
-        IntervalStream::new(interval(Duration::from_secs(2 * 60))).map(move |_| {
+        const INTERVAL_SECS: u64 = 2 * 60;
+
+        let first_delay = thread_rng().gen_range(0..(INTERVAL_SECS - 1));
+        let mut interval = interval(Duration::from_secs(INTERVAL_SECS));
+        interval.reset_after(Duration::from_secs(first_delay));
+        IntervalStream::new(interval).map(move |_| {
             if self.close_sent.load(Ordering::Relaxed) {
                 return Err(Error::ConnectionClosed);
             }
@@ -206,14 +211,13 @@ impl ForwardWs {
             let mut cmd_tx: Option<UnboundedSender<String>> = None;
 
             while let Some(session_id) = event_rx.recv().await {
-                
                 let alive = cmd_tx.as_ref().map(|tx| !tx.is_closed()).unwrap_or(false);
                 if alive {
-                    if let Some(tx) = cmd_tx.as_ref() {
-                        if tx.send(session_id.clone()).is_ok() {
-                            info!("forward: reuse connection, session_id: {session_id}");
-                            continue;
-                        }
+                    if let Some(tx) = cmd_tx.as_ref()
+                        && tx.send(session_id.clone()).is_ok()
+                    {
+                        info!("forward: reuse connection, session_id: {session_id}");
+                        continue;
                     }
                 } else if cmd_tx.is_some() {
                     warn!("forward: previous connection is dead, reconnecting");
@@ -261,12 +265,12 @@ impl ForwardWs {
         cmd_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
     ) -> impl Stream<Item = WsRes> {
         UnboundedReceiverStream::new(cmd_rx).filter_map(|session_id| async move {
-            let msg = WsMsg {
+            let msg = MsgBase {
                 r#type: EVENT_CONNECT_FORWARD.to_string(),
                 seq: 1,
-                data: Some(ConnectForwardData {
+                data: ConnectForwardData {
                     session_id: session_id.clone(),
-                }),
+                },
             };
             match serde_json::to_string(&msg) {
                 Ok(json) => {
@@ -318,17 +322,17 @@ impl ForwardWs {
             // first: parse msg_type and emit, same as NotifyWs::on_text/on_binary
             match &msg {
                 Text(t) => {
-                    if let Ok(json) = serde_json::from_str::<Value>(t.as_str()) {
-                        if let Some(msg_type) = json.get("Type").and_then(Value::as_str) {
-                            evbus::emit(msg_type, t.as_bytes().to_vec()).await;
-                        }
+                    if let Ok(json) = serde_json::from_str::<Value>(t.as_str())
+                        && let Some(msg_type) = json.get("Type").and_then(Value::as_str)
+                    {
+                        evbus::emit(msg_type, t.as_bytes().to_vec()).await;
                     }
                 }
                 Binary(b) => {
-                    if let Ok(bson) = Document::from_reader(b.as_ref()) {
-                        if let Ok(msg_type) = bson.get_str("Type") {
-                            evbus::emit(msg_type, b.to_vec()).await;
-                        }
+                    if let Ok(bson) = Document::from_reader(b.as_ref())
+                        && let Ok(msg_type) = bson.get_str("Type")
+                    {
+                        evbus::emit(msg_type, b.to_vec()).await;
                     }
                 }
                 _ => (),

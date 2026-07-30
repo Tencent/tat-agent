@@ -1,5 +1,6 @@
 use crate::executor::execute_arg_command;
-use crate::network::{InvocationNormalTask, Tag, register, unregister};
+use crate::network::types::http_msg::{InvocationNormalTask, Tag};
+use crate::network::{register, unregister};
 
 use std::{process::exit, sync::LazyLock};
 

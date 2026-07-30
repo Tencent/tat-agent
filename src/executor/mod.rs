@@ -11,9 +11,9 @@ pub use self::unix::{User, kill_process_group};
 pub use self::windows::{User, kill_process_group};
 use crate::common::guard::prevent_restart;
 use crate::common::{Stopper, evbus, get_now_secs};
-use crate::network::{EVENT_KICK, Invoke, InvokeAdapter};
-use crate::network::{InvocationCancelTask, InvocationNormalTask};
-use crate::network::{ReportTaskFinishResponse, ReportTaskStartResponse, UploadTaskLogResponse};
+use crate::network::types::http_msg::*;
+use crate::network::types::ws_msg::EVENT_KICK;
+use crate::network::{Invoke, InvokeAdapter};
 
 use std::collections::{HashMap, HashSet};
 use std::process::exit;

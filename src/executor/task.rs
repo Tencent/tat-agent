@@ -1,8 +1,9 @@
 use super::{User, kill_process_group};
 use crate::EXE_DIR;
 use crate::common::{cbs_exist, create_file_with_parents, get_now_secs, incomplete_utf8_bytes};
+use crate::network::types::http_msg::InvocationNormalTask;
 use crate::network::urls::get_meta_url;
-use crate::network::{COSAdapter, InvocationNormalTask, Invoke, MetadataAdapter};
+use crate::network::{COSAdapter, Invoke, MetadataAdapter};
 
 use std::fmt::{self, Display, Write};
 use std::mem::{swap, take};

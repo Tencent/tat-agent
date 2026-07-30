@@ -4,7 +4,8 @@ pub mod self_update;
 use self::leak_check::LeakChecker;
 use self::self_update::{check_update, remove_update_file, restart};
 use crate::common::evbus;
-use crate::network::{EVENT_CHECK_UPDATE, EVENT_FORCE_RESTART, InvokeAdapter};
+use crate::network::InvokeAdapter;
+use crate::network::types::ws_msg::{EVENT_CHECK_UPDATE, EVENT_FORCE_RESTART};
 
 use std::sync::Arc;
 use std::{thread, time::Duration};

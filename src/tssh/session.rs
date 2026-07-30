@@ -1,14 +1,16 @@
 use super::{Tssh, proxy::Proxy, pty::Pty};
 use crate::common::guard::{PreventRestartGuard, prevent_restart};
 use crate::common::{Stopper, Timer};
-use crate::executor::User;
-use crate::network::{PtyBinBase, PtyJsonBase};
+use crate::network::types::ws_msg::*;
+use crate::tssh::handler::HandleMsg;
+use crate::{executor::User, tssh::handler::Handler};
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{any::Any, collections::HashMap, sync::Arc, time::Duration};
 
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 use log::{error, info};
 use tokio::sync::RwLock;
+use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
 const SESSION_TTL: Duration = Duration::from_secs(60 * 5); // 5 min
 
@@ -110,6 +112,7 @@ impl Channel {
 
     pub async fn stop(&self) {
         self.plugin.controller.stopper.stop().await;
+        self.plugin.component.stop_sync_dispatch().await;
     }
 
     pub async fn process_output(&self) {
@@ -126,25 +129,15 @@ impl Channel {
 
 pub struct Plugin {
     pub component: PluginComp,
-    pub data: PluginData,
     pub controller: PluginCtrl,
 }
 
 impl Plugin {
-    pub fn id(&self) -> String {
-        match &self.component {
-            PluginComp::Pty(_) => format!("{}:{}", self.data.session_id, self.data.channel_id),
-            PluginComp::Proxy(proxy) => proxy.proxy_id.clone(),
-            PluginComp::Nil { .. } => format!("{}:{}", self.data.session_id, self.data.channel_id),
-        }
-    }
-
     pub async fn process(&self) {
-        let id = self.id();
         match &self.component {
-            PluginComp::Pty(pty) => pty.process(&id, &self.data, &self.controller).await,
-            PluginComp::Proxy(proxy) => proxy.process(&id, &self.data, &self.controller).await,
-            PluginComp::Nil { .. } => tokio::select! {
+            PluginComp::Pty(pty, id, ..) => pty.process(id, &self.controller).await,
+            PluginComp::Proxy(proxy, id, ..) => proxy.process(id, &self.controller).await,
+            PluginComp::Nil { id, .. } => tokio::select! {
                 _ = self.controller.stopper.get_receiver().await.expect("get_receiver failed") => (),
                 _ = self.controller.timer.timeout() => info!("Channel `{id}` timeout"),
             },
@@ -152,56 +145,91 @@ impl Plugin {
     }
 
     pub fn try_get_pty(&self) -> Option<&Pty> {
-        let PluginComp::Pty(pty) = &self.component else {
+        let PluginComp::Pty(pty, ..) = &self.component else {
             return None;
         };
         Some(pty)
     }
 
     pub fn try_get_proxy(&self) -> Option<&Proxy> {
-        let PluginComp::Proxy(proxy) = &self.component else {
+        let PluginComp::Proxy(proxy, ..) = &self.component else {
             return None;
         };
         Some(proxy)
     }
 }
 
+pub struct SyncDispatcher {
+    tx: UnboundedSender<Box<dyn Any + Send + 'static>>,
+    stopper: Stopper,
+}
+
+async fn handle_sync_dispatch<T: HandleMsg + 'static>() -> SyncDispatcher {
+    let (tx, mut rx) = unbounded_channel::<Box<dyn Any + Send + 'static>>();
+    let stopper = Stopper::new();
+    let stopper_rx = stopper.get_receiver().await.unwrap();
+    tokio::spawn(async move {
+        let handler = async {
+            while let Some(Some(h)) = rx.recv().await.as_mut().map(|any| any.downcast_mut::<T>()) {
+                h.process().await;
+            }
+        };
+        tokio::select! {
+            _ = handler => (),
+            _ = stopper_rx => (),
+        }
+    });
+    SyncDispatcher { tx, stopper }
+}
+
 pub enum PluginComp {
-    Pty(Pty),
-    Proxy(Proxy),
-    Nil { username: String },
+    Pty(Pty, MsgId<Json, Empty>, SyncDispatcher),
+    Proxy(Proxy, MsgId<Bson, Empty>, SyncDispatcher),
+    Nil {
+        username: String,
+        id: MsgId<Json, Empty>,
+    },
 }
 
 impl PluginComp {
+    pub async fn pty(pty: Pty, req: &MsgId<Json, PtyStart>) -> Self {
+        let id = req.empty();
+        let tx = handle_sync_dispatch::<Handler<Json, PtyInput>>().await;
+        Self::Pty(pty, id, tx)
+    }
+
+    pub async fn proxy(proxy: Proxy, req: &MsgId<Bson, ProxyNew>) -> Self {
+        let id = req.empty();
+        let tx = handle_sync_dispatch::<Handler<Bson, ProxyData>>().await;
+        Self::Proxy(proxy, id, tx)
+    }
+
     pub fn get_user(&self) -> Result<Arc<User>> {
         match self {
-            Self::Pty(pty) => Ok(pty.user.clone()),
-            Self::Nil { username } => User::new(username).map(Arc::new),
+            Self::Pty(pty, ..) => Ok(pty.user.clone()),
+            Self::Nil { username, .. } => User::new(username).map(Arc::new),
             _ => bail!("unsupported channel plugin"),
         }
     }
-}
 
-#[derive(Clone)]
-pub struct PluginData {
-    pub session_id: String,
-    pub channel_id: String,
-}
-
-impl<'a, T> From<&'a PtyJsonBase<T>> for PluginData {
-    fn from(value: &'a PtyJsonBase<T>) -> Self {
-        Self {
-            session_id: value.session_id.clone(),
-            channel_id: value.channel_id.clone(),
+    pub fn get_sync_dispatcher(&self) -> Result<&SyncDispatcher> {
+        match self {
+            Self::Pty(.., sd) => Ok(sd),
+            Self::Proxy(.., sd) => Ok(sd),
+            _ => bail!("unsupported channel plugin"),
         }
     }
-}
 
-impl<'a, T> From<&'a PtyBinBase<T>> for PluginData {
-    fn from(value: &'a PtyBinBase<T>) -> Self {
-        Self {
-            session_id: value.session_id.clone(),
-            channel_id: value.channel_id.clone(),
+    pub fn sync_dispatch<T: Send + 'static>(&self, handler: T) -> Result<()> {
+        self.get_sync_dispatcher()?
+            .tx
+            .send(Box::new(handler))
+            .map_err(|e| anyhow!("sync dispatch send failed: {e:#}"))
+    }
+
+    pub async fn stop_sync_dispatch(&self) {
+        if let Ok(sd) = self.get_sync_dispatcher() {
+            sd.stopper.stop().await
         }
     }
 }

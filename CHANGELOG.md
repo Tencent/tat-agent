@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.2] - 2026-07-27
+
+### Changed
+
+- Fix potential deadlock and thread leak in PtyInput.
+- Fix file operations not correctly handling root privileges on Unix.
+- PtyStart supports specifying initial working directory for terminal.
+- Introduce random jitter to connection heartbeat to avoid thundering herd.
+- Refactor tssh::handler and ws_msg modules for improved architecture and extensibility.
+
 ## [1.2.1] - 2026-05-18
 
 ### Changed
